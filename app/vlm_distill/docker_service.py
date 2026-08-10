@@ -25,7 +25,7 @@ from .config_schema import load_config
 from .data_manifest import VlmSample
 from .output_processors import ParsingOutputProcessor, TransitionOutputProcessor
 from .parsing_output_parser import COORDINATE_SYSTEM_NORMALIZED_0_1000
-from .prompt_composer import compose_prompt, compose_transition_prompt
+from .prompt_composer import TRANSITION_PROMPT_TEMPLATE, compose_prompt, compose_transition_prompt
 from .runtime_validation import summarize_model_precision, validate_loaded_precision
 from .stage_teacher_precompute import _load_teacher_image
 
@@ -341,10 +341,16 @@ def _infer_sync(context: RuntimeContext, image_bytes: bytes, instruction: str, m
     }
 
 
-def _infer_transition_sync(context: RuntimeContext, before_bytes: bytes, after_bytes: bytes, instruction: str) -> dict[str, Any]:
+def _infer_transition_sync(
+    context: RuntimeContext,
+    before_bytes: bytes,
+    after_bytes: bytes,
+    instruction: str | None,
+) -> dict[str, Any]:
     before = _decode_image(before_bytes, "before_image")
     after = _decode_image(after_bytes, "after_image")
-    prompt = compose_transition_prompt(instruction)
+    prompt = (compose_transition_prompt(instruction)
+              if instruction is not None else TRANSITION_PROMPT_TEMPLATE)
     raw_output = context.engine.generate_raw([before, after], prompt, 2048)
     debug = dict(context.engine.last_debug)
     debug.update({"mode": "transition", "image_count": 2,
@@ -360,10 +366,10 @@ def _infer_transition_sync(context: RuntimeContext, before_bytes: bytes, after_b
 
 def create_transition_inferencer(
     context: RuntimeContext,
-    instruction: str = "Describe the UI state transition from the before image to the after image.",
+    instruction: str | None = None,
 ):
     """Bind the loaded runtime context to the existing transition inference core."""
-    normalized_instruction = instruction.strip()
+    normalized_instruction = instruction.strip() if instruction is not None else None
 
     def infer_transition(before_image: bytes, after_image: bytes) -> dict[str, Any]:
         return _infer_transition_sync(context, before_image, after_image, normalized_instruction)

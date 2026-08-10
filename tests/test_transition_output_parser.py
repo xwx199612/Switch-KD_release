@@ -8,7 +8,7 @@ import pytest
 from starlette.datastructures import FormData
 
 from app.vlm_distill.data_manifest import VlmSample
-from app.vlm_distill.docker_service import _parse_transition_request
+from app.vlm_distill.docker_service import _parse_transition_request, create_transition_inferencer
 from app.vlm_distill.output_processors import build_output_processor
 from app.vlm_distill.prompt_composer import compose_transition_prompt
 from app.vlm_distill.transition_output_parser import parse_transition_output
@@ -145,6 +145,41 @@ def test_transition_prompt_is_fixed_to_the_observation_contract():
     assert '"elements": []' in prompt
     assert '"focus_path": []' in prompt
     assert "Output valid JSON only." in prompt
+
+
+def test_registry_transition_inferencer_does_not_inject_legacy_instruction_by_default(monkeypatch):
+    import app.vlm_distill.docker_service as service
+
+    calls = []
+
+    def fake_infer(context, before, after, instruction):
+        calls.append((context, before, after, instruction))
+        return {}
+
+    monkeypatch.setattr(service, "_infer_transition_sync", fake_infer)
+    context = object()
+    inferencer = create_transition_inferencer(context)
+
+    inferencer(b"before", b"after")
+
+    assert calls == [(context, b"before", b"after", None)]
+
+
+def test_registry_transition_inferencer_preserves_explicit_instruction(monkeypatch):
+    import app.vlm_distill.docker_service as service
+
+    calls = []
+
+    def fake_infer(context, before, after, instruction):
+        calls.append(instruction)
+        return {}
+
+    monkeypatch.setattr(service, "_infer_transition_sync", fake_infer)
+    inferencer = create_transition_inferencer(object(), instruction="custom instruction")
+
+    inferencer(b"before", b"after")
+
+    assert calls == ["custom instruction"]
 
 
 class _FormRequest:
