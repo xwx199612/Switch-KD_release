@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 
 from .state_fingerprint import (
     SAME_STATE_THRESHOLD,
@@ -39,11 +39,27 @@ class TransitionStateResolution:
     after: StateResolution
 
 
+class TransitionInferencer(Protocol):
+    """Callable that runs the existing parsed transition inference path."""
+
+    def __call__(self, before_image: Any, after_image: Any) -> Any:
+        ...
+
+
+class TransitionInferenceError(RuntimeError):
+    """Raised when transition inference cannot provide a parsed transition."""
+
+
 class StateRegistry:
     """Deterministic in-memory registry of one canonical fingerprint per state."""
 
-    def __init__(self, threshold: float = SAME_STATE_THRESHOLD) -> None:
+    def __init__(
+        self,
+        threshold: float = SAME_STATE_THRESHOLD,
+        transition_inferencer: TransitionInferencer | None = None,
+    ) -> None:
         self.threshold = threshold
+        self.transition_inferencer = transition_inferencer
         self._states: dict[str, RegisteredState] = {}
         self._next_state_number = 1
 
@@ -93,6 +109,25 @@ class StateRegistry:
         after = self.resolve(transition["after"])
         return TransitionStateResolution(before=before, after=after)
 
+    def resolve_images(self, before_image: Any, after_image: Any) -> TransitionStateResolution:
+        """Infer and resolve a transition from the two images."""
+        if self.transition_inferencer is None:
+            raise TransitionInferenceError(
+                "StateRegistry.resolve_images() requires a transition inferencer"
+            )
+
+        inference_result = self.transition_inferencer(before_image, after_image)
+        if not isinstance(inference_result, Mapping):
+            raise TransitionInferenceError("Transition inference unusable: invalid result")
+
+        transition = inference_result.get("transition")
+        parse_error = inference_result.get("parse_error")
+        if not inference_result.get("usable") or transition is None:
+            detail = f": {parse_error}" if parse_error else ""
+            raise TransitionInferenceError(f"Transition inference unusable{detail}")
+
+        return self.resolve_transition(transition)
+
     def reset(self) -> None:
         """Clear all states and restart runtime IDs at S001."""
         self._states.clear()
@@ -101,6 +136,8 @@ class StateRegistry:
 
 __all__ = [
     "RegisteredState",
+    "TransitionInferenceError",
+    "TransitionInferencer",
     "StateRegistry",
     "StateResolution",
     "TransitionStateResolution",

@@ -7,6 +7,7 @@ from app.vlm_distill.state_registry import (
     RegisteredState,
     StateRegistry,
     StateResolution,
+    TransitionInferenceError,
     TransitionStateResolution,
 )
 
@@ -204,3 +205,82 @@ def test_states_are_read_only_and_registered_fingerprints_are_canonical():
         registry.states["S002"] = RegisteredState(
             "S002", build_state_fingerprint(observation(["Other"]))
         )
+
+
+def transition_result(before, after, *, usable=True, parse_error=None):
+    return {
+        "raw_output": "{}",
+        "usable": usable,
+        "parse_error": parse_error,
+        "transition": {"before": before, "after": after} if after is not None else None,
+    }
+
+
+def test_resolve_images_requires_a_transition_inferencer():
+    with pytest.raises(TransitionInferenceError, match="requires a transition inferencer"):
+        StateRegistry().resolve_images("before", "after")
+
+
+def test_resolve_images_calls_inferencer_in_before_after_order_and_delegates():
+    calls = []
+    transition = {
+        "before": observation(["Home"]),
+        "after": observation(["Settings"]),
+    }
+
+    def inferencer(before_image, after_image):
+        calls.append((before_image, after_image))
+        return {"usable": True, "parse_error": None, "transition": transition}
+
+    registry = StateRegistry(transition_inferencer=inferencer)
+    result = registry.resolve_images("before", "after")
+
+    assert calls == [("before", "after")]
+    assert result.before.state_id == "S001"
+    assert result.after.state_id == "S002"
+
+
+def test_resolve_images_comedy_to_horror_keeps_one_state():
+    elements = ["Search by genre", "Comedy", "Horror"]
+    inferencer = lambda before, after: transition_result(
+        observation(elements, ["Search by genre", "Comedy"]),
+        observation(elements, ["Search by genre", "Horror"]),
+    )
+
+    registry = StateRegistry(transition_inferencer=inferencer)
+    result = registry.resolve_images("before", "after")
+
+    assert result.before.state_id == "S001"
+    assert result.before.is_new is True
+    assert result.after.state_id == "S001"
+    assert result.after.is_new is False
+    assert len(registry) == 1
+
+
+def test_resolve_images_different_screens_create_different_states():
+    inferencer = lambda before, after: transition_result(
+        observation(["Wi-Fi", "Ethernet", "Proxy"], ["Network", "Wi-Fi"]),
+        observation(["Brightness", "Contrast", "Picture Mode"], ["Display", "Brightness"]),
+    )
+
+    registry = StateRegistry(transition_inferencer=inferencer)
+    result = registry.resolve_images("before", "after")
+
+    assert (result.before.state_id, result.after.state_id) == ("S001", "S002")
+    assert len(registry) == 2
+
+
+@pytest.mark.parametrize(
+    "inference_result, message",
+    [
+        ({"usable": False, "parse_error": "invalid JSON", "transition": None}, "invalid JSON"),
+        ({"usable": True, "parse_error": None, "transition": None}, "Transition inference unusable"),
+    ],
+)
+def test_unusable_resolve_images_raises_without_modifying_registry(inference_result, message):
+    registry = StateRegistry(transition_inferencer=lambda before, after: inference_result)
+
+    with pytest.raises(TransitionInferenceError, match=message):
+        registry.resolve_images("before", "after")
+
+    assert len(registry) == 0

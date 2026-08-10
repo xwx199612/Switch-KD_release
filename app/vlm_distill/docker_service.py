@@ -358,6 +358,19 @@ def _infer_transition_sync(context: RuntimeContext, before_bytes: bytes, after_b
             "inference_debug": debug}
 
 
+def create_transition_inferencer(
+    context: RuntimeContext,
+    instruction: str = "Describe the UI state transition from the before image to the after image.",
+):
+    """Bind the loaded runtime context to the existing transition inference core."""
+    normalized_instruction = instruction.strip()
+
+    def infer_transition(before_image: bytes, after_image: bytes) -> dict[str, Any]:
+        return _infer_transition_sync(context, before_image, after_image, normalized_instruction)
+
+    return infer_transition
+
+
 async def _infer_endpoint(request: Request, mode: Mode) -> dict[str, Any]:
     context, fields, content = await _parse_request(request)
     instruction = fields.instruction if fields.instruction is not None else fields.query
