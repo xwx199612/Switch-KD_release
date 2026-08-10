@@ -1,0 +1,13 @@
+prompt=422
+prompt_template=422
+system_prompt=422
+output_mode=422
+max_new_tokens=422
+do_sample=422
+temperature=422
+top_p=422
+generation_config=422
+images=422
+image=422
+missing_before_image=422
+missing_after_image=422

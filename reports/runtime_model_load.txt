@@ -1,0 +1,9 @@
+Offline runtime load: PASS
+Student: Qwen3-VL-8B-Instruct, revision 0c351dd01ed87e9c1b53cbc748cba10e6187ff3b
+merged_artifact_mode: 4bit_base_bf16_adapter
+Student quantization: 4-bit NF4
+Compute dtype: bfloat16
+Adapter: loaded; SHA256 e43c568e23f3f19a313f6b1cc65e0d9d9c0bcbc17554d856bce1621657f85e99
+Projector: model.visual.merger restored through modules_to_save
+HF offline mode: PASS
+Device map: auto; model distributed across cuda:0, cuda:1, cuda:2, cuda:3

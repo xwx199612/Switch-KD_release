@@ -1,0 +1,61 @@
+pipeline:
+  output_mode: parsing
+
+data:
+  training_manifest_path: /config/unused_training.jsonl
+  inference_manifest_path: /config/unused_inference.jsonl
+  manifest_path: /config/unused_manifest.jsonl
+  image_root: /config/images
+  distill_path: /config/unused_distill.jsonl
+
+teacher:
+  backend: hf
+  model_name: /models/unused-teacher
+  device_map: auto
+  torch_dtype: bfloat16
+  quantization: none
+  max_new_tokens: 2048
+  image_resize: original
+
+student:
+  model_name: /models/student
+  output_dir: /output
+  adapter_dir: /models/adapter
+  inference_model_path: /models/adapter
+  inference_adapter_path: /models/adapter
+  deployment_artifact_path: /models/adapter
+  device_map: auto
+  torch_dtype: bfloat16
+  use_lora: true
+  load_adapter: false
+  merge_adapter: false
+  lora_rank: 32
+  lora_alpha: 64
+  lora_dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+  quantization: 4bit
+  train_multimodal_projector: true
+  use_projector_lora: false
+  multimodal_projector_path: model.visual.merger
+  merged_artifact_mode: 4bit_base_bf16_adapter
+  attn_implementation: sdpa
+
+training:
+  image_resize: original
+  max_length: 4096
+  mixed_precision: bf16
+
+prediction:
+  debug_inference_parity: true
+
+runtime:
+  merged_artifact_mode: 4bit_base_bf16_adapter
+  device_map: auto
+  max_new_tokens: 2048
+  do_sample: false
+  max_concurrent_inference: 1
+  queue_wait_timeout_seconds: 300
+  inference_timeout_seconds: 600
+  max_upload_bytes: 10485760
+  max_image_pixels: 20000000
+  supported_output_modes: [parsing, text, transition]

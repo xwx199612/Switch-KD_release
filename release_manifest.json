@@ -1,0 +1,52 @@
+{
+  "package_type": "runtime_delivery",
+  "release_version": "1.2.0",
+  "source_commit": "b7e918945cd5f019ec092f3aa518b2839845f22e",
+  "merged_artifact_mode": "4bit_base_bf16_adapter",
+  "output_mode": "route_selected",
+  "default_output_mode": "parsing",
+  "supported_output_modes": ["parsing", "text", "transition"],
+  "endpoints": {
+    "parsing": "/infer/parsing",
+    "text": "/infer/text",
+    "transition": "/infer/transition",
+    "legacy": "/infer"
+  },
+  "device_map": "auto",
+  "max_concurrent_inference": 1,
+  "max_new_tokens": 2048,
+  "do_sample": false,
+  "offline_mode": true,
+  "model_load_count": 1,
+  "shared_model_instance_verified": true,
+  "shared_semaphore_verified": true,
+  "transition_multi_image_verified": true,
+  "transition_single_generate_verified": true,
+  "before_after_order_verified": true,
+  "student_model": {
+    "model_id": "Qwen3-VL-8B-Instruct",
+    "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+    "included": true
+  },
+  "adapter": {
+    "artifact_id": "stage1_a4_r32_attn_mlp_projector",
+    "sha256": "e43c568e23f3f19a313f6b1cc65e0d9d9c0bcbc17554d856bce1621657f85e99",
+    "included": true,
+    "projector_restored": true
+  },
+  "docker_image_included": false,
+  "docker_build_verified": true,
+  "docker_image_id": "sha256:c1e098efe6d087b44cacf05256f02668ae5908d10fc03469af3ac1bcc78a0c13",
+  "student_load_verified": true,
+  "adapter_load_verified": true,
+  "projector_restore_verified": true,
+  "ready_verified": true,
+  "parsing_endpoint_verified": true,
+  "text_endpoint_verified": true,
+  "transition_endpoint_verified": true,
+  "legacy_endpoint_verified": true,
+  "schema_verified": true,
+  "text_non_empty_verified": true,
+  "prompt_override_rejection_verified": true,
+  "repository_modified": false
+}

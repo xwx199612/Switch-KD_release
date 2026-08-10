@@ -1,0 +1,1 @@
+<fastapi.applications.FastAPI object at 0x72886c51b7d0>

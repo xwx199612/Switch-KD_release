@@ -1,0 +1,12 @@
+output
+reports
+models/
+**/*.safetensors
+**/*.bin
+**/*.pt
+**/*.pth
+outputs/
+*.tar
+*.tar.gz
+**/__pycache__
+*.pyc

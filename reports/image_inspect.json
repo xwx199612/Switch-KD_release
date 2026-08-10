@@ -1,0 +1,152 @@
+[
+    {
+        "Id": "sha256:163fa1ac4e6c7e50c76ea93456b87bff4e0992bda75673226aabfea197edad34",
+        "RepoTags": [
+            "vlm-online-dbild-runtime:1.2.0"
+        ],
+        "RepoDigests": [],
+        "Parent": "",
+        "Comment": "buildkit.dockerfile.v0",
+        "Created": "2026-08-10T14:20:19.899621826+08:00",
+        "DockerVersion": "",
+        "Author": "",
+        "Config": {
+            "Hostname": "",
+            "Domainname": "",
+            "User": "runtime",
+            "AttachStdin": false,
+            "AttachStdout": false,
+            "AttachStderr": false,
+            "ExposedPorts": {
+                "8000/tcp": {}
+            },
+            "Tty": false,
+            "OpenStdin": false,
+            "StdinOnce": false,
+            "Env": [
+                "PATH=/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "NVARCH=x86_64",
+                "NVIDIA_REQUIRE_CUDA=cuda>=12.4 brand=tesla,driver>=470,driver<471 brand=unknown,driver>=470,driver<471 brand=nvidia,driver>=470,driver<471 brand=nvidiartx,driver>=470,driver<471 brand=geforce,driver>=470,driver<471 brand=geforcertx,driver>=470,driver<471 brand=quadro,driver>=470,driver<471 brand=quadrortx,driver>=470,driver<471 brand=titan,driver>=470,driver<471 brand=titanrtx,driver>=470,driver<471 brand=tesla,driver>=525,driver<526 brand=unknown,driver>=525,driver<526 brand=nvidia,driver>=525,driver<526 brand=nvidiartx,driver>=525,driver<526 brand=geforce,driver>=525,driver<526 brand=geforcertx,driver>=525,driver<526 brand=quadro,driver>=525,driver<526 brand=quadrortx,driver>=525,driver<526 brand=titan,driver>=525,driver<526 brand=titanrtx,driver>=525,driver<526 brand=tesla,driver>=535,driver<536 brand=unknown,driver>=535,driver<536 brand=nvidia,driver>=535,driver<536 brand=nvidiartx,driver>=535,driver<536 brand=geforce,driver>=535,driver<536 brand=geforcertx,driver>=535,driver<536 brand=quadro,driver>=535,driver<536 brand=quadrortx,driver>=535,driver<536 brand=titan,driver>=535,driver<536 brand=titanrtx,driver>=535,driver<536",
+                "NV_CUDA_CUDART_VERSION=12.4.127-1",
+                "NV_CUDA_COMPAT_PACKAGE=cuda-compat-12-4",
+                "CUDA_VERSION=12.4.1",
+                "LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64",
+                "NVIDIA_VISIBLE_DEVICES=all",
+                "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
+                "NV_CUDA_LIB_VERSION=12.4.1-1",
+                "NV_NVTX_VERSION=12.4.127-1",
+                "NV_LIBNPP_VERSION=12.2.5.30-1",
+                "NV_LIBNPP_PACKAGE=libnpp-12-4=12.2.5.30-1",
+                "NV_LIBCUSPARSE_VERSION=12.3.1.170-1",
+                "NV_LIBCUBLAS_PACKAGE_NAME=libcublas-12-4",
+                "NV_LIBCUBLAS_VERSION=12.4.5.8-1",
+                "NV_LIBCUBLAS_PACKAGE=libcublas-12-4=12.4.5.8-1",
+                "NV_LIBNCCL_PACKAGE_NAME=libnccl2",
+                "NV_LIBNCCL_PACKAGE_VERSION=2.21.5-1",
+                "NCCL_VERSION=2.21.5-1",
+                "NV_LIBNCCL_PACKAGE=libnccl2=2.21.5-1+cuda12.4",
+                "NVIDIA_PRODUCT_NAME=CUDA",
+                "NV_CUDA_CUDART_DEV_VERSION=12.4.127-1",
+                "NV_NVML_DEV_VERSION=12.4.127-1",
+                "NV_LIBCUSPARSE_DEV_VERSION=12.3.1.170-1",
+                "NV_LIBNPP_DEV_VERSION=12.2.5.30-1",
+                "NV_LIBNPP_DEV_PACKAGE=libnpp-dev-12-4=12.2.5.30-1",
+                "NV_LIBCUBLAS_DEV_VERSION=12.4.5.8-1",
+                "NV_LIBCUBLAS_DEV_PACKAGE_NAME=libcublas-dev-12-4",
+                "NV_LIBCUBLAS_DEV_PACKAGE=libcublas-dev-12-4=12.4.5.8-1",
+                "NV_CUDA_NSIGHT_COMPUTE_VERSION=12.4.1-1",
+                "NV_CUDA_NSIGHT_COMPUTE_DEV_PACKAGE=cuda-nsight-compute-12-4=12.4.1-1",
+                "NV_NVPROF_VERSION=12.4.127-1",
+                "NV_NVPROF_DEV_PACKAGE=cuda-nvprof-12-4=12.4.127-1",
+                "NV_LIBNCCL_DEV_PACKAGE_NAME=libnccl-dev",
+                "NV_LIBNCCL_DEV_PACKAGE_VERSION=2.21.5-1",
+                "NV_LIBNCCL_DEV_PACKAGE=libnccl-dev=2.21.5-1+cuda12.4",
+                "LIBRARY_PATH=/usr/local/cuda/lib64/stubs",
+                "NV_CUDNN_VERSION=9.1.0.70-1",
+                "NV_CUDNN_PACKAGE_NAME=libcudnn9-cuda-12",
+                "NV_CUDNN_PACKAGE=libcudnn9-cuda-12=9.1.0.70-1",
+                "NV_CUDNN_PACKAGE_DEV=libcudnn9-dev-cuda-12=9.1.0.70-1",
+                "DEBIAN_FRONTEND=noninteractive",
+                "PYTHONUNBUFFERED=1",
+                "PYTHONDONTWRITEBYTECODE=1",
+                "HF_HUB_OFFLINE=1",
+                "TRANSFORMERS_OFFLINE=1",
+                "HF_DATASETS_OFFLINE=1",
+                "PYTHONPATH=/app",
+                "VLM_CONFIG_PATH=/config/runtime.yaml",
+                "HF_HOME=/output/cache/huggingface",
+                "TRANSFORMERS_CACHE=/output/cache/huggingface",
+                "TRITON_CACHE_DIR=/output/cache/triton",
+                "TORCH_HOME=/output/cache/torch",
+                "XDG_CACHE_HOME=/output/cache"
+            ],
+            "Cmd": [
+                "python3.11",
+                "-m",
+                "uvicorn",
+                "vlm_distill.docker_service:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8000",
+                "--workers",
+                "1"
+            ],
+            "ArgsEscaped": true,
+            "Image": "",
+            "Volumes": null,
+            "WorkingDir": "/app",
+            "Entrypoint": [
+                "/usr/local/bin/entrypoint.sh"
+            ],
+            "OnBuild": null,
+            "Labels": {
+                "com.nvidia.cudnn.version": "9.1.0.70-1",
+                "maintainer": "NVIDIA CORPORATION <cudatools@nvidia.com>",
+                "org.opencontainers.image.ref.name": "ubuntu",
+                "org.opencontainers.image.version": "22.04"
+            }
+        },
+        "Architecture": "amd64",
+        "Os": "linux",
+        "Size": 14497251178,
+        "GraphDriver": {
+            "Data": {
+                "LowerDir": "/var/lib/docker/overlay2/j9bghykc7zpgelst4ky9ekz3j/diff:/var/lib/docker/overlay2/yv14r7r041kcsr1nilrn5jktp/diff:/var/lib/docker/overlay2/p1dvl861y1vugtmqdxl4ssfpi/diff:/var/lib/docker/overlay2/uqbvrmfqahqs8nnriuoerby9c/diff:/var/lib/docker/overlay2/jmhtgur8vvi3qwfutjpzmz936/diff:/var/lib/docker/overlay2/ubg5zm2tl7iuo9kr09mjfqufu/diff:/var/lib/docker/overlay2/mq7ea4ao2iw5whbpz9my9d1mx/diff:/var/lib/docker/overlay2/wxyww72zzw0tcajxrkjthlro1/diff:/var/lib/docker/overlay2/0c23932dbf833e72df04091f7eaaf8112c0a49cbb8d0a83e2485b4bf60cc6142/diff:/var/lib/docker/overlay2/aeaad13b7fb4fcbea24e9628831213bde67c26d9cf283393d126633f8f435b04/diff:/var/lib/docker/overlay2/83e10723a1d3235af5c085e7d3df9d8671db48bbfbeb4bc58f5c8a27a972ed2d/diff:/var/lib/docker/overlay2/67d81bc383dbbe85741860781b83699dbf3b7fcbee1af19527d321eae614f54d/diff:/var/lib/docker/overlay2/86d788fc7226c0741236a446db9264ff8bb75e8eaa3ec65fc355a14b1062bcdf/diff:/var/lib/docker/overlay2/2fb499de4becad230697d2f7446774790927af1ead0089c9c48c5e472d0c9b93/diff:/var/lib/docker/overlay2/32961b2b6563aeb8f8127fdc5f7696c3a44a4a761a4e1f91c6ec97436cc5e75e/diff:/var/lib/docker/overlay2/da798a9da7904874cc3ce05fd280c564dc5238e2c6eb8b88634f2e17b0da519a/diff:/var/lib/docker/overlay2/eb712a8ab7048ae557384d54aaafcf48e032cfc499619debb1ffe05743d447bf/diff:/var/lib/docker/overlay2/15cc6ff4cad297824460eed5480b07c18de48dd37a4e5310ee534664df4abb00/diff:/var/lib/docker/overlay2/ce4de63a8cc98717570ff8d7f0b6f976f5fc83552f1b5ff0bdbc2cce35308a5b/diff:/var/lib/docker/overlay2/534661d128c301858b9f4def3e30f506035f1427a7a9daba50601a617e41d374/diff",
+                "MergedDir": "/var/lib/docker/overlay2/wedlgutd7f8lbf7n2lcfjsnlr/merged",
+                "UpperDir": "/var/lib/docker/overlay2/wedlgutd7f8lbf7n2lcfjsnlr/diff",
+                "WorkDir": "/var/lib/docker/overlay2/wedlgutd7f8lbf7n2lcfjsnlr/work"
+            },
+            "Name": "overlay2"
+        },
+        "RootFS": {
+            "Type": "layers",
+            "Layers": [
+                "sha256:e0a9f5911802534ba097660206feabeb0247a81e409029167b30e2e1f2803b57",
+                "sha256:47654eeadbc543f1dd44ebb41c6ca0954b9f1813efabdcd46b0e7f17ac4e9fd1",
+                "sha256:efe2b79b53de08e199a2ce107d83adc0cbdff94f605e03f5ef51f3df3ae31cfd",
+                "sha256:46d54736d31f4bfeb749544e22e8611dba11128bdb2cebb820a3b452b50e7d52",
+                "sha256:809d3bb9c80fb3d31d4c061ba0b38ba4e83b6329e33c2cb2bbf27251a8e527c6",
+                "sha256:1ffbbe19418f9726ebb365371ef96637c68f9d25af3f76a4f01f760e87fb31be",
+                "sha256:1b30dd39de2709bc00beebf392ea1f931d5f037d08e0f675a50855385cddad93",
+                "sha256:89fd878224a017aead1d4c83d5c62749307aa6f1a9e22087144ef339c3df8c1e",
+                "sha256:2b4acda8678c6f7ae0075eabb2c0c21078b80671800996ad2cf730f15fa0ef26",
+                "sha256:5fb5b17c5835e3e44f7c48dfc15f29504febad945f26dcfa11470d0070b166e4",
+                "sha256:b7fa3c6c5beea49f65d51f65f06a4a8af32b48f128c02bea3822e5afaf4ebf23",
+                "sha256:9b39c4e5264e7c4b3762a1f1d06bb00db03e2e21893ea703e8ad6e8f2e0f5fba",
+                "sha256:868e8e8e43967acad52dc3c27488fb999bb14bfdee43ab6dc6ddeaac9eff8406",
+                "sha256:4778787f12210fd58d47deb84ee58761f9fadb256ebabbcb92ba6fa13f5e98ac",
+                "sha256:3857796a36bf59244ec7a13d62b98470ffb61bf8a8fe0146a9f1090835f8535a",
+                "sha256:2d6a728ae14285ceddde8bd2a3d55be18e574b58f2a0c1def637aa59bd3cb736",
+                "sha256:a4dfe143e06c12f3a8947e26787b75c2e78f06ebc88af72dbf0492a1e6017c80",
+                "sha256:8a3a105e4519228409c95b72ec9cb5cf8a5b5afe6eb620507e994daa33df6975",
+                "sha256:f2342511c5d6cadeb141d2f924883f244f69390b5a8dd37918ca48ed25dea999",
+                "sha256:74ef05ae8aa89eca5dade0e075062f69acf92e55058322c2340a14ab02b58763",
+                "sha256:f1eefddb30806be78ed1aef53fa5ddc6831f9ccb1247a0bd7aa427b9d60cce9f"
+            ]
+        },
+        "Metadata": {
+            "LastTagTime": "2026-08-10T14:20:19.964845845+08:00"
+        }
+    }
+]

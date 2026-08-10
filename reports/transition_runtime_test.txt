@@ -1,0 +1,40 @@
+container=vlm-online-dbild-runtime-120
+ready={"status":"ready","model_loaded":true,"model_load_count":1,"model_instance_id":"139836719419792","adapter_loaded":true,"projector_restored":true,"supported_output_modes":["parsing","text","transition"],"endpoints":{"parsing":"/infer/parsing","text":"/infer/text","transition":"/infer/transition","legacy":"/infer"},"merged_artifact_mode":"4bit_base_bf16_adapter","device_map":{"model.visual.patch_embed":"cuda:0","model.visual.pos_embed":"cuda:0","model.visual.rotary_pos_emb":"cuda:0","model.visual.blocks.0":"cuda:0","model.visual.blocks.1":"cuda:0","model.visual.blocks.2":"cuda:0","model.visual.blocks.3":"cuda:0","model.visual.blocks.4":"cuda:0","model.visual.blocks.5":"cuda:0","model.visual.blocks.6":"cuda:0","model.visual.blocks.7":"cuda:0","model.visual.blocks.8":"cuda:1","model.visual.blocks.9":"cuda:1","model.visual.blocks.10":"cuda:1","model.visual.blocks.11":"cuda:1","model.visual.blocks.12":"cuda:1","model.visual.blocks.13":"cuda:1","model.visual.blocks.14":"cuda:1","model.visual.blocks.15":"cuda:1","model.visual.blocks.16":"cuda:1","model.visual.blocks.17":"cuda:1","model.visual.blocks.18":"cuda:1","model.visual.blocks.19":"cuda:1","model.visual.blocks.20":"cuda:1","model.visual.blocks.21":"cuda:1","model.visual.blocks.22":"cuda:1","model.visual.blocks.23":"cuda:1","model.visual.blocks.24":"cuda:1","model.visual.blocks.25":"cuda:1","model.visual.blocks.26":"cuda:1","model.visual.merger":"cuda:1","model.visual.deepstack_merger_list":"cuda:1","model.language_model.embed_tokens":"cuda:2","model.language_model.norm":"cuda:3","model.language_model.rotary_emb":"cuda:3","lm_head":"cuda:3","model.language_model.layers":"cuda:3"}}
+parsing idle_or_before_mib=776 566 1360 4910  peak_mib=5310 after_mib=794 720 1432 5310 
+transition idle_or_before_mib=794 720 1432 5310  peak_mib=6560 after_mib=1604 1600 1676 6560 
+transition_elapsed_seconds=9.141
+input_ids_shape=[1, 4428]
+pixel_values_shape=[16320, 1536]
+image_grid_thw=[[1, 68, 120], [1, 68, 120]]
+before_after_order=PASS
+transition_schema=PASS
+shared_model_instance=PASS
+forbidden_field_statuses=
+prompt=422
+prompt_template=422
+system_prompt=422
+output_mode=422
+max_new_tokens=422
+do_sample=422
+temperature=422
+top_p=422
+generation_config=422
+images=422
+image=422
+forbidden_fields=PASS
+max_active_inferences=max_active_inferences=1 
+final_focus_pair_forward_elapsed_seconds=23.142
+final_focus_pair_reverse_elapsed_seconds=21.105
+final_focus_pair_order=PASS (forward selected Horror; reverse selected Horror to Sci-fi)
+final_idle_vram_mib=1604,1520,1648,6540
+final_parsing_peak_vram_mib=5310
+final_transition_peak_vram_mib=6560
+final_input_ids_shape=[1, 4428]
+final_pixel_values_shape=[16320, 1536]
+final_image_grid_thw=[[1, 68, 120], [1, 68, 120]]
+missing_before_image=422
+missing_after_image=422
+corrupt_before_image=400
+corrupt_after_image=400
+shared_semaphore=PASS
+max_active_inferences=1

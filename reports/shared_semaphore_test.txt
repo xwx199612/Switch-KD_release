@@ -1,0 +1,19 @@
+parsing_start=1785917762113
+text_start=1785917762617
+parsing_end=1785917786688
+text_end=1785917792467
+endpoint=/infer/parsing model_instance_id=132724160991632
+active_inferences=1 max_active_inferences=1
+active_inferences=0
+endpoint=/infer/text model_instance_id=132724160991632
+active_inferences=1 max_active_inferences=1
+active_inferences=0
+endpoint=/infer/parsing model_instance_id=132724160991632
+active_inferences=1 max_active_inferences=1
+active_inferences=0
+endpoint=/infer/parsing model_instance_id=132724160991632
+active_inferences=1 max_active_inferences=1
+endpoint=/infer/text model_instance_id=132724160991632
+active_inferences=0
+active_inferences=1 max_active_inferences=1
+active_inferences=0

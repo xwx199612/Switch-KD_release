@@ -1,0 +1,96 @@
+asset_hard_checks=PASS
+student_model_id=Qwen/Qwen3-VL-8B-Instruct
+student_revision=0c351dd01ed87e9c1b53cbc748cba10e6187ff3b
+adapter_sha256=e43c568e23f3f19a313f6b1cc65e0d9d9c0bcbc17554d856bce1621657f85e99
+merged_artifact_mode=4bit_base_bf16_adapter
+modules_to_save=model.visual.merger
+offline_mode=PASS
+compiler_toolchain=PASS
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+[transformers] The `use_fast` parameter is deprecated and will be removed in a future version. Use `backend="torchvision"` instead of `use_fast=True`, or `backend="pil"` instead of `use_fast=False`.
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+Loading weights:   0%|          | 0/750 [00:00<?, ?it/s]Loading weights:   0%|          | 1/750 [00:00<02:36,  4.80it/s]Loading weights:   0%|          | 2/750 [00:00<02:18,  5.39it/s]Loading weights:   2%|▏         | 17/750 [00:00<00:14, 49.41it/s]Loading weights:   4%|▍         | 32/750 [00:00<00:17, 41.15it/s]Loading weights:   7%|▋         | 50/750 [00:01<00:10, 64.90it/s]Loading weights:   9%|▉         | 71/750 [00:01<00:07, 93.71it/s]Loading weights:  12%|█▏        | 92/750 [00:01<00:05, 118.51it/s]Loading weights:  15%|█▍        | 112/750 [00:01<00:04, 137.59it/s]Loading weights:  17%|█▋        | 129/750 [00:01<00:04, 143.00it/s]Loading weights:  20%|█▉        | 148/750 [00:01<00:03, 154.44it/s]Loading weights:  23%|██▎       | 169/750 [00:01<00:03, 166.31it/s]Loading weights:  25%|██▌       | 188/750 [00:01<00:03, 171.45it/s]Loading weights:  28%|██▊       | 207/750 [00:01<00:03, 172.98it/s]Loading weights:  30%|███       | 225/750 [00:01<00:03, 174.29it/s]Loading weights:  32%|███▏      | 243/750 [00:02<00:05, 94.29it/s] Loading weights:  35%|███▍      | 259/750 [00:02<00:04, 105.02it/s]Loading weights:  37%|███▋      | 280/750 [00:02<00:03, 125.53it/s]Loading weights:  40%|████      | 301/750 [00:02<00:03, 143.05it/s]Loading weights:  43%|████▎     | 320/750 [00:02<00:02, 153.76it/s]Loading weights:  45%|████▌     | 338/750 [00:02<00:02, 158.46it/s]Loading weights:  48%|████▊     | 357/750 [00:02<00:02, 165.79it/s]Loading weights:  50%|█████     | 378/750 [00:03<00:02, 176.52it/s]Loading weights:  53%|█████▎    | 397/750 [00:03<00:01, 179.49it/s]Loading weights:  73%|███████▎  | 545/750 [00:03<00:00, 548.07it/s]Loading weights:  89%|████████▉ | 669/750 [00:03<00:00, 392.93it/s]Loading weights: 100%|██████████| 750/750 [00:03<00:00, 198.83it/s]
+deployment_merger_norm_dtype_before_peft=torch.float32
+resolved_projector_wrapper_path=base_model.model.model.visual.merger
+resolved_projector_wrapper_type=<class 'peft.utils.other.ModulesToSaveWrapper'>
+active_projector_source=modules_to_save.default
+active_projector_type=<class 'transformers.models.qwen3_vl.modeling_qwen3_vl.Qwen3VLVisionPatchMerger'>
+deployment_active_merger_norm_dtype_after_peft=torch.bfloat16
+resolved_projector_wrapper_path=base_model.model.model.visual.merger
+resolved_projector_wrapper_type=<class 'peft.utils.other.ModulesToSaveWrapper'>
+active_projector_source=modules_to_save.default
+active_projector_type=<class 'transformers.models.qwen3_vl.modeling_qwen3_vl.Qwen3VLVisionPatchMerger'>
+resolved_projector_wrapper_path=base_model.model.model.visual.merger
+resolved_projector_wrapper_type=<class 'peft.utils.other.ModulesToSaveWrapper'>
+active_projector_source=modules_to_save.default
+active_projector_type=<class 'transformers.models.qwen3_vl.modeling_qwen3_vl.Qwen3VLVisionPatchMerger'>
+runtime LoRA parameter count: 504
+runtime LoRA parameter examples: ['base_model.model.model.language_model.layers.0.self_attn.k_proj.lora_A.default.weight', 'base_model.model.model.language_model.layers.0.self_attn.k_proj.lora_B.default.weight', 'base_model.model.model.language_model.layers.0.self_attn.o_proj.lora_A.default.weight', 'base_model.model.model.language_model.layers.0.self_attn.o_proj.lora_B.default.weight', 'base_model.model.model.language_model.layers.0.self_attn.q_proj.lora_A.default.weight', 'base_model.model.model.language_model.layers.0.self_attn.q_proj.lora_B.default.weight', 'base_model.model.model.language_model.layers.0.self_attn.v_proj.lora_A.default.weight', 'base_model.model.model.language_model.layers.0.self_attn.v_proj.lora_B.default.weight', 'base_model.model.model.language_model.layers.1.self_attn.k_proj.lora_A.default.weight', 'base_model.model.model.language_model.layers.1.self_attn.k_proj.lora_B.default.weight', 'base_model.model.model.language_model.layers.1.self_attn.o_proj.lora_A.default.weight', 'base_model.model.model.language_model.layers.1.self_attn.o_proj.lora_B.default.weight', 'base_model.model.model.language_model.layers.1.self_attn.q_proj.lora_A.default.weight', 'base_model.model.model.language_model.layers.1.self_attn.q_proj.lora_B.default.weight', 'base_model.model.model.language_model.layers.1.self_attn.v_proj.lora_A.default.weight', 'base_model.model.model.language_model.layers.1.self_attn.v_proj.lora_B.default.weight', 'base_model.model.model.language_model.layers.10.self_attn.k_proj.lora_A.default.weight', 'base_model.model.model.language_model.layers.10.self_attn.k_proj.lora_B.default.weight', 'base_model.model.model.language_model.layers.10.self_attn.o_proj.lora_A.default.weight', 'base_model.model.model.language_model.layers.10.self_attn.o_proj.lora_B.default.weight']
+detected attention modules: 144
+detected MLP modules: 108
+detected A/B tensor counts: attention=288 MLP=216
+unmatched LoRA parameter names: []
+resolved_projector_wrapper_path=base_model.model.model.visual.merger
+resolved_projector_wrapper_type=<class 'peft.utils.other.ModulesToSaveWrapper'>
+active_projector_source=modules_to_save.default
+active_projector_type=<class 'transformers.models.qwen3_vl.modeling_qwen3_vl.Qwen3VLVisionPatchMerger'>
+language_model Linear4bit count: 252
+main merger BF16 linear count: 2
+attention LoRA tensor count: 288
+MLP LoRA tensor count: 216
+projector LoRA tensor count: 0
+modules_to_save tensor count: 12
+projector_mode=modules_to_save
+Attention LoRA dtype summary: ['torch.float32']
+MLP LoRA dtype summary: ['torch.float32']
+Modules-to-save projector dtype summary: ['torch.bfloat16']
+Projector LoRA dtype summary: []
+deployment_merger_norm_dtype_after_peft=torch.bfloat16
+prediction_model_source=4bit_base_bf16_adapter
+experiment_mode=attention_mlp_lora_full_projector
+adapter_merged=false
+language_model_quantization=4bit_nf4
+main_merger_dtype=bfloat16
+attention_lora_active=True
+mlp_lora_active=True
+modules_to_save_projector_active=True
+High-fidelity quantized adapter deployment loaded; adapter_merged=false
+model_instance_id=132724160991632
+processor_instance_id=132724336263760
+model_load_count=1
+supported_output_modes=parsing,text
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:37090 - "GET /ready HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37094 - "GET /ready HTTP/1.1" 200 OK
+endpoint=/infer/parsing model_instance_id=132724160991632
+active_inferences=1 max_active_inferences=1
+active_inferences=0
+INFO:     127.0.0.1:37110 - "POST /infer/parsing HTTP/1.1" 200 OK
+endpoint=/infer/text model_instance_id=132724160991632
+active_inferences=1 max_active_inferences=1
+active_inferences=0
+INFO:     127.0.0.1:47878 - "POST /infer/text HTTP/1.1" 200 OK
+endpoint=/infer/parsing model_instance_id=132724160991632
+active_inferences=1 max_active_inferences=1
+active_inferences=0
+INFO:     127.0.0.1:47884 - "POST /infer HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37896 - "POST /infer/parsing HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:37906 - "POST /infer/parsing HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:37914 - "POST /infer/parsing HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:37920 - "POST /infer/parsing HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:37932 - "POST /infer/parsing HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:37946 - "POST /infer/text HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:37954 - "POST /infer/text HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:37966 - "POST /infer/text HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:37976 - "POST /infer/text HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:37984 - "POST /infer/text HTTP/1.1" 422 Unprocessable Entity
+endpoint=/infer/parsing model_instance_id=132724160991632
+active_inferences=1 max_active_inferences=1
+endpoint=/infer/text model_instance_id=132724160991632
+active_inferences=0
+INFO:     127.0.0.1:39266 - "POST /infer/parsing HTTP/1.1" 200 OK
+active_inferences=1 max_active_inferences=1
+active_inferences=0
+INFO:     127.0.0.1:39272 - "POST /infer/text HTTP/1.1" 200 OK

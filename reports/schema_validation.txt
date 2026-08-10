@@ -1,0 +1,7 @@
+model_load_count=1
+shared_model_instance=PASS
+parsing_schema=PASS
+text_non_empty=PASS
+legacy_parsing_alias=PASS
+transition_schema=PASS
+transition_multi_image=PASS

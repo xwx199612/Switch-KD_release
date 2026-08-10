@@ -1,0 +1,6 @@
+Package boundary validation: PASS
+Student and adapter remain in package and are mounted read-only at runtime.
+Dockerfile contains no COPY models and no COPY .
+.dockerignore excludes models/ and weight extensions.
+Observed Docker build context: 252.78kB.
+Corrected image contains no *.safetensors, model-*.bin, or adapter_model.safetensors.

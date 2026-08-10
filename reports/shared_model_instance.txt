@@ -1,0 +1,26 @@
+Dual-endpoint shared model verification
+model_load_count=1 (from /ready and smoke test)
+model_instance_ids=132724160991632,132724160991632,132724160991632,132724160991632
+shared_model_instance=PASS
+model_load_count=1
+
+startup/request log evidence:
+model_instance_id=132724160991632
+processor_instance_id=132724336263760
+model_load_count=1
+supported_output_modes=parsing,text
+endpoint=/infer/parsing model_instance_id=132724160991632
+active_inferences=1 max_active_inferences=1
+active_inferences=0
+endpoint=/infer/text model_instance_id=132724160991632
+active_inferences=1 max_active_inferences=1
+active_inferences=0
+endpoint=/infer/parsing model_instance_id=132724160991632
+active_inferences=1 max_active_inferences=1
+active_inferences=0
+endpoint=/infer/parsing model_instance_id=132724160991632
+active_inferences=1 max_active_inferences=1
+endpoint=/infer/text model_instance_id=132724160991632
+active_inferences=0
+active_inferences=1 max_active_inferences=1
+active_inferences=0
