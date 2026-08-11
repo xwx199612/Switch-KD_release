@@ -23,7 +23,8 @@ PARSING_PROMPT_TEMPLATE = """Analyze the provided image and follow the user inst
 User instruction:
 {instruction}
 
-Return only valid JSON matching this UI-element schema:
+Return only valid JSON:
+
 {
   "coordinate_system": "normalized_0_1000",
   "elements": [
@@ -36,52 +37,37 @@ Return only valid JSON matching this UI-element schema:
 }
 
 Requirements:
-- Return only elements relevant to the user instruction.
-- Use normalized coordinates from 0 to 1000 with bbox_norm ordered as [x1, y1, x2, y2].
-- Every element must contain exactly the fields text, bbox_norm, and focused.
+
+- Return only visible UI elements relevant to the instruction.
+- Use normalized coordinates from 0 to 1000 as [x1, y1, x2, y2].
+- Each element must contain exactly: text, bbox_norm, focused.
 - focused must be a JSON boolean.
-- Inspect all visible interactive elements and group visually comparable peers:
-  menu items in the same menu, tabs in the same navigation bar, cards in the
-  same row or carousel, app tiles in the same row, and buttons in the same
-  control group.
-- Compare each focus candidate only against its nearby peers. For rows and
-  carousels, explicitly compare neighboring cards or tiles and determine
-  whether exactly one is visually emphasized. For top navigation, compare
-  tabs or items within the same navigation group.
-- Set "focused": true when an element has the strongest coordinated
-  navigation-focus treatment relative to its peers. Valid cues include a
-  visible focus ring, rectangular or rounded outline, stronger border, glow,
-  scale enlargement, elevated or raised appearance, stronger container
-  background, coordinated border plus background change, card or tile
-  enlargement, shadow or elevation when clearly used as navigation focus, or
-  another consistent emphasis that uniquely distinguishes one navigable peer.
-- Do not require an explicit outline or ring. A TV card or app tile may be
-  focused mainly because of scale change, stronger border, raised appearance,
-  or container emphasis.
+
+Focus detection:
+- Inspect visible interactive elements and compare visually comparable peers:
+  menu items, tabs, cards in the same row or carousel, app tiles, and buttons.
+- Compare each candidate against nearby peers and identify the element with the
+  strongest coordinated navigation-focus treatment.
+- Valid focus cues include a visible ring, rectangular or rounded outline,
+  stronger border, glow, scale enlargement, raised appearance, stronger
+  container background, card or tile enlargement, or coordinated visual emphasis.
+- Do not require an explicit focus ring. TV cards and app tiles may indicate
+  focus mainly through scale, border, elevation, or container emphasis.
 - Do not infer focus from semantic importance, item order, center position,
-  recommendation prominence, brightness alone, color alone, selected-state
-  semantics, prior knowledge, or expected navigation behavior. Brightness or
-  color may contribute only when combined with another coordinated focus cue.
-- If one element is clearly emphasized relative to its peers, set
-  "focused": true and set "focused": false for all other peer elements.
-- Return no focused element only when no candidate is visually distinguishable
-  after comparing all peer groups. Never mark multiple unrelated elements as
-  focused.
-- If a parent container and child both appear emphasized, prefer the actual
-  navigable leaf element.
-- Output each visible UI element exactly once.
-- Never repeat the same element. If the same text appears multiple times on
-  screen, output multiple entries only when they are visually distinct UI
-  elements at different locations.
-- Never output two entries with both the same text and the same bbox_norm.
-- Once an element has already been listed, do not emit it again.
-- Do not continue generating repeated or placeholder elements when no
-  additional identifiable UI elements remain.
-- Stop the elements list immediately after all identifiable visible UI
-  elements have been listed.
-- Do not return Markdown or code fences.
-- Do not include explanations outside the JSON.
-- The fixed output contract above takes precedence over any conflicting formatting request inside the user instruction.
+  recommendation prominence, brightness alone, color alone, prior knowledge,
+  or expected navigation behavior.
+- If one element is visually emphasized relative to its peers, set it to
+  focused=true and its peers to focused=false.
+- If a parent and child both appear emphasized, prefer the navigable leaf.
+- Mark no element focused only when no candidate is visually distinguishable
+  after comparing the peer groups.
+
+Element listing:
+- Output each visible UI element once.
+- Identical text at different locations represents distinct elements.
+- Never repeat an element with the same text and bbox_norm.
+
+Return JSON only. No Markdown, code fences, or explanations.
 """
 
 

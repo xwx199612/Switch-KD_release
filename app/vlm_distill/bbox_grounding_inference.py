@@ -163,7 +163,13 @@ class BBoxGroundingInferenceEngine:
         model.eval()
         return cls(model, processor, model_path=str(model_path), debug_inference_parity=debug_inference_parity)
 
-    def generate_raw(self, image: Image.Image | list[Image.Image], prompt: str, max_new_tokens: int) -> str:
+    def generate_raw(
+        self,
+        image: Image.Image | list[Image.Image],
+        prompt: str,
+        max_new_tokens: int,
+        stopping_criteria=None,
+    ) -> str:
         messages = build_qwen_messages(image, prompt)
         chat_text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True) \
             if hasattr(self.processor, "apply_chat_template") else prompt
@@ -183,6 +189,14 @@ class BBoxGroundingInferenceEngine:
             inputs = self.processor(images=kwargs["images"], text=kwargs["text"], return_tensors="pt")
         inputs = _move_inputs_to_device(inputs, _select_input_device(self.model))
         generation_kwargs = {"do_sample": False, "max_new_tokens": max_new_tokens}
+        if stopping_criteria is not None:
+            from transformers import StoppingCriteriaList
+
+            input_ids = inputs.get("input_ids")
+            if input_ids is None:
+                raise RuntimeError("repetition stopping requires input_ids")
+            stopping_criteria.prompt_length = input_ids.shape[1]
+            generation_kwargs["stopping_criteria"] = StoppingCriteriaList([stopping_criteria])
         output_ids = self.model.generate(**inputs, **generation_kwargs)
         input_ids = inputs.get("input_ids")
         generated_ids = output_ids[:, input_ids.shape[1]:] if input_ids is not None else output_ids

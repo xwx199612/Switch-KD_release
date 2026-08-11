@@ -5,7 +5,7 @@
 #1 DONE 0.0s
 
 #2 [internal] load metadata for docker.io/nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
-#2 DONE 1.1s
+#2 DONE 0.9s
 
 #3 [internal] load .dockerignore
 #3 transferring context: 151B done
@@ -15,7 +15,7 @@
 #4 DONE 0.0s
 
 #5 [internal] load build context
-#5 transferring context: 9.51kB done
+#5 transferring context: 8.74kB done
 #5 DONE 0.0s
 
 #6 [ 3/10] WORKDIR /app
@@ -43,11 +43,11 @@
 #13 DONE 0.0s
 
 #14 [10/10] RUN useradd --create-home --uid 10001 runtime     && mkdir -p /output/cache/huggingface /output/cache/triton /output/cache/torch     && chown -R runtime:runtime /output /app /config /usr/local/bin/entrypoint.sh     && python3.11 -m compileall -q /app/vlm_distill
-#14 DONE 0.4s
+#14 DONE 0.3s
 
 #15 exporting to image
 #15 exporting layers 0.1s done
-#15 writing image sha256:8ea71a4013e8ffdd1f1c5bb7f142658758613dbd3fb837f34c151722c7b01beb done
+#15 writing image sha256:6e9c78d6804f2ab91fc95f7c5257ef3e85d44ebb6c616a2268b60f4c7dd589a1 done
 #15 naming to docker.io/library/vlm-online-dbild-runtime:1.2.0 done
 #15 DONE 0.1s
 image=vlm-online-dbild-runtime:1.2.0

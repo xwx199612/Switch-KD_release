@@ -25,6 +25,7 @@ from .config_schema import load_config
 from .data_manifest import VlmSample
 from .output_processors import ParsingOutputProcessor, TransitionOutputProcessor
 from .parsing_output_parser import COORDINATE_SYSTEM_NORMALIZED_0_1000
+from .parsing_generation_stopper import RepeatedTokenBlockStoppingCriteria
 from .prompt_composer import TRANSITION_PROMPT_TEMPLATE, compose_prompt, compose_transition_prompt
 from .runtime_validation import summarize_model_precision, validate_loaded_precision
 from .stage_teacher_precompute import _load_teacher_image
@@ -389,13 +390,21 @@ def _infer_parsing_sync(
         handle.flush()
         image = _load_teacher_image(Path(handle.name), context.config.training.image_resize)
     prompt = compose_prompt(instruction, output_mode="parsing")
-    raw_output = context.engine.generate_raw(image, prompt, 2048)
+    repetition_stopper = RepeatedTokenBlockStoppingCriteria()
+    raw_output = context.engine.generate_raw(
+        image,
+        prompt,
+        2048,
+        stopping_criteria=repetition_stopper,
+    )
     debug = dict(context.engine.last_debug)
     debug.update({
         "mode": "parsing",
         "model_instance_id": context.model_instance_id,
         "processor_instance_id": context.processor_instance_id,
         "generation_kwargs": {"do_sample": False, "max_new_tokens": 2048},
+        "repetition_stop_triggered": repetition_stopper.triggered,
+        "repetition_block_length": repetition_stopper.block_length,
     })
     parsed = ParsingOutputProcessor().process(
         sample=VlmSample(id="request", image="", query=instruction),
