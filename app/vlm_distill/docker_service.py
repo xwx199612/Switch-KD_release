@@ -30,6 +30,7 @@ from .runtime_validation import summarize_model_precision, validate_loaded_preci
 from .stage_teacher_precompute import _load_teacher_image
 from .state_fingerprint import SAME_STATE_THRESHOLD
 from .state_registry import StateRegistry
+from .state_tracker import StateObservationError, StateTracker, build_state_observation
 
 DEFAULT_QUERY = "List all visible interactive UI elements on this screen."
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -160,6 +161,7 @@ def _runtime_load() -> tuple[Any, BBoxGroundingInferenceEngine, dict[str, Any]]:
 async def lifespan(app: FastAPI):
     app.state.runtime_context = None
     app.state.transition_inferencer = None
+    app.state.state_observer = None
     config, engine, summary = _runtime_load()
     context = RuntimeContext(
         config=config,
@@ -175,6 +177,7 @@ async def lifespan(app: FastAPI):
     )
     app.state.runtime_context = context
     app.state.transition_inferencer = create_transition_inferencer(context)
+    app.state.state_observer = create_state_observer(context)
     print(f"model_instance_id={context.model_instance_id}", flush=True)
     print(f"processor_instance_id={context.processor_instance_id}", flush=True)
     print("model_load_count=1", flush=True)
@@ -182,6 +185,7 @@ async def lifespan(app: FastAPI):
     yield
     context.ready = False
     app.state.transition_inferencer = None
+    app.state.state_observer = None
     app.state.runtime_context = None
 
 
@@ -207,6 +211,21 @@ def create_state_registry(threshold: float = SAME_STATE_THRESHOLD) -> StateRegis
     return StateRegistry(
         threshold=threshold,
         transition_inferencer=_transition_inferencer(),
+    )
+
+
+def _state_observer():
+    observer = getattr(app.state, "state_observer", None)
+    if observer is None:
+        raise HTTPException(status_code=503, detail="State observer is not ready")
+    return observer
+
+
+def create_state_tracker(threshold: float = SAME_STATE_THRESHOLD) -> StateTracker:
+    """Create a session-local tracker with a fresh registry."""
+    return StateTracker(
+        registry=StateRegistry(threshold=threshold),
+        observer=_state_observer(),
     )
 
 
@@ -331,6 +350,9 @@ async def _parse_transition_request(request: Request) -> tuple[RuntimeContext, I
 
 
 def _infer_sync(context: RuntimeContext, image_bytes: bytes, instruction: str, mode: Mode) -> dict[str, Any]:
+    if mode == "parsing":
+        return _infer_parsing_sync(context, image_bytes, instruction)
+
     with tempfile.NamedTemporaryFile(suffix=".image") as handle:
         handle.write(image_bytes)
         handle.flush()
@@ -351,9 +373,32 @@ def _infer_sync(context: RuntimeContext, image_bytes: bytes, instruction: str, m
             "usable": bool(raw_output),
             "inference_debug": debug,
         }
-    sample = VlmSample(id="request", image="", query=instruction)
+    raise AssertionError(f"unsupported non-parsing mode: {mode!r}")
+
+
+def _infer_parsing_sync(
+    context: RuntimeContext,
+    image_bytes: bytes,
+    instruction: str = DEFAULT_QUERY,
+) -> dict[str, Any]:
+    """Run the existing single-image parsing inference core."""
+    with tempfile.NamedTemporaryFile(suffix=".image") as handle:
+        handle.write(image_bytes)
+        handle.flush()
+        image = _load_teacher_image(Path(handle.name), context.config.training.image_resize)
+    prompt = compose_prompt(instruction, output_mode="parsing")
+    raw_output = context.engine.generate_raw(image, prompt, 2048)
+    debug = dict(context.engine.last_debug)
+    debug.update({
+        "mode": "parsing",
+        "model_instance_id": context.model_instance_id,
+        "processor_instance_id": context.processor_instance_id,
+        "generation_kwargs": {"do_sample": False, "max_new_tokens": 2048},
+    })
     parsed = ParsingOutputProcessor().process(
-        sample=sample, raw_output=raw_output, backend_result={}
+        sample=VlmSample(id="request", image="", query=instruction),
+        raw_output=raw_output,
+        backend_result={},
     )
     return {
         "raw_output": raw_output,
@@ -405,6 +450,24 @@ def create_transition_inferencer(
         )
 
     return infer_transition
+
+
+def create_state_observer(context: RuntimeContext):
+    """Bind single-image parsing observation to the shared runtime guard."""
+    def observe(image: bytes) -> dict[str, Any]:
+        parsing_result = _run_guarded_inference(
+            context,
+            _infer_parsing_sync,
+            image,
+            DEFAULT_QUERY,
+        )
+        if not parsing_result.get("usable"):
+            detail = parsing_result.get("parse_error")
+            suffix = f": {detail}" if detail else ""
+            raise StateObservationError(f"Parsing inference unusable{suffix}")
+        return build_state_observation(parsing_result.get("elements", []))
+
+    return observe
 
 
 def _run_guarded_inference(context: RuntimeContext, inference, *args):
@@ -526,3 +589,30 @@ async def infer_transition(request: Request) -> dict[str, Any]:
 @app.post("/infer")
 async def infer_legacy(request: Request) -> dict[str, Any]:
     return await _infer_endpoint(request, "parsing")
+    
+    
+@app.post("/debug/state-registry/resolve")
+async def debug_state_registry_resolve(request: Request) -> dict[str, Any]:
+    _, _, before_bytes, after_bytes = await _parse_transition_request(request)
+
+    registry = create_state_registry()
+
+    result = await asyncio.to_thread(
+        registry.resolve_images,
+        before_bytes,
+        after_bytes,
+    )
+
+    return {
+        "before": {
+            "state_id": result.before.state_id,
+            "is_new": result.before.is_new,
+            "score": result.before.score,
+        },
+        "after": {
+            "state_id": result.after.state_id,
+            "is_new": result.after.is_new,
+            "score": result.after.score,
+        },
+        "registry_size": len(registry),
+    }

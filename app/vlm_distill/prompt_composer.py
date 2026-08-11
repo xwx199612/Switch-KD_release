@@ -58,31 +58,42 @@ For each image, return:
 
 1. `elements`
 
-   * List all clearly visible and semantically meaningful UI elements.
-   * Include interactive or state-relevant elements such as menu items, buttons, icons, toggles, tabs, selectable items, text labels, and other identifiable UI objects.
-   * Include elements regardless of whether they are focused.
-   * Do not include decorative backgrounds, borders, separators, shadows, glare, reflections, or other non-semantic visual details.
-   * Use short and consistent names.
-   * Do not invent elements that are not clearly visible.
+   - List all clearly visible and semantically meaningful UI elements.
+   - Include interactive or state-relevant elements such as menu items, buttons, icons, toggles, tabs, selectable items, text labels, and other identifiable UI objects.
+   - Include elements regardless of whether they are focused.
+   - Do not include decorative backgrounds, borders, separators, shadows, glare, reflections, or other non-semantic visual details.
+   - Use short and consistent names.
+   - Do not invent elements that are not clearly visible.
 
 2. `focus_path`
 
-   * Identify the currently focused UI element and its visible hierarchical context.
-   * Represent the focus hierarchy from parent to child.
-   * Example: `["Settings", "Network", "Wi-Fi"]`.
-   * If both a parent container and one of its child elements appear focused, include both in hierarchical order.
-   * Do not infer hierarchy from expected navigation behavior or prior knowledge; use only visible evidence from the image.
-   * If no focused element can be determined reliably, return an empty list `[]`.
+   - Determine the focused UI element using the same procedure for each image independently.
+   - Inspect all visible interactive elements and compare each candidate with its nearby peer elements.
+   - Identify the element that has the strongest visible navigation-focus treatment relative to its peers.
+   - Navigation-focus cues include a visible focus ring, outline, glow, border emphasis, scale change, background/container highlight, or another coordinated visual treatment that distinguishes one navigable element from neighboring elements.
+   - Do not require an explicit outline or focus ring if another clear relative focus treatment distinguishes the element from its peers.
+   - Do not infer focus from semantic importance, expected navigation behavior, prior knowledge, or layout position.
+   - Brightness or color alone is not sufficient unless it forms part of a clear coordinated focus treatment relative to neighboring peer elements.
+   - First determine the focused leaf element.
+   - The final item in `focus_path` must be that visually focused leaf element.
+   - Represent the focused element and only its directly visible hierarchical context from parent to child.
+   - Include a parent element only when the parent-child relationship is directly supported by visible UI structure.
+   - A section title, heading, nearby label, or container name must not automatically be treated as a parent.
+   - Do not invent hierarchy merely because an element is visually located below, beside, or inside a labeled section.
+   - If only the leaf element can be determined, return only that element, for example: `["Home"]` or `["Sci-fi"]`.
+   - Return an empty list `[]` only when no visible interactive element can be distinguished from its peers as focused after explicitly comparing all reasonable candidates.
 
 Important rules:
 
-* Analyze BEFORE and AFTER independently.
-* Do not use or infer any user action.
-* Do not assume any predefined menu hierarchy or expected state transition.
-* Do not decide whether the transition is correct.
-* Do not provide a state name, title, explanation, confidence score, transition description, appeared/disappeared elements, or any fields other than those defined below.
-* Keep equivalent element names consistent between BEFORE and AFTER whenever the visual evidence supports it.
-* Output valid JSON only.
+- Analyze BEFORE and AFTER independently.
+- Determine the focused element in each image independently.
+- Do not use the focus result from one image to infer the focus result in the other image.
+- Do not use or infer any user action.
+- Do not assume any predefined menu hierarchy or expected state transition.
+- Do not decide whether the transition is correct.
+- Do not provide a state name, title, explanation, confidence score, transition description, appeared/disappeared elements, or any fields other than those defined below.
+- Keep equivalent element names consistent between BEFORE and AFTER whenever the visual evidence supports it.
+- Output valid JSON only.
 
 Required output schema:
 
