@@ -28,6 +28,8 @@ from .parsing_output_parser import COORDINATE_SYSTEM_NORMALIZED_0_1000
 from .prompt_composer import TRANSITION_PROMPT_TEMPLATE, compose_prompt, compose_transition_prompt
 from .runtime_validation import summarize_model_precision, validate_loaded_precision
 from .stage_teacher_precompute import _load_teacher_image
+from .state_fingerprint import SAME_STATE_THRESHOLD
+from .state_registry import StateRegistry
 
 DEFAULT_QUERY = "List all visible interactive UI elements on this screen."
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -53,7 +55,7 @@ class RuntimeContext:
     engine: BBoxGroundingInferenceEngine
     model: Any
     processor: Any
-    semaphore: asyncio.Semaphore
+    semaphore: threading.BoundedSemaphore
     model_instance_id: str
     processor_instance_id: str
     model_load_count: int
@@ -62,6 +64,10 @@ class RuntimeContext:
     active_inferences: int = 0
     max_active_inferences: int = 0
     active_lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+class InferenceQueueTimeout(RuntimeError):
+    """Raised when the shared inference queue cannot be acquired in time."""
 
 
 def _hard_runtime_checks(config_path: Path) -> dict[str, Any]:
@@ -153,13 +159,14 @@ def _runtime_load() -> tuple[Any, BBoxGroundingInferenceEngine, dict[str, Any]]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.runtime_context = None
+    app.state.transition_inferencer = None
     config, engine, summary = _runtime_load()
     context = RuntimeContext(
         config=config,
         engine=engine,
         model=engine.model,
         processor=engine.processor,
-        semaphore=asyncio.Semaphore(1),
+        semaphore=threading.BoundedSemaphore(1),
         model_instance_id=str(id(engine.model)),
         processor_instance_id=str(id(engine.processor)),
         model_load_count=1,
@@ -167,12 +174,14 @@ async def lifespan(app: FastAPI):
         summary=summary,
     )
     app.state.runtime_context = context
+    app.state.transition_inferencer = create_transition_inferencer(context)
     print(f"model_instance_id={context.model_instance_id}", flush=True)
     print(f"processor_instance_id={context.processor_instance_id}", flush=True)
     print("model_load_count=1", flush=True)
     print("supported_output_modes=parsing,text,transition", flush=True)
     yield
     context.ready = False
+    app.state.transition_inferencer = None
     app.state.runtime_context = None
 
 
@@ -184,6 +193,21 @@ def _context() -> RuntimeContext:
     if context is None or not context.ready:
         raise HTTPException(status_code=503, detail="Model is not ready")
     return context
+
+
+def _transition_inferencer():
+    inferencer = getattr(app.state, "transition_inferencer", None)
+    if inferencer is None:
+        raise HTTPException(status_code=503, detail="Transition inferencer is not ready")
+    return inferencer
+
+
+def create_state_registry(threshold: float = SAME_STATE_THRESHOLD) -> StateRegistry:
+    """Create a session-local registry using the shared runtime inferencer."""
+    return StateRegistry(
+        threshold=threshold,
+        transition_inferencer=_transition_inferencer(),
+    )
 
 
 @app.get("/health")
@@ -372,9 +396,39 @@ def create_transition_inferencer(
     normalized_instruction = instruction.strip() if instruction is not None else None
 
     def infer_transition(before_image: bytes, after_image: bytes) -> dict[str, Any]:
-        return _infer_transition_sync(context, before_image, after_image, normalized_instruction)
+        return _run_guarded_inference(
+            context,
+            _infer_transition_sync,
+            before_image,
+            after_image,
+            normalized_instruction,
+        )
 
     return infer_transition
+
+
+def _run_guarded_inference(context: RuntimeContext, inference, *args):
+    _acquire_inference_slot(context)
+    return _execute_guarded_inference(context, inference, *args)
+
+
+def _acquire_inference_slot(context: RuntimeContext) -> None:
+    if not context.semaphore.acquire(timeout=QUEUE_TIMEOUT_SECONDS):
+        raise InferenceQueueTimeout("Inference queue timeout")
+
+
+def _execute_guarded_inference(context: RuntimeContext, inference, *args):
+    try:
+        with context.active_lock:
+            context.active_inferences += 1
+            context.max_active_inferences = max(context.max_active_inferences, context.active_inferences)
+            print(f"active_inferences={context.active_inferences} max_active_inferences={context.max_active_inferences}", flush=True)
+        return inference(context, *args)
+    finally:
+        with context.active_lock:
+            context.active_inferences -= 1
+            print(f"active_inferences={context.active_inferences}", flush=True)
+        context.semaphore.release()
 
 
 async def _infer_endpoint(request: Request, mode: Mode) -> dict[str, Any]:
@@ -384,27 +438,16 @@ async def _infer_endpoint(request: Request, mode: Mode) -> dict[str, Any]:
     started = time.perf_counter()
     print(f"endpoint=/infer/{mode} model_instance_id={context.model_instance_id}", flush=True)
     try:
-        await asyncio.wait_for(context.semaphore.acquire(), timeout=QUEUE_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError as exc:
-        raise HTTPException(status_code=503, detail="Inference queue timeout") from exc
-    try:
-        with context.active_lock:
-            context.active_inferences += 1
-            context.max_active_inferences = max(context.max_active_inferences, context.active_inferences)
-            print(f"active_inferences={context.active_inferences} max_active_inferences={context.max_active_inferences}", flush=True)
         result = await asyncio.wait_for(
-            asyncio.to_thread(_infer_sync, context, content, instruction, mode),
-            timeout=INFERENCE_TIMEOUT_SECONDS,
+            asyncio.to_thread(_run_guarded_inference, context, _infer_sync, content, instruction, mode),
+            timeout=QUEUE_TIMEOUT_SECONDS + INFERENCE_TIMEOUT_SECONDS,
         )
+    except InferenceQueueTimeout as exc:
+        raise HTTPException(status_code=503, detail="Inference queue timeout") from exc
     except asyncio.TimeoutError as exc:
         raise HTTPException(status_code=504, detail="Inference timeout") from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Inference failed: {exc}") from exc
-    finally:
-        with context.active_lock:
-            context.active_inferences -= 1
-            print(f"active_inferences={context.active_inferences}", flush=True)
-        context.semaphore.release()
     result.update({
         "id": fields.request_id or "request-id",
         "query": instruction,
@@ -419,23 +462,16 @@ async def _infer_transition_endpoint(request: Request) -> dict[str, Any]:
     instruction = (instruction or "Describe the UI state transition from the before image to the after image.").strip()
     started = time.perf_counter()
     try:
-        await asyncio.wait_for(context.semaphore.acquire(), timeout=QUEUE_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError as exc:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(_run_guarded_inference, context, _infer_transition_sync, before, after, instruction),
+            timeout=QUEUE_TIMEOUT_SECONDS + INFERENCE_TIMEOUT_SECONDS,
+        )
+    except InferenceQueueTimeout as exc:
         raise HTTPException(status_code=503, detail="Inference queue timeout") from exc
-    try:
-        with context.active_lock:
-            context.active_inferences += 1
-            context.max_active_inferences = max(context.max_active_inferences, context.active_inferences)
-        result = await asyncio.wait_for(asyncio.to_thread(_infer_transition_sync, context, before, after, instruction),
-                                        timeout=INFERENCE_TIMEOUT_SECONDS)
     except asyncio.TimeoutError as exc:
         raise HTTPException(status_code=504, detail="Inference timeout") from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Inference failed: {exc}") from exc
-    finally:
-        with context.active_lock:
-            context.active_inferences -= 1
-        context.semaphore.release()
     result.update({"id": fields.request_id or "request-id", "query": instruction,
                    "mode": "transition", "elapsed_seconds": round(time.perf_counter() - started, 3)})
     return result

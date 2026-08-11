@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import threading
 from asyncio import run
 from io import BytesIO
+from types import SimpleNamespace
 
 import pytest
 from starlette.datastructures import FormData
@@ -157,7 +159,12 @@ def test_registry_transition_inferencer_does_not_inject_legacy_instruction_by_de
         return {}
 
     monkeypatch.setattr(service, "_infer_transition_sync", fake_infer)
-    context = object()
+    context = SimpleNamespace(
+        semaphore=threading.BoundedSemaphore(1),
+        active_inferences=0,
+        max_active_inferences=0,
+        active_lock=threading.Lock(),
+    )
     inferencer = create_transition_inferencer(context)
 
     inferencer(b"before", b"after")
@@ -175,7 +182,13 @@ def test_registry_transition_inferencer_preserves_explicit_instruction(monkeypat
         return {}
 
     monkeypatch.setattr(service, "_infer_transition_sync", fake_infer)
-    inferencer = create_transition_inferencer(object(), instruction="custom instruction")
+    context = SimpleNamespace(
+        semaphore=threading.BoundedSemaphore(1),
+        active_inferences=0,
+        max_active_inferences=0,
+        active_lock=threading.Lock(),
+    )
+    inferencer = create_transition_inferencer(context, instruction="custom instruction")
 
     inferencer(b"before", b"after")
 
