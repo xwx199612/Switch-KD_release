@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 from typing import Any, Protocol
 
 from .data_manifest import VlmSample
@@ -57,9 +58,38 @@ class ParsingOutputProcessor:
             "raw_model_output": raw_output,
             **parse_parsing_answer(raw_output),
         }
+        result["elements"] = _deduplicate_parsing_elements(result.get("elements", []))
+        result["element_count"] = len(result["elements"])
+        result["usable"] = bool(result["elements"])
         if backend_result.get("inference_debug"):
             result["inference_debug"] = backend_result["inference_debug"]
         return result
+
+
+def _deduplicate_parsing_elements(elements: Any) -> list[dict[str, Any]]:
+    """Keep the first parsing element for each normalized text/bbox pair."""
+    if not isinstance(elements, list):
+        return []
+
+    seen: set[tuple[str, tuple[Any, ...]]] = set()
+    deduplicated: list[dict[str, Any]] = []
+    for element in elements:
+        if not isinstance(element, dict):
+            continue
+        text = element.get("text")
+        bbox = element.get("bbox_norm")
+        if not isinstance(text, str) or not isinstance(bbox, list):
+            deduplicated.append(element)
+            continue
+        normalized_text = " ".join(
+            unicodedata.normalize("NFKC", text).strip().casefold().split()
+        )
+        duplicate_key = (normalized_text, tuple(bbox))
+        if duplicate_key in seen:
+            continue
+        seen.add(duplicate_key)
+        deduplicated.append(element)
+    return deduplicated
 
 
 class TransitionOutputProcessor:
