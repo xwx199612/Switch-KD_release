@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
 from asyncio import run
 from types import SimpleNamespace
 
@@ -73,3 +76,47 @@ def test_transition_inferencer_accessor_returns_consistent_503_when_unready():
 
     assert raised.value.status_code == 503
     assert raised.value.detail == "Transition inferencer is not ready"
+
+
+def _guard_context():
+    return SimpleNamespace(
+        semaphore=threading.BoundedSemaphore(1),
+        active_inferences=0,
+        max_active_inferences=0,
+        active_lock=threading.Lock(),
+    )
+
+
+def test_async_guard_has_separate_queue_timeout(monkeypatch):
+    monkeypatch.setattr(service, "QUEUE_TIMEOUT_SECONDS", 0.01)
+    context = _guard_context()
+    assert context.semaphore.acquire(blocking=False)
+
+    async def exercise():
+        with pytest.raises(service.InferenceQueueTimeout):
+            await service._run_guarded_inference_async(context, lambda context: None)
+
+    run(exercise())
+    context.semaphore.release()
+
+
+def test_async_inference_timeout_keeps_semaphore_until_worker_finishes(monkeypatch):
+    monkeypatch.setattr(service, "INFERENCE_TIMEOUT_SECONDS", 0.01)
+    context = _guard_context()
+
+    def slow_inference(context):
+        time.sleep(0.05)
+        return {"ok": True}
+
+    async def exercise():
+        with pytest.raises(asyncio.TimeoutError):
+            await service._run_guarded_inference_async(context, slow_inference)
+
+        assert context.active_inferences == 1
+        assert context.semaphore.acquire(blocking=False) is False
+        await asyncio.sleep(0.06)
+        assert context.active_inferences == 0
+        assert context.semaphore.acquire(blocking=False) is True
+        context.semaphore.release()
+
+    run(exercise())

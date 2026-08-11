@@ -431,6 +431,37 @@ def _execute_guarded_inference(context: RuntimeContext, inference, *args):
         context.semaphore.release()
 
 
+async def _acquire_inference_slot_async(context: RuntimeContext) -> None:
+    deadline = asyncio.get_running_loop().time() + QUEUE_TIMEOUT_SECONDS
+    while True:
+        if context.semaphore.acquire(blocking=False):
+            return
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise InferenceQueueTimeout("Inference queue timeout")
+        await asyncio.sleep(min(0.01, remaining))
+
+
+def _consume_worker_result(worker: asyncio.Future) -> None:
+    if not worker.cancelled():
+        worker.exception()
+
+
+async def _run_guarded_inference_async(context: RuntimeContext, inference, *args):
+    await _acquire_inference_slot_async(context)
+    worker = asyncio.ensure_future(
+        asyncio.to_thread(_execute_guarded_inference, context, inference, *args)
+    )
+    try:
+        return await asyncio.wait_for(
+            asyncio.shield(worker),
+            timeout=INFERENCE_TIMEOUT_SECONDS,
+        )
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        worker.add_done_callback(_consume_worker_result)
+        raise
+
+
 async def _infer_endpoint(request: Request, mode: Mode) -> dict[str, Any]:
     context, fields, content = await _parse_request(request)
     instruction = fields.instruction if fields.instruction is not None else fields.query
@@ -438,10 +469,7 @@ async def _infer_endpoint(request: Request, mode: Mode) -> dict[str, Any]:
     started = time.perf_counter()
     print(f"endpoint=/infer/{mode} model_instance_id={context.model_instance_id}", flush=True)
     try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(_run_guarded_inference, context, _infer_sync, content, instruction, mode),
-            timeout=QUEUE_TIMEOUT_SECONDS + INFERENCE_TIMEOUT_SECONDS,
-        )
+        result = await _run_guarded_inference_async(context, _infer_sync, content, instruction, mode)
     except InferenceQueueTimeout as exc:
         raise HTTPException(status_code=503, detail="Inference queue timeout") from exc
     except asyncio.TimeoutError as exc:
@@ -462,9 +490,12 @@ async def _infer_transition_endpoint(request: Request) -> dict[str, Any]:
     instruction = (instruction or "Describe the UI state transition from the before image to the after image.").strip()
     started = time.perf_counter()
     try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(_run_guarded_inference, context, _infer_transition_sync, before, after, instruction),
-            timeout=QUEUE_TIMEOUT_SECONDS + INFERENCE_TIMEOUT_SECONDS,
+        result = await _run_guarded_inference_async(
+            context,
+            _infer_transition_sync,
+            before,
+            after,
+            instruction,
         )
     except InferenceQueueTimeout as exc:
         raise HTTPException(status_code=503, detail="Inference queue timeout") from exc
