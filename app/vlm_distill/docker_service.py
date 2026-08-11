@@ -162,6 +162,7 @@ async def lifespan(app: FastAPI):
     app.state.runtime_context = None
     app.state.transition_inferencer = None
     app.state.state_observer = None
+    app.state.debug_tracker = None
     config, engine, summary = _runtime_load()
     context = RuntimeContext(
         config=config,
@@ -186,6 +187,7 @@ async def lifespan(app: FastAPI):
     context.ready = False
     app.state.transition_inferencer = None
     app.state.state_observer = None
+    app.state.debug_tracker = None
     app.state.runtime_context = None
 
 
@@ -589,6 +591,46 @@ async def infer_transition(request: Request) -> dict[str, Any]:
 @app.post("/infer")
 async def infer_legacy(request: Request) -> dict[str, Any]:
     return await _infer_endpoint(request, "parsing")
+
+
+def _debug_tracker_response(tracker: StateTracker, resolution) -> dict[str, Any]:
+    observation = tracker.current_observation
+    if observation is None:
+        raise RuntimeError("Debug tracker has no current observation")
+    return {
+        "state_id": resolution.state_id,
+        "is_new": resolution.is_new,
+        "score": resolution.score,
+        "observation": observation,
+        "registry_size": len(tracker.registry),
+    }
+
+
+@app.post("/debug/tracker/start")
+async def debug_tracker_start(request: Request) -> dict[str, Any]:
+    if getattr(app.state, "debug_tracker", None) is not None:
+        raise HTTPException(status_code=409, detail="Debug tracker already exists; reset it first")
+    _, _, image_bytes = await _parse_request(request)
+    tracker = create_state_tracker()
+    app.state.debug_tracker = tracker
+    resolution = await asyncio.to_thread(tracker.start, image_bytes)
+    return _debug_tracker_response(tracker, resolution)
+
+
+@app.post("/debug/tracker/step")
+async def debug_tracker_step(request: Request) -> dict[str, Any]:
+    tracker = getattr(app.state, "debug_tracker", None)
+    if tracker is None:
+        raise HTTPException(status_code=409, detail="Debug tracker does not exist; call start first")
+    _, _, image_bytes = await _parse_request(request)
+    resolution = await asyncio.to_thread(tracker.step, image_bytes)
+    return _debug_tracker_response(tracker, resolution)
+
+
+@app.post("/debug/tracker/reset")
+async def debug_tracker_reset() -> dict[str, bool]:
+    app.state.debug_tracker = None
+    return {"ok": True}
     
     
 @app.post("/debug/state-registry/resolve")
