@@ -30,41 +30,34 @@ Return only valid JSON:
   "elements": [
     {
       "text": "visible element text",
-      "bbox_norm": [x1, y1, x2, y2],
-      "focused": false
+      "bbox_norm": [x1, y1, x2, y2]
     }
   ]
 }
 
 Requirements:
 
-- Return only visible UI elements relevant to the instruction.
+- Return only clearly identifiable visible UI elements relevant to the instruction.
 - Use normalized coordinates from 0 to 1000 as [x1, y1, x2, y2].
-- Each element must contain exactly: text, bbox_norm, focused.
-- focused must be a JSON boolean.
+- bbox_norm must describe the full interactive or focusable element, not only
+  the text inside it.
+- For cards, tiles, buttons, and app icons, bbox_norm must enclose the entire
+  visible interactive container including its image/background/border.
+- Each element must contain exactly: text and bbox_norm.
+- Do not invent labels for elements that cannot be identified reliably.
 
-Focus detection:
-- Inspect visible interactive elements and compare visually comparable peers:
-  menu items, tabs, cards in the same row or carousel, app tiles, and buttons.
-- Compare each candidate against nearby peers and identify the element with the
-  strongest coordinated navigation-focus treatment.
-- Valid focus cues include a visible ring, rectangular or rounded outline,
-  stronger border, glow, scale enlargement, raised appearance, stronger
-  container background, card or tile enlargement, or coordinated visual emphasis.
-- Do not require an explicit focus ring. TV cards and app tiles may indicate
-  focus mainly through scale, border, elevation, or container emphasis.
-- Do not infer focus from semantic importance, item order, center position,
-  recommendation prominence, brightness alone, color alone, prior knowledge,
-  or expected navigation behavior.
-- If one element is visually emphasized relative to its peers, set it to
-  focused=true and its peers to focused=false.
-- If a parent and child both appear emphasized, prefer the navigable leaf.
-- Mark no element focused only when no candidate is visually distinguishable
-  after comparing the peer groups.
+UI element detection:
+
+- Inspect visible menus, tabs, card rows, carousels, app rows, and button groups.
+- Include each clearly identifiable interactive peer.
+- Do not omit image cards or tiles merely because their text is embedded in
+  the image or less prominent.
+- Do not fabricate additional peers merely to complete a row.
 
 Element listing:
-- Output each visible UI element once.
-- Identical text at different locations represents distinct elements.
+
+- Output each identifiable visible UI element once.
+- Identical text at different locations may represent distinct elements.
 - Never repeat an element with the same text and bbox_norm.
 
 Return JSON only. No Markdown, code fences, or explanations.

@@ -23,6 +23,7 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 from .bbox_grounding_inference import BBoxGroundingInferenceEngine
 from .config_schema import load_config
 from .data_manifest import VlmSample
+from .focus_resolver import FocusResolver
 from .output_processors import ParsingOutputProcessor, TransitionOutputProcessor
 from .parsing_output_parser import COORDINATE_SYSTEM_NORMALIZED_0_1000
 from .parsing_generation_stopper import RepeatedTokenBlockStoppingCriteria
@@ -389,6 +390,15 @@ def _infer_parsing_sync(
         handle.write(image_bytes)
         handle.flush()
         image = _load_teacher_image(Path(handle.name), context.config.training.image_resize)
+    return _infer_parsing_image(context, image, instruction)
+
+
+def _infer_parsing_image(
+    context: RuntimeContext,
+    image: Any,
+    instruction: str = DEFAULT_QUERY,
+) -> dict[str, Any]:
+    """Run parsing against an already decoded image using the shared engine."""
     prompt = compose_prompt(instruction, output_mode="parsing")
     repetition_stopper = RepeatedTokenBlockStoppingCriteria()
     raw_output = context.engine.generate_raw(
@@ -414,6 +424,7 @@ def _infer_parsing_sync(
     return {
         "raw_output": raw_output,
         "usable": bool(parsed.get("usable")),
+        "parse_ok": bool(parsed.get("parse_ok")),
         "parse_error": parsed.get("parse_error"),
         "elements": parsed.get("elements", []),
         "coordinate_system": COORDINATE_SYSTEM_NORMALIZED_0_1000,
@@ -464,21 +475,52 @@ def create_transition_inferencer(
 
 
 def create_state_observer(context: RuntimeContext):
-    """Bind single-image parsing observation to the shared runtime guard."""
+    """Bind two-stage single-image observation to the shared runtime guard."""
     def observe(image: bytes) -> dict[str, Any]:
-        parsing_result = _run_guarded_inference(
+        result = _run_guarded_inference(
             context,
-            _infer_parsing_sync,
+            _infer_tracker_observation_sync,
             image,
-            DEFAULT_QUERY,
         )
-        if not parsing_result.get("usable"):
-            detail = parsing_result.get("parse_error")
-            suffix = f": {detail}" if detail else ""
-            raise StateObservationError(f"Parsing inference unusable{suffix}")
-        return build_state_observation(parsing_result.get("elements", []))
+        observe.last_debug = result["debug"]
+        return result["observation"]
+
+    observe.last_debug = {}
 
     return observe
+
+
+def _infer_tracker_observation_sync(
+    context: RuntimeContext,
+    image_bytes: bytes,
+) -> dict[str, Any]:
+    """Parse candidates, then resolve focus, while holding one inference slot."""
+    with tempfile.NamedTemporaryFile(suffix=".image") as handle:
+        handle.write(image_bytes)
+        handle.flush()
+        image = _load_teacher_image(Path(handle.name), context.config.training.image_resize)
+
+    parsing_result = _infer_parsing_image(context, image, DEFAULT_QUERY)
+    if not parsing_result.get("parse_ok"):
+        detail = parsing_result.get("parse_error")
+        suffix = f": {detail}" if detail else ""
+        raise StateObservationError(f"Parsing inference failed{suffix}")
+    elements = parsing_result.get("elements", [])
+
+    focus_result = FocusResolver(context.engine).resolve(image, elements)
+    focused_index = focus_result["focused_index"]
+    focus_text = None if focused_index is None else elements[focused_index]["text"]
+    observation = build_state_observation(elements, focused_index)
+    return {
+        "observation": observation,
+        "debug": {
+            "parsed_elements": elements,
+            "focused_index": focused_index,
+            "resolved_focus_text": focus_text,
+            "focus_resolver_raw_output": focus_result.get("raw_output"),
+            "focus_resolver_debug": focus_result.get("inference_debug"),
+        },
+    }
 
 
 def _run_guarded_inference(context: RuntimeContext, inference, *args):
@@ -611,6 +653,7 @@ def _debug_tracker_response(tracker: StateTracker, resolution) -> dict[str, Any]
         "is_new": resolution.is_new,
         "score": resolution.score,
         "observation": observation,
+        "tracker_debug": tracker.current_debug,
         "registry_size": len(tracker.registry),
     }
 
