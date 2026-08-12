@@ -76,6 +76,8 @@ class FocusResolver:
         filtered_indices = self._focus_candidate_indices(candidates)
         filter_used = len(filtered_indices) >= 2
         focus_indices = filtered_indices if filter_used else indices_before_filter
+        spatial_order_indices = self._spatial_order_indices(candidates, focus_indices)
+        focus_indices = spatial_order_indices
         focus_candidates = [candidates[index] for index in focus_indices]
 
         annotated_image, roi_bbox, roi_used, annotated_indices = self._prepare_focus_image(
@@ -105,7 +107,9 @@ class FocusResolver:
             "focus_input_size": [annotated_image.width, annotated_image.height],
             "annotated_candidate_indices": annotated_indices,
             "focus_candidate_indices_before_filter": indices_before_filter,
-            "focus_candidate_indices_after_filter": focus_indices,
+            "focus_candidate_indices_after_filter": filtered_indices
+            if filter_used else indices_before_filter,
+            "focus_candidate_indices_spatial_order": spatial_order_indices,
             "focus_candidate_filter_used": filter_used,
             "focus_annotation_mode": "index_labels_only",
         })
@@ -133,6 +137,70 @@ class FocusResolver:
             ):
                 eligible.append(index)
         return eligible
+
+    @classmethod
+    def _spatial_order_indices(
+        cls, candidates: list[dict[str, Any]], indices: list[int]
+    ) -> list[int]:
+        """Order candidate presentation by horizontal rows, then left-to-right."""
+        geometries = {
+            index: cls._candidate_geometry(candidates[index])
+            for index in indices
+            if 0 <= index < len(candidates)
+        }
+        valid = [index for index in indices if geometries.get(index) is not None]
+        invalid = [index for index in indices if geometries.get(index) is None]
+        rows: list[dict[str, Any]] = []
+
+        for index in sorted(valid, key=lambda item: (geometries[item][3], item)):
+            geometry = geometries[index]
+            assert geometry is not None
+            row = next(
+                (
+                    candidate_row
+                    for candidate_row in rows
+                    if any(
+                        cls._same_horizontal_row(
+                            geometry,
+                            geometries[row_index],
+                        )
+                        for row_index in candidate_row["indices"]
+                    )
+                ),
+                None,
+            )
+            if row is None:
+                rows.append({"center_y": geometry[3], "indices": [index]})
+            else:
+                row["indices"].append(index)
+                row["center_y"] = sum(
+                    geometries[row_index][3] for row_index in row["indices"]
+                ) / len(row["indices"])
+
+        ordered: list[int] = []
+        for row in sorted(rows, key=lambda candidate_row: candidate_row["center_y"]):
+            ordered.extend(
+                sorted(row["indices"], key=lambda index: (geometries[index][2], index))
+            )
+        return ordered + invalid
+
+    @classmethod
+    def _same_horizontal_row(
+        cls,
+        first: tuple[float, float, float, float, float, float, float, float],
+        second: tuple[float, float, float, float, float, float, float, float],
+    ) -> bool:
+        height_a, center_y_a = first[1], first[3]
+        height_b, center_y_b = second[1], second[3]
+        vertical_overlap = max(
+            0.0,
+            min(first[7], second[7]) - max(first[5], second[5]),
+        )
+        return (
+            vertical_overlap / min(height_a, height_b) >= cls.PEER_MIN_VERTICAL_OVERLAP_RATIO
+            or abs(center_y_a - center_y_b)
+            <= cls.PEER_MAX_CENTER_Y_DISTANCE_RATIO * max(height_a, height_b)
+        )
 
     @staticmethod
     def _candidate_geometry(
