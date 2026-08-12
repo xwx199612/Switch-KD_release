@@ -16,6 +16,9 @@ FOCUS_RESOLVER_PROMPT_TEMPLATE = """Inspect the screenshot and choose the candid
 Candidate numbers are drawn directly on the image. Compare the annotated
 candidate containers in their shared visual context; the number in the image
 exactly matches the index in the Candidates list.
+When shown as numbered tiles, each tile is an enlarged crop of one candidate
+from the same screenshot. The original navigation-focus appearance is
+preserved; compare border, outline, scale, ring, elevation, and emphasis.
 
 Candidates are already detected UI elements and have been restricted to
 geometrically comparable peer groups.
@@ -80,8 +83,18 @@ class FocusResolver:
         focus_indices = spatial_order_indices
         focus_candidates = [candidates[index] for index in focus_indices]
 
-        annotated_image, roi_bbox, roi_used, annotated_indices = self._prepare_focus_image(
-            image, focus_candidates, focus_indices
+        (
+            annotated_image,
+            roi_bbox,
+            roi_used,
+            annotated_indices,
+            focus_image_mode,
+            montage_tile_indices,
+            montage_grid,
+            montage_size,
+            montage_tile_sizes,
+        ) = self._prepare_focus_image(
+            image, focus_candidates, focus_indices, use_montage=filter_used
         )
         candidate_lines = "\n".join(
             f'{index}. text="{candidate.get("text", "")}" '
@@ -112,6 +125,11 @@ class FocusResolver:
             "focus_candidate_indices_spatial_order": spatial_order_indices,
             "focus_candidate_filter_used": filter_used,
             "focus_annotation_mode": "index_labels_only",
+            "focus_image_mode": focus_image_mode,
+            "focus_montage_tile_indices": montage_tile_indices,
+            "focus_montage_grid": montage_grid,
+            "focus_montage_size": montage_size,
+            "focus_montage_tile_sizes": montage_tile_sizes,
         })
         return {
             "focused_index": focused_index,
@@ -254,7 +272,18 @@ class FocusResolver:
         image: Image.Image,
         candidates: list[dict[str, Any]],
         candidate_indices: list[int] | None = None,
-    ) -> tuple[Image.Image, tuple[int, int, int, int] | None, bool, list[int]]:
+        use_montage: bool = False,
+    ) -> tuple[
+        Image.Image,
+        tuple[int, int, int, int] | None,
+        bool,
+        list[int],
+        str,
+        list[int],
+        list[int],
+        list[int],
+        list[list[int]],
+    ]:
         """Make one geometrically selected, annotated image for focus inference."""
         if not isinstance(image, Image.Image) or image.width <= 0 or image.height <= 0:
             raise StateObservationError("focus resolver image must be a non-empty PIL image")
@@ -284,6 +313,11 @@ class FocusResolver:
             )
             if pixel_box[2] > pixel_box[0] and pixel_box[3] > pixel_box[1]:
                 candidate_boxes.append((*pixel_box, index))
+
+        if use_montage:
+            montage = cls._prepare_candidate_montage(image, candidate_boxes)
+            if montage is not None:
+                return montage
 
         # A single box does not provide the neighboring peer context the
         # resolver needs. The full annotated frame is the safe fallback.
@@ -352,7 +386,134 @@ class FocusResolver:
                     (max(1, round(crop.width * scale)), max(1, round(crop.height * scale))),
                     Image.Resampling.LANCZOS,
                 )
-        return input_image, roi, roi_used, annotated_indices
+        return (
+            input_image,
+            roi,
+            roi_used,
+            annotated_indices,
+            "roi" if roi_used else "full_image",
+            [],
+            [0, 0],
+            [0, 0],
+            [],
+        )
+
+    @classmethod
+    def _prepare_candidate_montage(
+        cls,
+        image: Image.Image,
+        candidate_boxes: list[tuple[int, int, int, int, int]],
+    ) -> tuple[
+        Image.Image,
+        tuple[int, int, int, int] | None,
+        bool,
+        list[int],
+        str,
+        list[int],
+        list[int],
+        list[int],
+        list[list[int]],
+    ] | None:
+        """Build enlarged candidate tiles while preserving their original indices."""
+        if len(candidate_boxes) < 2:
+            return None
+
+        try:
+            target_content_height = 300
+            montage_max_dimension = 2048
+            columns = min(3, len(candidate_boxes))
+            gap = 12
+            padding = 10
+            max_tile_width = (
+                montage_max_dimension - (2 * padding) - (columns - 1) * gap
+            ) // columns
+            tile_data: list[tuple[Image.Image, int, float, int, int]] = []
+
+            for left, top, right, bottom, index in candidate_boxes:
+                width = right - left
+                height = bottom - top
+                margin_x = max(8, round(width * 0.12))
+                margin_y = max(8, round(height * 0.12))
+                crop_left = max(0, left - margin_x)
+                crop_top = max(0, top - margin_y)
+                crop_right = min(image.width, right + margin_x)
+                crop_bottom = min(image.height, bottom + margin_y)
+                crop = image.crop((crop_left, crop_top, crop_right, crop_bottom)).convert("RGB")
+                if crop.width <= 0 or crop.height <= 0:
+                    return None
+
+                scale = min(
+                    target_content_height / crop.height,
+                    max_tile_width / crop.width,
+                )
+                if scale <= 0.0:
+                    return None
+                resized = crop.resize(
+                    (max(1, round(crop.width * scale)), max(1, round(crop.height * scale))),
+                    Image.Resampling.LANCZOS,
+                )
+                tile_data.append((resized, index, scale, crop_left, crop_top))
+
+            tile_width = max(tile.width for tile, *_ in tile_data) + (2 * padding)
+            tile_height = max(tile.height for tile, *_ in tile_data) + (2 * padding)
+            rows = (len(tile_data) + columns - 1) // columns
+            montage_width = columns * tile_width + (columns - 1) * gap
+            montage_height = rows * tile_height + (rows - 1) * gap
+            if montage_width > montage_max_dimension or montage_height > montage_max_dimension:
+                return None
+
+            montage = Image.new("RGB", (montage_width, montage_height), (32, 32, 32))
+            annotated_indices: list[int] = []
+            tile_sizes: list[list[int]] = []
+            for position, (tile, index, scale, crop_left, crop_top) in enumerate(tile_data):
+                row, column = divmod(position, columns)
+                tile_x = column * (tile_width + gap)
+                tile_y = row * (tile_height + gap)
+                content_x = tile_x + padding
+                content_y = tile_y + padding
+                montage.paste(tile, (content_x, content_y))
+
+                candidate_x = content_x + round((candidate_boxes[position][0] - crop_left) * scale)
+                candidate_y = content_y + round((candidate_boxes[position][1] - crop_top) * scale)
+                draw = ImageDraw.Draw(montage)
+                label = str(index)
+                text_box = draw.textbbox((0, 0), label)
+                label_width = text_box[2] - text_box[0]
+                label_height = text_box[3] - text_box[1]
+                label_x = min(
+                    max(tile_x + 2, candidate_x),
+                    tile_x + tile_width - label_width - 3,
+                )
+                if candidate_y >= label_height + 3:
+                    label_y = candidate_y - label_height - 2
+                else:
+                    label_y = min(
+                        max(tile_y + 2, candidate_y + 2),
+                        tile_y + tile_height - label_height - 3,
+                    )
+                draw.text(
+                    (label_x, label_y),
+                    label,
+                    fill=(255, 255, 255),
+                    stroke_width=1,
+                    stroke_fill=(0, 0, 0),
+                )
+                annotated_indices.append(index)
+                tile_sizes.append([tile_width, tile_height])
+
+            return (
+                montage,
+                None,
+                False,
+                annotated_indices,
+                "candidate_montage",
+                annotated_indices,
+                [rows, columns],
+                [montage.width, montage.height],
+                tile_sizes,
+            )
+        except (TypeError, ValueError, OSError):
+            return None
 
     @staticmethod
     def _parse_output(raw_output: str, candidate_count: int) -> int | None:
