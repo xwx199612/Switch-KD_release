@@ -17,10 +17,9 @@ Candidate numbers are drawn directly on the image. Compare the annotated
 candidate containers in their shared visual context; the number in the image
 exactly matches the index in the Candidates list.
 
-Candidates are already detected UI elements.
+Candidates are already detected UI elements and have been restricted to
+geometrically comparable peer groups.
 Do not detect new elements.
-Do not filter out candidates: valid candidates may be neighboring cards in the
-same row or other visually comparable peer group.
 
 For every candidate, bbox_norm and size describe the full interactive
 container, not just the text. Inspect the annotated candidate containers
@@ -60,6 +59,11 @@ class FocusResolver:
     ROI_MAX_AREA_FRACTION = 0.75
     ENLARGE_FACTOR = 2.0
     MAX_ENLARGED_DIMENSION = 2048
+    PEER_MIN_HEIGHT_RATIO = 0.5
+    PEER_MIN_VERTICAL_OVERLAP_RATIO = 0.4
+    PEER_MAX_CENTER_Y_DISTANCE_RATIO = 0.5
+    PEER_MIN_CENTER_X_DISTANCE_RATIO = 0.5
+    PEER_MAX_HORIZONTAL_GAP_RATIO = 2.0
 
     def __init__(self, engine: Any) -> None:
         self.engine = engine
@@ -68,15 +72,21 @@ class FocusResolver:
         if not isinstance(candidates, list):
             raise StateObservationError("focus resolver candidates must be a list")
 
+        indices_before_filter = list(range(len(candidates)))
+        filtered_indices = self._focus_candidate_indices(candidates)
+        filter_used = len(filtered_indices) >= 2
+        focus_indices = filtered_indices if filter_used else indices_before_filter
+        focus_candidates = [candidates[index] for index in focus_indices]
+
         annotated_image, roi_bbox, roi_used, annotated_indices = self._prepare_focus_image(
-            image, candidates
+            image, focus_candidates, focus_indices
         )
         candidate_lines = "\n".join(
             f'{index}. text="{candidate.get("text", "")}" '
             f'bbox={candidate.get("bbox_norm")} '
             f'size=[{candidate["bbox_norm"][2] - candidate["bbox_norm"][0]},'
             f'{candidate["bbox_norm"][3] - candidate["bbox_norm"][1]}]'
-            for index, candidate in enumerate(candidates)
+            for index, candidate in zip(focus_indices, focus_candidates)
         )
         prompt = FOCUS_RESOLVER_PROMPT_TEMPLATE.replace("{candidates}", candidate_lines)
         started = time.perf_counter()
@@ -94,6 +104,9 @@ class FocusResolver:
             if roi_bbox is not None else [image.width, image.height],
             "focus_input_size": [annotated_image.width, annotated_image.height],
             "annotated_candidate_indices": annotated_indices,
+            "focus_candidate_indices_before_filter": indices_before_filter,
+            "focus_candidate_indices_after_filter": focus_indices,
+            "focus_candidate_filter_used": filter_used,
         })
         return {
             "focused_index": focused_index,
@@ -102,8 +115,76 @@ class FocusResolver:
         }
 
     @classmethod
+    def _focus_candidate_indices(cls, candidates: list[dict[str, Any]]) -> list[int]:
+        """Return candidates with at least one geometrically compatible peer."""
+        geometries: dict[int, tuple[float, float, float, float, float, float, float, float]] = {}
+        for index, candidate in enumerate(candidates):
+            geometry = cls._candidate_geometry(candidate)
+            if geometry is not None:
+                geometries[index] = geometry
+
+        eligible: list[int] = []
+        for index, geometry in geometries.items():
+            if any(
+                other_index != index
+                and cls._geometrically_compatible(geometry, other_geometry)
+                for other_index, other_geometry in geometries.items()
+            ):
+                eligible.append(index)
+        return eligible
+
+    @staticmethod
+    def _candidate_geometry(
+        candidate: Any,
+    ) -> tuple[float, float, float, float, float, float, float, float] | None:
+        if not isinstance(candidate, dict):
+            return None
+        bbox = candidate.get("bbox_norm")
+        if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+            return None
+        try:
+            left, top, right, bottom = (float(value) for value in bbox)
+        except (TypeError, ValueError):
+            return None
+        left, right = sorted((left, right))
+        top, bottom = sorted((top, bottom))
+        width = right - left
+        height = bottom - top
+        if width <= 0.0 or height <= 0.0:
+            return None
+        return width, height, (left + right) / 2.0, (top + bottom) / 2.0, left, top, right, bottom
+
+    @classmethod
+    def _geometrically_compatible(
+        cls,
+        first: tuple[float, float, float, float, float, float, float, float],
+        second: tuple[float, float, float, float, float, float, float, float],
+    ) -> bool:
+        width_a, height_a, center_x_a, center_y_a, left_a, top_a, right_a, bottom_a = first
+        width_b, height_b, center_x_b, center_y_b, left_b, top_b, right_b, bottom_b = second
+        if min(height_a, height_b) / max(height_a, height_b) < cls.PEER_MIN_HEIGHT_RATIO:
+            return False
+
+        overlap = max(0.0, min(bottom_a, bottom_b) - max(top_a, top_b))
+        vertical_overlap_ratio = overlap / min(height_a, height_b)
+        similar_center_y = abs(center_y_a - center_y_b) <= (
+            cls.PEER_MAX_CENTER_Y_DISTANCE_RATIO * max(height_a, height_b)
+        )
+        if vertical_overlap_ratio < cls.PEER_MIN_VERTICAL_OVERLAP_RATIO and not similar_center_y:
+            return False
+
+        center_x_distance = abs(center_x_a - center_x_b)
+        if center_x_distance < cls.PEER_MIN_CENTER_X_DISTANCE_RATIO * min(width_a, width_b):
+            return False
+        horizontal_gap = max(left_a, left_b) - min(right_a, right_b)
+        return horizontal_gap <= cls.PEER_MAX_HORIZONTAL_GAP_RATIO * max(width_a, width_b)
+
+    @classmethod
     def _prepare_focus_image(
-        cls, image: Image.Image, candidates: list[dict[str, Any]]
+        cls,
+        image: Image.Image,
+        candidates: list[dict[str, Any]],
+        candidate_indices: list[int] | None = None,
     ) -> tuple[Image.Image, tuple[int, int, int, int] | None, bool, list[int]]:
         """Make one geometrically selected, annotated image for focus inference."""
         if not isinstance(image, Image.Image) or image.width <= 0 or image.height <= 0:
@@ -111,7 +192,8 @@ class FocusResolver:
 
         image_width, image_height = image.size
         candidate_boxes: list[tuple[int, int, int, int, int]] = []
-        for index, candidate in enumerate(candidates):
+        for position, candidate in enumerate(candidates):
+            index = candidate_indices[position] if candidate_indices is not None else position
             bbox = candidate.get("bbox_norm") if isinstance(candidate, dict) else None
             if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
                 continue
