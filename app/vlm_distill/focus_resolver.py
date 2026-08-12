@@ -107,6 +107,7 @@ class FocusResolver:
             "focus_candidate_indices_before_filter": indices_before_filter,
             "focus_candidate_indices_after_filter": focus_indices,
             "focus_candidate_filter_used": filter_used,
+            "focus_annotation_mode": "index_labels_only",
         })
         return {
             "focused_index": focused_index,
@@ -249,20 +250,25 @@ class FocusResolver:
                 continue
             x1 = max(left, roi[0]) - roi[0]
             y1 = max(top, roi[1]) - roi[1]
-            x2 = min(right, roi[2]) - roi[0]
-            y2 = min(bottom, roi[3]) - roi[1]
-            draw.rectangle((x1, y1, x2, y2), outline=(255, 220, 0), width=2)
             label = str(index)
             text_box = draw.textbbox((0, 0), label)
             label_width = text_box[2] - text_box[0]
             label_height = text_box[3] - text_box[1]
-            label_x = min(max(0, x1 + 2), max(0, crop.width - label_width - 5))
-            label_y = min(max(0, y1 + 2), max(0, crop.height - label_height - 5))
-            draw.rectangle(
-                (label_x, label_y, label_x + label_width + 4, label_y + label_height + 4),
-                fill=(0, 0, 0),
+            label_x = min(max(0, x1), max(0, crop.width - label_width - 4))
+            if y1 >= label_height + 4:
+                label_y = y1 - label_height - 3
+            elif x1 >= label_width + 4:
+                label_x = x1 - label_width - 3
+                label_y = min(max(0, y1), max(0, crop.height - label_height - 4))
+            else:
+                label_y = min(max(0, y1 + 2), max(0, crop.height - label_height - 4))
+            draw.text(
+                (label_x, label_y),
+                label,
+                fill=(255, 255, 255),
+                stroke_width=1,
+                stroke_fill=(0, 0, 0),
             )
-            draw.text((label_x + 2, label_y + 2), label, fill=(255, 255, 255))
             annotated_indices.append(index)
 
         input_image = crop
