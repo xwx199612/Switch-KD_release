@@ -500,20 +500,29 @@ def _infer_tracker_observation_sync(
         handle.flush()
         image = _load_teacher_image(Path(handle.name), context.config.training.image_resize)
 
+    total_observation_started = time.perf_counter()
+    parsing_started = time.perf_counter()
     parsing_result = _infer_parsing_image(context, image, DEFAULT_QUERY)
+    parsing_elapsed = round(time.perf_counter() - parsing_started, 3)
     if not parsing_result.get("parse_ok"):
         detail = parsing_result.get("parse_error")
         suffix = f": {detail}" if detail else ""
         raise StateObservationError(f"Parsing inference failed{suffix}")
     elements = parsing_result.get("elements", [])
 
+    focus_started = time.perf_counter()
     focus_result = FocusResolver(context.engine).resolve(image, elements)
+    focus_elapsed = round(time.perf_counter() - focus_started, 3)
     focused_index = focus_result["focused_index"]
     focus_text = None if focused_index is None else elements[focused_index]["text"]
     observation = build_state_observation(elements, focused_index)
+    total_observation_elapsed = round(time.perf_counter() - total_observation_started, 3)
     return {
         "observation": observation,
         "debug": {
+            "parsing_elapsed_seconds": parsing_elapsed,
+            "focus_elapsed_seconds": focus_elapsed,
+            "total_observation_elapsed_seconds": total_observation_elapsed,
             "parsed_elements": elements,
             "focused_index": focused_index,
             "resolved_focus_text": focus_text,

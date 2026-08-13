@@ -67,6 +67,10 @@ class FocusResolver:
     PEER_MAX_CENTER_Y_DISTANCE_RATIO = 0.5
     PEER_MIN_CENTER_X_DISTANCE_RATIO = 0.5
     PEER_MAX_HORIZONTAL_GAP_RATIO = 2.0
+    PEER_MIN_HORIZONTAL_OVERLAP_RATIO = 0.4
+    PEER_MAX_VERTICAL_GAP_RATIO = 2.0
+    GRID_MAX_VERTICAL_SPAN_HEIGHTS = 5.0
+    GRID_MAX_HORIZONTAL_SPAN_WIDTHS = 8.0
 
     def __init__(self, engine: Any) -> None:
         self.engine = engine
@@ -76,11 +80,25 @@ class FocusResolver:
             raise StateObservationError("focus resolver candidates must be a list")
 
         indices_before_filter = list(range(len(candidates)))
-        filtered_indices = self._focus_candidate_indices(candidates)
-        filter_used = len(filtered_indices) >= 2
-        focus_indices = filtered_indices if filter_used else indices_before_filter
-        spatial_order_indices = self._spatial_order_indices(candidates, focus_indices)
-        focus_indices = spatial_order_indices
+        candidate_groups = self._focus_candidate_groups(candidates)
+        candidate_group_types = self._focus_candidate_group_types(candidates, candidate_groups)
+        selected_group_indices = list(range(len(candidate_groups)))
+        focus_indices = [
+            index
+            for group in candidate_groups
+            for index in self._spatial_order_indices(candidates, group)
+        ]
+        group_by_index = {
+            index: group_index
+            for group_index, group in enumerate(candidate_groups)
+            for index in group
+        }
+        focus_group_ids = [group_by_index[index] for index in focus_indices]
+        # Grouping is descriptive and controls presentation order; it must not
+        # remove candidates from the resolver input.
+        filter_used = False
+        filtered_indices = list(focus_indices)
+        spatial_order_indices = list(focus_indices)
         focus_candidates = [candidates[index] for index in focus_indices]
 
         (
@@ -94,7 +112,11 @@ class FocusResolver:
             montage_size,
             montage_tile_sizes,
         ) = self._prepare_focus_image(
-            image, focus_candidates, focus_indices, use_montage=filter_used
+            image,
+            focus_candidates,
+            focus_indices,
+            focus_group_ids=focus_group_ids,
+            use_montage=len(candidate_groups) > 1 or len(focus_indices) >= 2,
         )
         candidate_lines = "\n".join(
             f'{index}. text="{candidate.get("text", "")}" '
@@ -120,10 +142,13 @@ class FocusResolver:
             "focus_input_size": [annotated_image.width, annotated_image.height],
             "annotated_candidate_indices": annotated_indices,
             "focus_candidate_indices_before_filter": indices_before_filter,
-            "focus_candidate_indices_after_filter": filtered_indices
-            if filter_used else indices_before_filter,
+            "focus_candidate_indices_after_filter": filtered_indices,
             "focus_candidate_indices_spatial_order": spatial_order_indices,
             "focus_candidate_filter_used": filter_used,
+            "focus_candidate_groups": candidate_groups,
+            "focus_candidate_selected_group_indices": selected_group_indices,
+            "focus_candidate_group_types": candidate_group_types,
+            "focus_group_montage_used": focus_image_mode == "candidate_montage",
             "focus_annotation_mode": "index_labels_only",
             "focus_image_mode": focus_image_mode,
             "focus_montage_tile_indices": montage_tile_indices,
@@ -139,22 +164,210 @@ class FocusResolver:
 
     @classmethod
     def _focus_candidate_indices(cls, candidates: list[dict[str, Any]]) -> list[int]:
-        """Return candidates with at least one geometrically compatible peer."""
+        """Return every candidate; geometry no longer performs hard filtering."""
+        return list(range(len(candidates)))
+
+    @classmethod
+    def _focus_candidate_groups(cls, candidates: list[dict[str, Any]]) -> list[list[int]]:
+        """Build strict horizontal rows, then compatible local grid groups."""
         geometries: dict[int, tuple[float, float, float, float, float, float, float, float]] = {}
         for index, candidate in enumerate(candidates):
             geometry = cls._candidate_geometry(candidate)
             if geometry is not None:
                 geometries[index] = geometry
 
-        eligible: list[int] = []
-        for index, geometry in geometries.items():
-            if any(
-                other_index != index
-                and cls._geometrically_compatible(geometry, other_geometry)
-                for other_index, other_geometry in geometries.items()
+        rows: list[dict[str, Any]] = []
+        for index in sorted(geometries, key=lambda item: (geometries[item][3], item)):
+            geometry = geometries[index]
+            matching_rows = [row for row in rows if cls._row_accepts(row, geometry)]
+            if matching_rows:
+                row = min(matching_rows, key=lambda item: abs(item["center_y"] - geometry[3]))
+                row["indices"].append(index)
+                cls._update_row_statistics(row, geometries)
+            else:
+                row = {"indices": [index], "center_y": geometry[3]}
+                cls._update_row_statistics(row, geometries)
+                rows.append(row)
+
+        # Rows are merged only when their aggregate geometry describes stable
+        # columns and local vertical spacing. This deliberately is not a graph.
+        grid_groups: list[dict[str, Any]] = []
+        for row in sorted(rows, key=lambda item: item["center_y"]):
+            matching = [
+                group for group in grid_groups
+                if cls._grid_group_accepts(group, row, geometries)
+            ]
+            if matching:
+                group = min(matching, key=lambda item: abs(item["center_y"] - row["center_y"]))
+                group["rows"].append(row)
+                group["indices"].extend(row["indices"])
+                cls._update_grid_statistics(group, geometries)
+            else:
+                group = {"rows": [row], "indices": list(row["indices"])}
+                cls._update_grid_statistics(group, geometries)
+                grid_groups.append(group)
+
+        result = [
+            group["indices"]
+            for group in sorted(grid_groups, key=lambda item: item["center_y"])
+        ]
+        result.extend([[index] for index in range(len(candidates)) if index not in geometries])
+        return result
+
+    @classmethod
+    def _focus_candidate_group_types(
+        cls, candidates: list[dict[str, Any]], groups: list[list[int]]
+    ) -> list[str]:
+        types: list[str] = []
+        for group in groups:
+            if len(group) == 1:
+                types.append("singleton")
+                continue
+            geometries = [cls._candidate_geometry(candidates[index]) for index in group]
+            valid = [geometry for geometry in geometries if geometry is not None]
+            center_ys = sorted(geometry[3] for geometry in valid)
+            has_multiple_rows = any(
+                abs(center_ys[position] - center_ys[position - 1])
+                > cls.PEER_MAX_CENTER_Y_DISTANCE_RATIO * max(
+                    valid[position][1], valid[position - 1][1]
+                )
+                for position in range(1, len(center_ys))
+            )
+            types.append("grid" if has_multiple_rows else "horizontal_row")
+        return types
+
+    @classmethod
+    def _update_row_statistics(
+        cls, row: dict[str, Any], geometries: dict[int, tuple[float, ...]]
+    ) -> None:
+        values = [geometries[index] for index in row["indices"]]
+        row["center_y"] = cls._median([value[3] for value in values])
+        row["height"] = cls._median([value[1] for value in values])
+        row["width"] = cls._median([value[0] for value in values])
+        row["left"] = min(value[4] for value in values)
+        row["right"] = max(value[6] for value in values)
+
+    @classmethod
+    def _row_accepts(cls, row: dict[str, Any], geometry: tuple[float, ...]) -> bool:
+        width, height, _, center_y, left, top, right, bottom = geometry
+        height_ratio = min(height, row["height"]) / max(height, row["height"])
+        row_top = row["center_y"] - row["height"] / 2
+        row_bottom = row["center_y"] + row["height"] / 2
+        vertical_overlap = max(0.0, min(bottom, row_bottom) - max(top, row_top))
+        same_y = vertical_overlap / min(height, row["height"]) >= cls.PEER_MIN_VERTICAL_OVERLAP_RATIO
+        same_y = same_y or abs(center_y - row["center_y"]) <= (
+            cls.PEER_MAX_CENTER_Y_DISTANCE_RATIO * max(height, row["height"])
+        )
+        gap = max(row["left"], left) - min(row["right"], right)
+        return (
+            same_y
+            and height_ratio >= cls.PEER_MIN_HEIGHT_RATIO
+            and gap <= cls.PEER_MAX_HORIZONTAL_GAP_RATIO * max(width, row["width"])
+        )
+
+    @classmethod
+    def _grid_group_accepts(
+        cls,
+        group: dict[str, Any],
+        row: dict[str, Any],
+        geometries: dict[int, tuple[float, ...]],
+    ) -> bool:
+        height_ratio = min(row["height"], group["height"]) / max(row["height"], group["height"])
+        if height_ratio < cls.PEER_MIN_HEIGHT_RATIO:
+            return False
+        row_gap = row["center_y"] - group["bottom_center_y"]
+        if row_gap < 0 or row_gap > cls.PEER_MAX_VERTICAL_GAP_RATIO * max(
+            row["height"], group["height"]
+        ):
+            return False
+        proposed_top = min(group["top"], row["top"])
+        proposed_bottom = max(group["bottom"], row["bottom"])
+        proposed_left = min(group["left"], row["left"])
+        proposed_right = max(group["right"], row["right"])
+        if proposed_bottom - proposed_top > cls.GRID_MAX_VERTICAL_SPAN_HEIGHTS * max(
+            row["height"], group["height"]
+        ):
+            return False
+        if proposed_right - proposed_left > cls.GRID_MAX_HORIZONTAL_SPAN_WIDTHS * max(
+            row["width"], group["width"]
+        ):
+            return False
+        if group.get("row_gaps"):
+            median_gap = cls._median(group["row_gaps"])
+            if abs(row_gap - median_gap) > cls.PEER_MAX_VERTICAL_GAP_RATIO * max(
+                row["height"], group["height"]
             ):
-                eligible.append(index)
-        return eligible
+                return False
+        # Every new row must agree with every existing row. Matching only one
+        # distant member would recreate transitive bridge chaining.
+        for prior_row in group["rows"]:
+            for index in row["indices"]:
+                geometry = geometries[index]
+                if not any(
+                    abs(geometry[2] - geometries[prior][2])
+                    <= 0.75 * max(geometry[0], geometries[prior][0])
+                    for prior in prior_row["indices"]
+                ):
+                    return False
+        return True
+
+    @classmethod
+    def _update_grid_statistics(
+        cls, group: dict[str, Any], geometries: dict[int, tuple[float, ...]]
+    ) -> None:
+        values = [geometries[index] for index in group["indices"]]
+        group["center_y"] = cls._median([value[3] for value in values])
+        group["height"] = cls._median([value[1] for value in values])
+        group["bottom_center_y"] = max(value[3] for value in values)
+        group["top"] = min(value[5] for value in values)
+        group["bottom"] = max(value[7] for value in values)
+        group["left"] = min(value[4] for value in values)
+        group["right"] = max(value[6] for value in values)
+        group["row_gaps"] = [
+            later["center_y"] - earlier["center_y"]
+            for earlier, later in zip(group["rows"], group["rows"][1:])
+        ]
+
+    @staticmethod
+    def _median(values: list[float]) -> float:
+        ordered = sorted(values)
+        middle = len(ordered) // 2
+        if len(ordered) % 2:
+            return ordered[middle]
+        return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+    @classmethod
+    def _geometrically_adjacent(
+        cls,
+        first: tuple[float, float, float, float, float, float, float, float],
+        second: tuple[float, float, float, float, float, float, float, float],
+    ) -> bool:
+        """Allow horizontal, vertical, and grid-neighbor connections."""
+        width_a, height_a, center_x_a, center_y_a, left_a, top_a, right_a, bottom_a = first
+        width_b, height_b, center_x_b, center_y_b, left_b, top_b, right_b, bottom_b = second
+        if min(width_a, width_b, height_a, height_b) <= 0.0:
+            return False
+
+        vertical_overlap = max(0.0, min(bottom_a, bottom_b) - max(top_a, top_b))
+        horizontal_overlap = max(0.0, min(right_a, right_b) - max(left_a, left_b))
+        horizontal = (
+            vertical_overlap / min(height_a, height_b) >= cls.PEER_MIN_VERTICAL_OVERLAP_RATIO
+            and max(left_a, left_b) - min(right_a, right_b)
+            <= cls.PEER_MAX_HORIZONTAL_GAP_RATIO * max(width_a, width_b)
+        )
+        vertical = (
+            horizontal_overlap / min(width_a, width_b) >= cls.PEER_MIN_HORIZONTAL_OVERLAP_RATIO
+            and max(top_a, top_b) - min(bottom_a, bottom_b)
+            <= cls.PEER_MAX_VERTICAL_GAP_RATIO * max(height_a, height_b)
+        )
+        # Handle columns whose boxes do not quite overlap horizontally but are
+        # still clearly adjacent by center alignment.
+        aligned_vertical = (
+            abs(center_x_a - center_x_b) <= 1.5 * max(width_a, width_b)
+            and max(top_a, top_b) - min(bottom_a, bottom_b)
+            <= cls.PEER_MAX_VERTICAL_GAP_RATIO * max(height_a, height_b)
+        )
+        return horizontal or vertical or aligned_vertical
 
     @classmethod
     def _spatial_order_indices(
@@ -272,6 +485,7 @@ class FocusResolver:
         image: Image.Image,
         candidates: list[dict[str, Any]],
         candidate_indices: list[int] | None = None,
+        focus_group_ids: list[int] | None = None,
         use_montage: bool = False,
     ) -> tuple[
         Image.Image,
@@ -289,9 +503,10 @@ class FocusResolver:
             raise StateObservationError("focus resolver image must be a non-empty PIL image")
 
         image_width, image_height = image.size
-        candidate_boxes: list[tuple[int, int, int, int, int]] = []
+        candidate_boxes: list[tuple[int, int, int, int, int, int]] = []
         for position, candidate in enumerate(candidates):
             index = candidate_indices[position] if candidate_indices is not None else position
+            group_id = focus_group_ids[position] if focus_group_ids is not None else 0
             bbox = candidate.get("bbox_norm") if isinstance(candidate, dict) else None
             if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
                 continue
@@ -312,7 +527,7 @@ class FocusResolver:
                 max(1, min(image_height, round(bottom * image_height / 1000))),
             )
             if pixel_box[2] > pixel_box[0] and pixel_box[3] > pixel_box[1]:
-                candidate_boxes.append((*pixel_box, index))
+                candidate_boxes.append((*pixel_box, index, group_id))
 
         if use_montage:
             montage = cls._prepare_candidate_montage(image, candidate_boxes)
@@ -347,7 +562,7 @@ class FocusResolver:
         crop = image.crop(roi).copy()
         draw = ImageDraw.Draw(crop)
         annotated_indices: list[int] = []
-        for left, top, right, bottom, index in candidate_boxes:
+        for left, top, right, bottom, index, _group_id in candidate_boxes:
             if right <= roi[0] or left >= roi[2] or bottom <= roi[1] or top >= roi[3]:
                 continue
             x1 = max(left, roi[0]) - roi[0]
@@ -402,7 +617,7 @@ class FocusResolver:
     def _prepare_candidate_montage(
         cls,
         image: Image.Image,
-        candidate_boxes: list[tuple[int, int, int, int, int]],
+        candidate_boxes: list[tuple[int, int, int, int, int, int]],
     ) -> tuple[
         Image.Image,
         tuple[int, int, int, int] | None,
@@ -427,9 +642,9 @@ class FocusResolver:
             max_tile_width = (
                 montage_max_dimension - (2 * padding) - (columns - 1) * gap
             ) // columns
-            tile_data: list[tuple[Image.Image, int, float, int, int]] = []
+            tile_data: list[tuple[Image.Image, int, int, float, int, int]] = []
 
-            for left, top, right, bottom, index in candidate_boxes:
+            for left, top, right, bottom, index, group_id in candidate_boxes:
                 width = right - left
                 height = bottom - top
                 margin_x = max(8, round(width * 0.12))
@@ -452,54 +667,72 @@ class FocusResolver:
                     (max(1, round(crop.width * scale)), max(1, round(crop.height * scale))),
                     Image.Resampling.LANCZOS,
                 )
-                tile_data.append((resized, index, scale, crop_left, crop_top))
+                tile_data.append((resized, index, group_id, scale, crop_left, crop_top))
 
             tile_width = max(tile.width for tile, *_ in tile_data) + (2 * padding)
             tile_height = max(tile.height for tile, *_ in tile_data) + (2 * padding)
-            rows = (len(tile_data) + columns - 1) // columns
+            grouped_tiles: list[list[tuple[Image.Image, int, int, float, int, int]]] = []
+            for tile_data_item in tile_data:
+                if not grouped_tiles or grouped_tiles[-1][0][2] != tile_data_item[2]:
+                    grouped_tiles.append([])
+                grouped_tiles[-1].append(tile_data_item)
+            group_rows = [
+                (len(group) + columns - 1) // columns for group in grouped_tiles
+            ]
+            rows = sum(group_rows)
             montage_width = columns * tile_width + (columns - 1) * gap
-            montage_height = rows * tile_height + (rows - 1) * gap
+            group_separator = 24
+            montage_height = rows * tile_height + max(0, len(grouped_tiles) - 1) * group_separator + (rows - 1) * gap
             if montage_width > montage_max_dimension or montage_height > montage_max_dimension:
                 return None
 
             montage = Image.new("RGB", (montage_width, montage_height), (32, 32, 32))
             annotated_indices: list[int] = []
             tile_sizes: list[list[int]] = []
-            for position, (tile, index, scale, crop_left, crop_top) in enumerate(tile_data):
-                row, column = divmod(position, columns)
-                tile_x = column * (tile_width + gap)
-                tile_y = row * (tile_height + gap)
-                content_x = tile_x + padding
-                content_y = tile_y + padding
-                montage.paste(tile, (content_x, content_y))
+            tile_position = 0
+            row_offset = 0
+            for group_position, group in enumerate(grouped_tiles):
+                for position_in_group, (tile, index, group_id, scale, crop_left, crop_top) in enumerate(group):
+                    row, column = divmod(position_in_group, columns)
+                    row += row_offset
+                    tile_position += 1
+                    tile_x = column * (tile_width + gap)
+                    tile_y = row * (tile_height + gap) + group_position * group_separator
+                    content_x = tile_x + padding
+                    content_y = tile_y + padding
+                    montage.paste(tile, (content_x, content_y))
 
-                candidate_x = content_x + round((candidate_boxes[position][0] - crop_left) * scale)
-                candidate_y = content_y + round((candidate_boxes[position][1] - crop_top) * scale)
-                draw = ImageDraw.Draw(montage)
-                label = str(index)
-                text_box = draw.textbbox((0, 0), label)
-                label_width = text_box[2] - text_box[0]
-                label_height = text_box[3] - text_box[1]
-                label_x = min(
-                    max(tile_x + 2, candidate_x),
-                    tile_x + tile_width - label_width - 3,
-                )
-                if candidate_y >= label_height + 3:
-                    label_y = candidate_y - label_height - 2
-                else:
-                    label_y = min(
-                        max(tile_y + 2, candidate_y + 2),
-                        tile_y + tile_height - label_height - 3,
+                    candidate_box = next(
+                        box for box in candidate_boxes if box[4] == index and box[5] == group_id
                     )
-                draw.text(
-                    (label_x, label_y),
-                    label,
-                    fill=(255, 255, 255),
-                    stroke_width=1,
-                    stroke_fill=(0, 0, 0),
-                )
-                annotated_indices.append(index)
-                tile_sizes.append([tile_width, tile_height])
+                    candidate_x = content_x + round((candidate_box[0] - crop_left) * scale)
+                    candidate_y = content_y + round((candidate_box[1] - crop_top) * scale)
+                    draw = ImageDraw.Draw(montage)
+                    label = str(index)
+                    text_box = draw.textbbox((0, 0), label)
+                    label_width = text_box[2] - text_box[0]
+                    label_height = text_box[3] - text_box[1]
+                    label_x = min(
+                        max(tile_x + 2, candidate_x),
+                        tile_x + tile_width - label_width - 3,
+                    )
+                    if candidate_y >= label_height + 3:
+                        label_y = candidate_y - label_height - 2
+                    else:
+                        label_y = min(
+                            max(tile_y + 2, candidate_y + 2),
+                            tile_y + tile_height - label_height - 3,
+                        )
+                    draw.text(
+                        (label_x, label_y),
+                        label,
+                        fill=(255, 255, 255),
+                        stroke_width=1,
+                        stroke_fill=(0, 0, 0),
+                    )
+                    annotated_indices.append(index)
+                    tile_sizes.append([tile_width, tile_height])
+                row_offset += group_rows[group_position]
 
             return (
                 montage,
