@@ -696,9 +696,12 @@ class FocusResolver:
             columns = min(3, len(candidate_boxes))
             gap = 12
             padding = 10
-            max_tile_width = (
-                montage_max_dimension - (2 * padding) - (columns - 1) * gap
-            ) // columns
+            available_width = (
+                montage_max_dimension
+                - (columns - 1) * gap
+                - columns * (2 * padding)
+            )
+            max_content_width = available_width // columns
             tile_data: list[tuple[Image.Image, int, int, float, int, int]] = []
             group_counts: list[int] = []
             for box in candidate_boxes:
@@ -708,16 +711,17 @@ class FocusResolver:
             group_rows = [(count + columns - 1) // columns for count in group_counts]
             total_rows = sum(group_rows)
             group_separator = 24
-            reserved_height = (
-                (total_rows - 1) * gap
-                + max(0, len(group_rows) - 1) * group_separator
-                + 2 * padding * total_rows
+            available_height = (
+                montage_max_dimension
+                - (total_rows - 1) * gap
+                - max(0, len(group_rows) - 1) * group_separator
+                - 2 * padding * total_rows
             )
             target_content_height = min(
                 300,
-                (montage_max_dimension - reserved_height) // max(1, total_rows),
+                available_height // max(1, total_rows),
             )
-            if target_content_height < 160:
+            if target_content_height < 144:
                 return None
 
             for left, top, right, bottom, index, group_id in candidate_boxes:
@@ -735,7 +739,7 @@ class FocusResolver:
 
                 scale = min(
                     target_content_height / crop.height,
-                    max_tile_width / crop.width,
+                    max_content_width / crop.width,
                 )
                 if scale <= 0.0:
                     return None
