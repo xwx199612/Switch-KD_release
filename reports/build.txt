@@ -5,7 +5,7 @@
 #1 DONE 0.0s
 
 #2 [internal] load metadata for docker.io/nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
-#2 DONE 1.1s
+#2 DONE 0.7s
 
 #3 [internal] load .dockerignore
 #3 transferring context: 151B done
@@ -15,16 +15,16 @@
 #4 DONE 0.0s
 
 #5 [internal] load build context
-#5 transferring context: 27.83kB done
+#5 transferring context: 37.80kB done
 #5 DONE 0.0s
 
 #6 [ 2/10] RUN apt-get update     && apt-get install -y --no-install-recommends        software-properties-common ca-certificates curl build-essential     && add-apt-repository ppa:deadsnakes/ppa     && apt-get update     && apt-get install -y --no-install-recommends        python3.11 python3.11-dev python3.11-venv libgl1 libglib2.0-0     && rm -rf /var/lib/apt/lists/*
 #6 CACHED
 
-#7 [ 4/10] COPY requirements-runtime.lock /app/requirements-runtime.lock
+#7 [ 3/10] WORKDIR /app
 #7 CACHED
 
-#8 [ 3/10] WORKDIR /app
+#8 [ 4/10] COPY requirements-runtime.lock /app/requirements-runtime.lock
 #8 CACHED
 
 #9 [ 5/10] RUN python3.11 -m ensurepip --upgrade     && python3.11 -m pip install --no-cache-dir --upgrade pip     && python3.11 -m pip install --no-cache-dir        --index-url https://download.pytorch.org/whl/cu124        torch==2.6.0 torchvision==0.21.0     && python3.11 -m pip install --no-cache-dir -r /app/requirements-runtime.lock
@@ -47,7 +47,7 @@
 
 #15 exporting to image
 #15 exporting layers 0.1s done
-#15 writing image sha256:6c7ae781fbdf231e6d44c228426ab0728136b6d0a1b49700d63ff1833988cc56 done
+#15 writing image sha256:d26d41f146df3eb43c1d1d161156423776aecd9a0dd5c9a88175f0b03ce0180e done
 #15 naming to docker.io/library/vlm-online-dbild-runtime:1.2.0 done
 #15 DONE 0.1s
 image=vlm-online-dbild-runtime:1.2.0

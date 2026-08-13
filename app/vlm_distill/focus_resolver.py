@@ -19,6 +19,8 @@ exactly matches the index in the Candidates list.
 When shown as numbered tiles, each tile is an enlarged crop of one candidate
 from the same screenshot. The original navigation-focus appearance is
 preserved; compare border, outline, scale, ring, elevation, and emphasis.
+The image may be arranged into separated UI groups cropped from the same
+original screenshot; candidate indices remain the original indices.
 
 Candidates are already detected UI elements and have been restricted to
 geometrically comparable peer groups.
@@ -116,7 +118,7 @@ class FocusResolver:
             focus_candidates,
             focus_indices,
             focus_group_ids=focus_group_ids,
-            use_montage=len(candidate_groups) > 1 or len(focus_indices) >= 2,
+            use_montage=len(candidate_groups) >= 2,
         )
         candidate_lines = "\n".join(
             f'{index}. text="{candidate.get("text", "")}" '
@@ -148,7 +150,9 @@ class FocusResolver:
             "focus_candidate_groups": candidate_groups,
             "focus_candidate_selected_group_indices": selected_group_indices,
             "focus_candidate_group_types": candidate_group_types,
-            "focus_group_montage_used": focus_image_mode == "candidate_montage",
+            "focus_group_montage_used": focus_image_mode == "group_montage",
+            "focus_group_montage_group_indices": candidate_groups
+            if focus_image_mode == "group_montage" else [],
             "focus_annotation_mode": "index_labels_only",
             "focus_image_mode": focus_image_mode,
             "focus_montage_tile_indices": montage_tile_indices,
@@ -272,44 +276,98 @@ class FocusResolver:
         row: dict[str, Any],
         geometries: dict[int, tuple[float, ...]],
     ) -> bool:
-        height_ratio = min(row["height"], group["height"]) / max(row["height"], group["height"])
+        row_bounds = cls._bounds_for_indices(row.get("indices", []), geometries)
+        group_indices = group.get("indices")
+        if not isinstance(group_indices, list):
+            group_indices = [
+                index
+                for member_row in group.get("rows", [])
+                if isinstance(member_row, dict)
+                for index in member_row.get("indices", [])
+            ]
+        group_bounds = cls._bounds_for_indices(group_indices, geometries)
+        if row_bounds is None or group_bounds is None:
+            return False
+        height_ratio = min(row_bounds["height"], group_bounds["height"]) / max(
+            row_bounds["height"], group_bounds["height"]
+        )
         if height_ratio < cls.PEER_MIN_HEIGHT_RATIO:
             return False
-        row_gap = row["center_y"] - group["bottom_center_y"]
+        group_center_ys = [
+            geometries[index][3]
+            for index in group_indices
+            if isinstance(index, int) and index in geometries
+        ]
+        if not group_center_ys:
+            return False
+        group_bottom_center_y = max(group_center_ys)
+        row_gap = row_bounds["center_y"] - group_bottom_center_y
         if row_gap < 0 or row_gap > cls.PEER_MAX_VERTICAL_GAP_RATIO * max(
-            row["height"], group["height"]
+            row_bounds["height"], group_bounds["height"]
         ):
             return False
-        proposed_top = min(group["top"], row["top"])
-        proposed_bottom = max(group["bottom"], row["bottom"])
-        proposed_left = min(group["left"], row["left"])
-        proposed_right = max(group["right"], row["right"])
+        proposed_top = min(group_bounds["top"], row_bounds["top"])
+        proposed_bottom = max(group_bounds["bottom"], row_bounds["bottom"])
+        proposed_left = min(group_bounds["left"], row_bounds["left"])
+        proposed_right = max(group_bounds["right"], row_bounds["right"])
         if proposed_bottom - proposed_top > cls.GRID_MAX_VERTICAL_SPAN_HEIGHTS * max(
-            row["height"], group["height"]
+            row_bounds["height"], group_bounds["height"]
         ):
             return False
         if proposed_right - proposed_left > cls.GRID_MAX_HORIZONTAL_SPAN_WIDTHS * max(
-            row["width"], group["width"]
+            row_bounds["width"], group_bounds["width"]
         ):
             return False
         if group.get("row_gaps"):
             median_gap = cls._median(group["row_gaps"])
             if abs(row_gap - median_gap) > cls.PEER_MAX_VERTICAL_GAP_RATIO * max(
-                row["height"], group["height"]
+                row_bounds["height"], group_bounds["height"]
             ):
                 return False
         # Every new row must agree with every existing row. Matching only one
         # distant member would recreate transitive bridge chaining.
         for prior_row in group["rows"]:
             for index in row["indices"]:
+                if index not in geometries:
+                    continue
                 geometry = geometries[index]
                 if not any(
-                    abs(geometry[2] - geometries[prior][2])
+                    prior in geometries
+                    and abs(geometry[2] - geometries[prior][2])
                     <= 0.75 * max(geometry[0], geometries[prior][0])
                     for prior in prior_row["indices"]
                 ):
                     return False
         return True
+
+    @staticmethod
+    def _bounds_for_indices(
+        indices: Any,
+        geometries: dict[int, tuple[float, ...]],
+    ) -> dict[str, float] | None:
+        if not isinstance(indices, list):
+            return None
+        values = [
+            geometries[index]
+            for index in indices
+            if isinstance(index, int) and index in geometries
+        ]
+        if not values:
+            return None
+        left = min(value[4] for value in values)
+        top = min(value[5] for value in values)
+        right = max(value[6] for value in values)
+        bottom = max(value[7] for value in values)
+        return {
+            "left": left,
+            "top": top,
+            "right": right,
+            "bottom": bottom,
+            "width": right - left,
+            "height": bottom - top,
+            "center_x": (left + right) / 2.0,
+            "center_y": (top + bottom) / 2.0,
+        }
 
     @classmethod
     def _update_grid_statistics(
@@ -630,11 +688,10 @@ class FocusResolver:
         list[list[int]],
     ] | None:
         """Build enlarged candidate tiles while preserving their original indices."""
-        if len(candidate_boxes) < 2:
+        if not candidate_boxes:
             return None
 
         try:
-            target_content_height = 300
             montage_max_dimension = 2048
             columns = min(3, len(candidate_boxes))
             gap = 12
@@ -643,6 +700,25 @@ class FocusResolver:
                 montage_max_dimension - (2 * padding) - (columns - 1) * gap
             ) // columns
             tile_data: list[tuple[Image.Image, int, int, float, int, int]] = []
+            group_counts: list[int] = []
+            for box in candidate_boxes:
+                if not group_counts or box[5] != candidate_boxes[sum(group_counts) - 1][5]:
+                    group_counts.append(0)
+                group_counts[-1] += 1
+            group_rows = [(count + columns - 1) // columns for count in group_counts]
+            total_rows = sum(group_rows)
+            group_separator = 24
+            reserved_height = (
+                (total_rows - 1) * gap
+                + max(0, len(group_rows) - 1) * group_separator
+                + 2 * padding * total_rows
+            )
+            target_content_height = min(
+                300,
+                (montage_max_dimension - reserved_height) // max(1, total_rows),
+            )
+            if target_content_height < 160:
+                return None
 
             for left, top, right, bottom, index, group_id in candidate_boxes:
                 width = right - left
@@ -676,12 +752,8 @@ class FocusResolver:
                 if not grouped_tiles or grouped_tiles[-1][0][2] != tile_data_item[2]:
                     grouped_tiles.append([])
                 grouped_tiles[-1].append(tile_data_item)
-            group_rows = [
-                (len(group) + columns - 1) // columns for group in grouped_tiles
-            ]
             rows = sum(group_rows)
             montage_width = columns * tile_width + (columns - 1) * gap
-            group_separator = 24
             montage_height = rows * tile_height + max(0, len(grouped_tiles) - 1) * group_separator + (rows - 1) * gap
             if montage_width > montage_max_dimension or montage_height > montage_max_dimension:
                 return None
@@ -739,7 +811,7 @@ class FocusResolver:
                 None,
                 False,
                 annotated_indices,
-                "candidate_montage",
+                "group_montage",
                 annotated_indices,
                 [rows, columns],
                 [montage.width, montage.height],
