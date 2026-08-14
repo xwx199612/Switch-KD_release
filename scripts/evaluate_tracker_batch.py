@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
-"""Sequential batch evaluation for the debug StateTracker endpoints."""
+"""Run a directory of images through the debug StateTracker for manual review."""
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
-import re
+import statistics
 import sys
 import time
-import unicodedata
 import uuid
 from pathlib import Path
-from statistics import mean
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
-WHITESPACE_RE = re.compile(r"\s+")
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
 class RequestFailure(Exception):
     def __init__(self, message: str, status: int | None = None, body: str | None = None):
         super().__init__(message)
@@ -24,44 +25,36 @@ class RequestFailure(Exception):
         self.body = body
 
 
-def normalize_text(value: object) -> str:
-    if not isinstance(value, str):
-        return ""
-    return WHITESPACE_RE.sub(" ", unicodedata.normalize("NFKC", value).strip().lower())
-
-
 def multipart_image(image_path: Path) -> tuple[bytes, str]:
     boundary = f"----tracker-batch-{uuid.uuid4().hex}"
-    data = image_path.read_bytes()
-    content_type = "application/octet-stream"
-    suffix = image_path.suffix.lower()
-    if suffix in {".jpg", ".jpeg"}:
-        content_type = "image/jpeg"
-    elif suffix == ".png":
-        content_type = "image/png"
-    elif suffix == ".webp":
-        content_type = "image/webp"
-    body = b"--" + boundary.encode() + b"\r\n"
-    body += b'Content-Disposition: form-data; name="image"; filename="' + image_path.name.encode() + b'"\r\n'
-    body += b"Content-Type: " + content_type.encode() + b"\r\n\r\n"
-    body += data + b"\r\n--" + boundary.encode() + b"--\r\n"
+    content_type = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+    }.get(image_path.suffix.lower(), "application/octet-stream")
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="image"; filename="{image_path.name}"\r\n'
+        f"Content-Type: {content_type}\r\n\r\n"
+    ).encode() + image_path.read_bytes()
+    body += f"\r\n--{boundary}--\r\n".encode()
     return body, f"multipart/form-data; boundary={boundary}"
 
 
-def post_json(base_url: str, endpoint: str, image_path: Path | None = None) -> dict:
-    url = base_url.rstrip("/") + endpoint
+def post(base_url: str, endpoint: str, image_path: Path | None = None) -> dict:
+    request = Request(base_url.rstrip("/") + endpoint, method="POST")
     if image_path is None:
-        request = Request(url, data=b"", method="POST")
+        request.data = b""
         request.add_header("Content-Length", "0")
     else:
         body, content_type = multipart_image(image_path)
-        request = Request(url, data=body, method="POST")
+        request.data = body
         request.add_header("Content-Type", content_type)
         request.add_header("Content-Length", str(len(body)))
     try:
         with urlopen(request, timeout=600) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-            return json.loads(raw)
+            return json.loads(response.read().decode("utf-8", errors="replace"))
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         raise RequestFailure(f"HTTP {exc.code} from {endpoint}", exc.code, body) from exc
@@ -69,70 +62,60 @@ def post_json(base_url: str, endpoint: str, image_path: Path | None = None) -> d
         raise RequestFailure(str(exc)) from exc
 
 
-def runtime_result(sample: dict, failure: RequestFailure) -> dict:
-    result = {
-        "image": sample.get("image"),
-        "gt_focus_text": sample.get("focused_text"),
-        "predicted_focus_text": None,
-        "focused_index": None,
-        "gt_candidate_present": False,
-        "status": "ERROR_RUNTIME",
-    }
-    if failure.status is not None:
-        result["http_status"] = failure.status
-    if failure.body is not None:
-        result["response_body"] = failure.body
-    result["exception"] = str(failure)
-    return result
-
-
-def evaluate_response(sample: dict, response: dict) -> dict:
-    debug = response.get("tracker_debug") or {}
-    parsed = debug.get("parsed_elements") or []
-    focused_index = debug.get("focused_index")
-    predicted_text = None
-    if isinstance(focused_index, int) and 0 <= focused_index < len(parsed):
-        if isinstance(parsed[focused_index], dict):
-            predicted_text = parsed[focused_index].get("text")
-
-    gt = sample.get("focused_text")
-    gt_key = normalize_text(gt) if gt is not None else None
-    gt_present = gt_key is not None and any(
-        normalize_text(element.get("text")) == gt_key
-        for element in parsed
-        if isinstance(element, dict)
+def discover_images(image_dir: Path) -> list[Path]:
+    return sorted(
+        (path for path in image_dir.rglob("*") if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS),
+        key=lambda path: str(path.relative_to(image_dir)).casefold(),
     )
-    if gt is not None and not gt_present:
-        status = "FAIL_PARSING_GT_MISSING"
-    elif gt is not None and focused_index is None:
-        status = "FAIL_FOCUS_FALSE_NEGATIVE"
-    elif gt is not None and normalize_text(predicted_text) != gt_key:
-        status = "FAIL_FOCUS_WRONG_SELECTION"
-    elif gt is None and focused_index is not None:
-        status = "FAIL_NO_FOCUS_FALSE_POSITIVE"
-    else:
-        status = "PASS" if gt is not None else "PASS_NO_FOCUS"
 
+
+def extract_result(response: dict, image_path: Path) -> dict:
+    debug = response.get("tracker_debug") or {}
+    elements = debug.get("parsed_elements") or []
+    element_texts = [element.get("text", "") for element in elements if isinstance(element, dict)]
+    focused_index = debug.get("focused_index")
+    focused_text = (
+        element_texts[focused_index]
+        if isinstance(focused_index, int) and 0 <= focused_index < len(element_texts)
+        else None
+    )
     focus_debug = debug.get("focus_resolver_debug") or {}
-    result = {
-        "image": sample.get("image"),
-        "gt_focus_text": gt,
-        "predicted_focus_text": predicted_text,
+    return {
+        "image": image_path.name,
         "focused_index": focused_index,
-        "gt_candidate_present": gt_present,
-        "status": status,
-        "state_id": response.get("state_id"),
-        "is_new": response.get("is_new"),
-        "score": response.get("score"),
+        "focused_text": focused_text,
+        "elements": element_texts,
         "parsing_elapsed_seconds": debug.get("parsing_elapsed_seconds"),
         "focus_elapsed_seconds": debug.get("focus_elapsed_seconds"),
         "total_observation_elapsed_seconds": debug.get("total_observation_elapsed_seconds"),
-        "parsed_element_count": len(parsed),
         "focus_image_mode": focus_debug.get("focus_image_mode"),
-        "focus_candidate_groups": focus_debug.get("focus_candidate_groups"),
-        "focus_candidate_group_types": focus_debug.get("focus_candidate_group_types"),
+        "state_id": response.get("state_id"),
+        "is_new": response.get("is_new"),
+        "score": response.get("score"),
     }
-    return result
+
+
+def print_result(position: int, total: int, result: dict) -> None:
+    print(f"[{position:03d}/{total:03d}] {result['image']}")
+    if result.get("focused_index") is None:
+        print("\nFocus:\n  index : null\n  text  : <NO FOCUS>")
+    else:
+        print(f"\nFocus:\n  index : {result['focused_index']}\n  text  : {result['focused_text']}")
+    print("\nElements:")
+    for index, text in enumerate(result.get("elements", [])):
+        marker = "  <-- FOCUS" if index == result.get("focused_index") else ""
+        print(f"  [{index}] {text}{marker}")
+    print(
+        "\nTiming:"
+        f"\n  parsing : {result.get('parsing_elapsed_seconds')} s"
+        f"\n  focus   : {result.get('focus_elapsed_seconds')} s"
+        f"\n  total   : {result.get('total_observation_elapsed_seconds')} s"
+        f"\n\nMode:\n  {result.get('focus_image_mode')}\n"
+    )
+
+
+def write_review_row(writer: csv.writer, result: dict) -> None:
+    writer.writerow([result["image"], result.get("focused_text") or "", "", ""])
 
 
 def percentile(values: list[float], fraction: float) -> float | None:
@@ -146,78 +129,84 @@ def percentile(values: list[float], fraction: float) -> float | None:
     return round(ordered[lower] * (1 - weight) + ordered[upper] * weight, 3)
 
 
-def summary_for(results: list[dict]) -> dict:
-    counts = {status: sum(result.get("status") == status for result in results) for status in {
-        "PASS", "PASS_NO_FOCUS", "FAIL_PARSING_GT_MISSING",
-        "FAIL_FOCUS_WRONG_SELECTION", "FAIL_FOCUS_FALSE_NEGATIVE",
-        "FAIL_NO_FOCUS_FALSE_POSITIVE",
-    }}
-    gt_samples = [result for result in results if result.get("gt_focus_text") is not None]
-    present_samples = [result for result in gt_samples if result.get("gt_candidate_present")]
-    parsing_times = [result["parsing_elapsed_seconds"] for result in results if isinstance(result.get("parsing_elapsed_seconds"), (int, float))]
-    focus_times = [result["focus_elapsed_seconds"] for result in results if isinstance(result.get("focus_elapsed_seconds"), (int, float))]
-    total_times = [result["total_observation_elapsed_seconds"] for result in results if isinstance(result.get("total_observation_elapsed_seconds"), (int, float))]
-    samples = len(results)
-    passed = counts["PASS"] + counts["PASS_NO_FOCUS"]
-    return {
-        "samples": samples,
-        "pass": passed,
-        "pass_rate": passed / samples if samples else 0.0,
-        "parsing_gt_missing": counts["FAIL_PARSING_GT_MISSING"],
-        "focus_wrong_selection": counts["FAIL_FOCUS_WRONG_SELECTION"],
-        "focus_false_negative": counts["FAIL_FOCUS_FALSE_NEGATIVE"],
-        "no_focus_false_positive": counts["FAIL_NO_FOCUS_FALSE_POSITIVE"],
-        "parsing_candidate_recall": len(present_samples) / len(gt_samples) if gt_samples else None,
-        "conditional_focus_accuracy": sum(result.get("status") == "PASS" for result in present_samples) / len(present_samples) if present_samples else None,
-        "avg_parsing_elapsed_seconds": round(mean(parsing_times), 3) if parsing_times else None,
-        "avg_focus_elapsed_seconds": round(mean(focus_times), 3) if focus_times else None,
-        "avg_total_observation_elapsed_seconds": round(mean(total_times), 3) if total_times else None,
-        "p50_focus_elapsed_seconds": percentile(focus_times, 0.50),
-        "p95_focus_elapsed_seconds": percentile(focus_times, 0.95),
-    }
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--image-dir", required=True, type=Path)
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--limit", type=int)
+    parser.add_argument("--start-from")
+    parser.add_argument("--review-file", type=Path)
     args = parser.parse_args()
 
-    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
-    if not isinstance(manifest, list):
-        raise ValueError("manifest must be a JSON array")
+    images = discover_images(args.image_dir)
+    if args.start_from:
+        start_position = next(
+            (position for position, path in enumerate(images)
+             if path.name == args.start_from or str(path.relative_to(args.image_dir)) == args.start_from),
+            None,
+        )
+        if start_position is None:
+            raise SystemExit(f"--start-from image not found: {args.start_from}")
+        images = images[start_position:]
+    if args.limit is not None:
+        images = images[:max(0, args.limit)]
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    review_handle = None
+    review_writer = None
+    if args.review_file:
+        args.review_file.parent.mkdir(parents=True, exist_ok=True)
+        needs_header = not args.review_file.exists() or args.review_file.stat().st_size == 0
+        review_handle = args.review_file.open("a", newline="", encoding="utf-8")
+        review_writer = csv.writer(review_handle)
+        if needs_header:
+            review_writer.writerow(["image", "predicted_focus", "manual_result", "manual_note"])
+            review_handle.flush()
+
     results: list[dict] = []
-    with args.output.open("w", encoding="utf-8") as output:
+    started_tracker = False
+    try:
         try:
-            post_json(args.base_url, "/debug/tracker/reset")
+            post(args.base_url, "/debug/tracker/reset")
         except RequestFailure as exc:
-            print(f"tracker reset failed: {exc}", file=sys.stderr)
+            print(f"[ERROR] tracker reset\n{exc}", file=sys.stderr)
 
-        for position, sample in enumerate(manifest):
-            image_name = sample.get("image") if isinstance(sample, dict) else None
-            image_path = args.image_dir / image_name if isinstance(image_name, str) else None
-            endpoint = "/debug/tracker/start" if position == 0 else "/debug/tracker/step"
-            started = time.perf_counter()
-            try:
-                if image_path is None:
-                    raise RequestFailure("manifest sample image must be a string")
-                response = post_json(args.base_url, endpoint, image_path)
-                result = evaluate_response(sample, response)
-            except (RequestFailure, OSError, KeyError, TypeError, ValueError) as exc:
-                result = runtime_result(
-                    sample,
-                    exc if isinstance(exc, RequestFailure) else RequestFailure(str(exc)),
-                )
-            result.setdefault("batch_elapsed_seconds", round(time.perf_counter() - started, 3))
-            results.append(result)
-            output.write(json.dumps(result, ensure_ascii=False) + "\n")
-            output.flush()
+        with args.output.open("w", encoding="utf-8") as output:
+            for position, image_path in enumerate(images, start=1):
+                endpoint = "/debug/tracker/start" if not started_tracker else "/debug/tracker/step"
+                try:
+                    response = post(args.base_url, endpoint, image_path)
+                    result = extract_result(response, image_path)
+                    started_tracker = True
+                    results.append(result)
+                    print_result(position, len(images), result)
+                    if review_writer is not None:
+                        write_review_row(review_writer, result)
+                        review_handle.flush()
+                except (RequestFailure, OSError, KeyError, TypeError, ValueError) as exc:
+                    result = {"image": image_path.name, "status": "ERROR_RUNTIME", "error": str(exc)}
+                    results.append(result)
+                    print(f"[ERROR] {image_path.name}\n{exc}", file=sys.stderr)
+                    if review_writer is not None:
+                        write_review_row(review_writer, result)
+                        review_handle.flush()
+                output.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")
+                output.flush()
+    finally:
+        if review_handle is not None:
+            review_handle.close()
 
-    summary_path = args.output.with_name("summary.json")
-    summary_path.write_text(json.dumps(summary_for(results), indent=2) + "\n", encoding="utf-8")
+    parsing = [r["parsing_elapsed_seconds"] for r in results if isinstance(r.get("parsing_elapsed_seconds"), (int, float))]
+    focus = [r["focus_elapsed_seconds"] for r in results if isinstance(r.get("focus_elapsed_seconds"), (int, float))]
+    total = [r["total_observation_elapsed_seconds"] for r in results if isinstance(r.get("total_observation_elapsed_seconds"), (int, float))]
+    print(f"Processed images : {len(results)}")
+    print(f"Runtime errors   : {sum(r.get('status') == 'ERROR_RUNTIME' for r in results)}")
+    print(f"\nAverage parsing  : {statistics.mean(parsing):.3f} s" if parsing else "\nAverage parsing  : n/a")
+    print(f"Average focus    : {statistics.mean(focus):.3f} s" if focus else "Average focus    : n/a")
+    print(f"Average total    : {statistics.mean(total):.3f} s" if total else "Average total    : n/a")
+    print(f"\nP50 focus        : {percentile(focus, 0.50)} s")
+    print(f"P95 focus        : {percentile(focus, 0.95)} s")
     return 0
 
 
