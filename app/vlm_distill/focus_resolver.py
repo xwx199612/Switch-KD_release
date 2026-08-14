@@ -84,6 +84,7 @@ class FocusResolver:
     GRID_MAX_VERTICAL_SPAN_HEIGHTS = 5.0
     GRID_MAX_HORIZONTAL_SPAN_WIDTHS = 8.0
     DEBUG_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_input.png"
+    DEBUG_UNANNOTATED_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_unannotated_input.png"
     VISUAL_RING_CONTINUITY_WEIGHT = 0.55
     VISUAL_RING_CONTRAST_WEIGHT = 0.30
     VISUAL_BACKGROUND_WEIGHT = 0.15
@@ -111,7 +112,6 @@ class FocusResolver:
             for index in group
         }
         focus_group_ids = [group_by_index[index] for index in focus_indices]
-        visual_evidence = self._visual_focus_evidence(image, candidates, candidate_groups)
         # Grouping is descriptive and controls presentation order; it must not
         # remove candidates from the resolver input.
         filter_used = False
@@ -121,6 +121,7 @@ class FocusResolver:
 
         (
             annotated_image,
+            unannotated_image,
             roi_bbox,
             roi_used,
             annotated_indices,
@@ -129,6 +130,7 @@ class FocusResolver:
             montage_grid,
             montage_size,
             montage_tile_sizes,
+            prepared_candidate_bboxes,
         ) = self._prepare_focus_image(
             image,
             focus_candidates,
@@ -136,10 +138,22 @@ class FocusResolver:
             focus_group_ids=focus_group_ids,
             use_montage=len(candidate_groups) >= 2,
         )
+        visual_evidence = self._visual_focus_evidence(
+            unannotated_image,
+            candidates,
+            candidate_groups,
+            prepared_candidate_bboxes,
+        )
         focus_debug_image_path: str | None = None
         try:
             annotated_image.save(self.DEBUG_IMAGE_PATH, format="PNG")
             focus_debug_image_path = self.DEBUG_IMAGE_PATH
+        except (OSError, ValueError):
+            pass
+        focus_debug_unannotated_image_path: str | None = None
+        try:
+            unannotated_image.save(self.DEBUG_UNANNOTATED_IMAGE_PATH, format="PNG")
+            focus_debug_unannotated_image_path = self.DEBUG_UNANNOTATED_IMAGE_PATH
         except (OSError, ValueError):
             pass
         candidate_lines = "\n".join(
@@ -186,6 +200,8 @@ class FocusResolver:
             "focus_montage_group_tile_indices": candidate_groups
             if focus_image_mode == "group_montage" else [],
             "focus_debug_image_path": focus_debug_image_path,
+            "focus_debug_unannotated_image_path": focus_debug_unannotated_image_path,
+            "focus_visual_evidence_space": "prepared",
             "focus_visual_evidence": visual_evidence,
             "focus_visual_evidence_top_indices": [
                 item["index"] for item in sorted(
@@ -206,11 +222,17 @@ class FocusResolver:
         image: Image.Image,
         candidates: list[dict[str, Any]],
         candidate_groups: list[list[int]],
+        prepared_candidate_bboxes: dict[int, list[int]],
     ) -> list[dict[str, Any]]:
         """Compute diagnostic-only focus decoration evidence from the source image."""
         geometries = {
-            index: cls._candidate_pixel_geometry(image, candidate)
-            for index, candidate in enumerate(candidates)
+            index: tuple(bbox)
+            if isinstance(bbox, list) and len(bbox) == 4
+            else None
+            for index, bbox in (
+                (index, prepared_candidate_bboxes.get(index))
+                for index in range(len(candidates))
+            )
         }
         group_by_index = {
             index: group_id
@@ -332,6 +354,17 @@ class FocusResolver:
                 "selected_container_bbox": values["selected_container"],
                 "container_expansion_ratio": round(values["expansion_ratio"], 4),
                 "raw_decoration_score": round(values["raw_score"], 4),
+                "prepared_bbox": (
+                    list(geometries[index]) if geometries[index] is not None else None
+                ),
+                "prepared_candidate_width": (
+                    geometries[index][2] - geometries[index][0]
+                    if geometries[index] is not None else 0
+                ),
+                "prepared_candidate_height": (
+                    geometries[index][3] - geometries[index][1]
+                    if geometries[index] is not None else 0
+                ),
                 "ring_continuity": round(continuity, 4),
                 "outer_ring_contrast": round(ring, 4),
                 "background_highlight_evidence": round(background, 4),
@@ -562,6 +595,15 @@ class FocusResolver:
         samples: list[tuple[int, bool, float]] = []
         sample_count = 32
         threshold = 0.10
+        candidate_width = max(1, right - left)
+        candidate_height = max(1, bottom - top)
+        near_distance = max(
+            1, min(4, round(min(candidate_width, candidate_height) * 0.02))
+        )
+        far_distance = max(
+            near_distance + 2,
+            min(24, round(min(candidate_width, candidate_height) * 0.08)),
+        )
 
         def add_sample(
             side: int,
@@ -588,14 +630,38 @@ class FocusResolver:
             fraction = (position + 0.5) / sample_count
             x = round(left + fraction * max(1, right - left - 1))
             y = round(top + fraction * max(1, bottom - top - 1))
-            if top >= 7:
-                add_sample(0, position, (x, top + 1), (x, top - 2), (x, top - 7), True)
-            if bottom + 7 < image.height:
-                add_sample(1, position, (x, bottom - 1), (x, bottom + 2), (x, bottom + 7), True)
-            if left >= 7:
-                add_sample(2, position, (left + 1, y), (left - 2, y), (left - 7, y), False)
-            if right + 7 < image.width:
-                add_sample(3, position, (right - 1, y), (right + 2, y), (right + 7, y), False)
+            if top >= far_distance:
+                add_sample(
+                    0, position,
+                    (x, top + near_distance),
+                    (x, top - near_distance),
+                    (x, top - far_distance),
+                    True,
+                )
+            if bottom + far_distance < image.height:
+                add_sample(
+                    1, position,
+                    (x, bottom - near_distance - 1),
+                    (x, bottom + near_distance),
+                    (x, bottom + far_distance),
+                    True,
+                )
+            if left >= far_distance:
+                add_sample(
+                    2, position,
+                    (left + near_distance, y),
+                    (left - near_distance, y),
+                    (left - far_distance, y),
+                    False,
+                )
+            if right + far_distance < image.width:
+                add_sample(
+                    3, position,
+                    (right - near_distance - 1, y),
+                    (right + near_distance, y),
+                    (right + far_distance, y),
+                    False,
+                )
 
         if not samples:
             return 0.0, 0.0
@@ -1054,6 +1120,7 @@ class FocusResolver:
         use_montage: bool = False,
     ) -> tuple[
         Image.Image,
+        Image.Image,
         tuple[int, int, int, int] | None,
         bool,
         list[int],
@@ -1062,6 +1129,7 @@ class FocusResolver:
         list[int],
         list[int],
         list[list[int]],
+        dict[int, list[int]],
     ]:
         """Make one geometrically selected, annotated image for focus inference."""
         if not isinstance(image, Image.Image) or image.width <= 0 or image.height <= 0:
@@ -1125,8 +1193,10 @@ class FocusResolver:
             roi = (0, 0, image_width, image_height)
 
         crop = image.crop(roi).copy()
+        unannotated_crop = crop.copy()
         draw = ImageDraw.Draw(crop)
         annotated_indices: list[int] = []
+        prepared_candidate_bboxes: dict[int, list[int]] = {}
         for left, top, right, bottom, index, _group_id in candidate_boxes:
             if right <= roi[0] or left >= roi[2] or bottom <= roi[1] or top >= roi[3]:
                 continue
@@ -1134,8 +1204,15 @@ class FocusResolver:
             y1 = max(top, roi[1]) - roi[1]
             cls._draw_focus_index_label(draw, index, x1, y1, crop.size)
             annotated_indices.append(index)
+            prepared_candidate_bboxes[index] = [
+                max(0, left - roi[0]),
+                max(0, top - roi[1]),
+                min(crop.width, right - roi[0]),
+                min(crop.height, bottom - roi[1]),
+            ]
 
         input_image = crop
+        unannotated_input_image = unannotated_crop
         crop_area_fraction = (crop.width * crop.height) / (image_width * image_height)
         if roi_used and crop_area_fraction < cls.ROI_MAX_AREA_FRACTION:
             scale = min(
@@ -1148,8 +1225,16 @@ class FocusResolver:
                     (max(1, round(crop.width * scale)), max(1, round(crop.height * scale))),
                     Image.Resampling.LANCZOS,
                 )
+                unannotated_input_image = unannotated_crop.resize(
+                    input_image.size, Image.Resampling.LANCZOS
+                )
+                prepared_candidate_bboxes = {
+                    index: [round(value * scale) for value in box]
+                    for index, box in prepared_candidate_bboxes.items()
+                }
         return (
             input_image,
+            unannotated_input_image,
             roi,
             roi_used,
             annotated_indices,
@@ -1158,6 +1243,7 @@ class FocusResolver:
             [0, 0],
             [0, 0],
             [],
+            prepared_candidate_bboxes,
         )
 
     @staticmethod
@@ -1219,6 +1305,7 @@ class FocusResolver:
         candidate_boxes: list[tuple[int, int, int, int, int, int]],
     ) -> tuple[
         Image.Image,
+        Image.Image,
         tuple[int, int, int, int] | None,
         bool,
         list[int],
@@ -1227,6 +1314,7 @@ class FocusResolver:
         list[int],
         list[int],
         list[list[int]],
+        dict[int, list[int]],
     ] | None:
         """Build one context-preserving crop tile for each candidate group."""
         if not candidate_boxes:
@@ -1302,8 +1390,12 @@ class FocusResolver:
                 return None
 
             montage = Image.new("RGB", (montage_width, montage_height), (32, 32, 32))
+            unannotated_montage = Image.new(
+                "RGB", (montage_width, montage_height), (32, 32, 32)
+            )
             annotated_indices: list[int] = []
             tile_sizes: list[list[int]] = []
+            prepared_candidate_bboxes: dict[int, list[int]] = {}
             draw = ImageDraw.Draw(montage)
             y = padding
             for row in range(rows):
@@ -1316,6 +1408,7 @@ class FocusResolver:
                     tile = tile_data["crop"].resize(
                         (tile_width, tile_height), Image.Resampling.LANCZOS
                     )
+                    unannotated_tile = tile.copy()
                     tile_draw = ImageDraw.Draw(tile)
                     scale_x = tile_width / tile_data["crop"].width
                     scale_y = tile_height / tile_data["crop"].height
@@ -1330,6 +1423,13 @@ class FocusResolver:
                             tile.size,
                         )
                         annotated_indices.append(index)
+                        prepared_candidate_bboxes[index] = [
+                            x + label_x,
+                            y + label_y,
+                            x + round((right - tile_data["crop_left"]) * scale_x),
+                            y + round((bottom - tile_data["crop_top"]) * scale_y),
+                        ]
+                    unannotated_montage.paste(unannotated_tile, (x, y))
                     montage.paste(tile, (x, y))
                     tile_sizes.append([tile_width, tile_height])
                     x += tile_width + gap
@@ -1337,6 +1437,7 @@ class FocusResolver:
 
             return (
                 montage,
+                unannotated_montage,
                 None,
                 False,
                 annotated_indices,
@@ -1345,6 +1446,7 @@ class FocusResolver:
                 [rows, columns],
                 [montage.width, montage.height],
                 tile_sizes,
+                prepared_candidate_bboxes,
             )
         except (TypeError, ValueError, OSError):
             return None

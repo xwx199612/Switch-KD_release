@@ -200,6 +200,7 @@ def extract_result(response: dict, image_path: Path) -> dict:
         "focus_elapsed_seconds": debug.get("focus_elapsed_seconds"),
         "total_observation_elapsed_seconds": debug.get("total_observation_elapsed_seconds"),
         "focus_image_mode": focus_debug.get("focus_image_mode"),
+        "focus_visual_evidence_space": focus_debug.get("focus_visual_evidence_space"),
         "state_id": response.get("state_id"),
         "is_new": response.get("is_new"),
         "score": response.get("score"),
@@ -257,6 +258,7 @@ def print_result(position: int, total: int, result: dict) -> None:
             f"bg={item['background_highlight_evidence']:.2f} "
             f"expand={item['container_expansion_ratio']:.2f}{marker}"
         )
+    print(f"\nEvidence space:\n  {result.get('focus_visual_evidence_space')}")
     print("\nElements:")
     for index, text in enumerate(result.get("elements", [])):
         marker = "  <-- FOCUS" if index == result.get("focused_index") else ""
