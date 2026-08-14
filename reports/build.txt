@@ -15,13 +15,13 @@
 #4 DONE 0.0s
 
 #5 [internal] load build context
-#5 transferring context: 78.87kB done
+#5 transferring context: 97.45kB done
 #5 DONE 0.0s
 
-#6 [ 3/10] WORKDIR /app
+#6 [ 2/10] RUN apt-get update     && apt-get install -y --no-install-recommends        software-properties-common ca-certificates curl build-essential     && add-apt-repository ppa:deadsnakes/ppa     && apt-get update     && apt-get install -y --no-install-recommends        python3.11 python3.11-dev python3.11-venv libgl1 libglib2.0-0     && rm -rf /var/lib/apt/lists/*
 #6 CACHED
 
-#7 [ 2/10] RUN apt-get update     && apt-get install -y --no-install-recommends        software-properties-common ca-certificates curl build-essential     && add-apt-repository ppa:deadsnakes/ppa     && apt-get update     && apt-get install -y --no-install-recommends        python3.11 python3.11-dev python3.11-venv libgl1 libglib2.0-0     && rm -rf /var/lib/apt/lists/*
+#7 [ 3/10] WORKDIR /app
 #7 CACHED
 
 #8 [ 4/10] COPY requirements-runtime.lock /app/requirements-runtime.lock
@@ -43,11 +43,11 @@
 #13 DONE 0.0s
 
 #14 [10/10] RUN useradd --create-home --uid 10001 runtime     && mkdir -p /output/cache/huggingface /output/cache/triton /output/cache/torch     && chown -R runtime:runtime /output /app /config /usr/local/bin/entrypoint.sh     && python3.11 -m compileall -q /app/vlm_distill
-#14 DONE 0.3s
+#14 DONE 0.4s
 
 #15 exporting to image
 #15 exporting layers 0.1s done
-#15 writing image sha256:c564060f3cfa61fd5be26cb2c7f83f2f3f3d6697d256984c2ae4bee022fbb949 done
+#15 writing image sha256:4d69e9fc40861ff378485f6b638fdd220940253ea0b036d64bb9ea0f3b897b62 done
 #15 naming to docker.io/library/vlm-online-dbild-runtime:1.2.0 done
 #15 DONE 0.1s
 image=vlm-online-dbild-runtime:1.2.0

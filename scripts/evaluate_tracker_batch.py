@@ -425,5 +425,68 @@ def main() -> int:
     return 0
 
 
+def _format_float(value: object) -> str:
+    if value is None:
+        return "-"
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def print_result(*args: object, **kwargs: object) -> None:
+    """Compact human-facing V5 presentation; detailed diagnostics stay in JSONL."""
+    result = dict(next((value for value in args if isinstance(value, dict)), {}))
+    debug = result.get("tracker_debug") or result.get("debug") or {}
+    if isinstance(debug, dict):
+        result.setdefault("peer_groups", debug.get("focus_peer_groups", []))
+        result.setdefault("isolated_indices", debug.get("focus_isolated_indices", []))
+        result.setdefault("peer_debug_image_path", debug.get("focus_peer_debug_image_path"))
+        for key in ("outline_decision", "enlargement_decision", "highlight_decision", "isolated_decision"):
+            result.setdefault(key, debug.get(key))
+        result.setdefault("v5_visual_focus_candidate", debug.get("focus_visual_v5_candidate_index"))
+        result.setdefault("v5_visual_focus_stage", debug.get("focus_visual_v5_stage"))
+        result.setdefault("v5_visual_focus_matched", debug.get("focus_visual_v5_matched"))
+        result.setdefault("v5_visual_focus_score", debug.get("focus_visual_v5_score"))
+        result.setdefault("v5_visual_focus_margin", debug.get("focus_visual_v5_margin"))
+        result.setdefault("v5_visual_focus_peer_group_id", debug.get("focus_visual_v5_peer_group_id"))
+    position = next((value for value in args if isinstance(value, int)), None)
+    total = None
+    if isinstance(position, int):
+        integer_args = [value for value in args if isinstance(value, int)]
+        if len(integer_args) > 1:
+            total = integer_args[-1]
+    image = result.get("image", "<unknown>")
+    prefix = f"[{position:03d}/{total:03d}] " if isinstance(position, int) and isinstance(total, int) else ""
+    print(f"{prefix}{image}\n")
+    print("VLM Decision:")
+    print(f"  index : {result.get('focused_index')}")
+    print(f"  text  : {result.get('focused_text')}")
+    print("\nHierarchy Focus Decision:")
+    matched = bool(result.get("v5_visual_focus_matched", False))
+    print(f"  result : {'MATCH' if matched else 'ABSTAIN'}")
+    print(f"  stage  : {result.get('v5_visual_focus_stage') or 'no_peer_match'}")
+    index = result.get("v5_visual_focus_candidate") if matched else None
+    print(f"  index  : {index}")
+    print(f"  text   : {result.get('v5_visual_focus_text') if matched else None}")
+    if matched:
+        print(f"  score  : {_format_float(result.get('v5_visual_focus_score'))}")
+        print(f"  margin : {_format_float(result.get('v5_visual_focus_margin'))}")
+        print(f"  peer   : {result.get('v5_visual_focus_peer_group_id')}")
+    for name in ("outline", "enlargement", "highlight", "isolated"):
+        decision = result.get(f"{name}_decision") or {}
+        if not decision.get("executed", False):
+            print(f"  {name:<11}: SKIPPED")
+        else:
+            status = "MATCH" if decision.get("matched") else ("ABSTAIN" if name == "isolated" else "NO_HIT")
+            print(f"  {name:<11}: {status:<7} best=#{decision.get('candidate_index')} score={_format_float(decision.get('score'))} margin={_format_float(decision.get('margin'))}")
+    print("\nPeer debug:")
+    print(f"  groups   : {len(result.get('peer_groups') or [])}")
+    print(f"  isolated : {len(result.get('isolated_indices') or [])}")
+    print(f"  image    : {result.get('peer_debug_image_path') or '-'}")
+    print("\nTiming: parsing={}s focus={}s total={}s".format(_format_float(result.get("parsing_elapsed_seconds")), _format_float(result.get("focus_elapsed_seconds")), _format_float(result.get("total_observation_elapsed_seconds"))))
+    print(f"Mode: {result.get('focus_image_mode') or '-'}")
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
