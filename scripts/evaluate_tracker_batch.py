@@ -188,6 +188,14 @@ def extract_result(response: dict, image_path: Path) -> dict:
             "ring_continuity": item.get("ring_continuity"),
             "outer_ring_contrast": item.get("outer_ring_contrast"),
             "background_highlight_evidence": item.get("background_highlight_evidence"),
+            "outline_score": item.get("outline_score"),
+            "highlight_score": item.get("highlight_score"),
+            "enlargement_score": item.get("enlargement_score"),
+            "direct_visual_confidence": item.get("direct_visual_confidence"),
+            "relative_width": item.get("relative_width"),
+            "relative_height": item.get("relative_height"),
+            "relative_area": item.get("relative_area"),
+            "peer_protrusion_score": item.get("peer_protrusion_score"),
             "size_ratio": item.get("size_ratio"),
             "container_expansion_ratio": item.get("container_expansion_ratio"),
         })
@@ -250,13 +258,13 @@ def print_result(position: int, total: int, result: dict) -> None:
     for item in result.get("visual_evidence_top", []):
         marker = "  <-- VLM" if item["index"] == result.get("focused_index") else ""
         print(
-            f"  [{item['index']}] {item['text']} "
-            f"score={item['visual_focus_score']:.2f} "
-            f"raw={item['raw_decoration_score']:.2f} "
-            f"ring_cont={item['ring_continuity']:.2f} "
-            f"ring={item['outer_ring_contrast']:.2f} "
-            f"bg={item['background_highlight_evidence']:.2f} "
-            f"expand={item['container_expansion_ratio']:.2f}{marker}"
+            f"  [{item['index']}] {item['text']}\n"
+            f"      outline={item['outline_score']:.2f} "
+            f"highlight={item['highlight_score']:.2f} "
+            f"enlarge={item['enlargement_score']:.2f} "
+            f"rel_w={item['relative_width']:.2f} "
+            f"rel_h={item['relative_height']:.2f} "
+            f"protrude={item['peer_protrusion_score']:.2f}{marker}"
         )
     print(f"\nEvidence space:\n  {result.get('focus_visual_evidence_space')}")
     print("\nElements:")

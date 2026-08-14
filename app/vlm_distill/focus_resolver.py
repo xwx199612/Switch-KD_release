@@ -206,7 +206,7 @@ class FocusResolver:
             "focus_visual_evidence_top_indices": [
                 item["index"] for item in sorted(
                     visual_evidence,
-                    key=lambda item: (-item["visual_focus_score"], item["index"]),
+                    key=lambda item: (-item["direct_visual_confidence"], item["index"]),
                 )
             ],
         })
@@ -274,7 +274,7 @@ class FocusResolver:
             )
             scored_proposals: list[dict[str, Any]] = []
             for proposal in proposals:
-                ring_continuity, ring_contrast, background_delta, edge_strength = (
+                ring_continuity, ring_contrast, background_delta, edge_strength, side_support = (
                     cls._decoration_features(image, proposal["bbox"])
                 )
                 decoration_score = (
@@ -289,6 +289,7 @@ class FocusResolver:
                     "ring_continuity": ring_continuity,
                     "outer_ring_contrast": ring_contrast,
                     "background_highlight_evidence": background_delta,
+                    "highlight_side_support": side_support,
                     "score": decoration_score * scale_penalty,
                     "raw_score": decoration_score,
                     "edge": edge_strength,
@@ -315,6 +316,7 @@ class FocusResolver:
                 "continuity": best["ring_continuity"],
                 "outer_ring": best["outer_ring_contrast"],
                 "background": best["background_highlight_evidence"],
+                "side_support": best.get("highlight_side_support", {}),
                 "edge": best["edge"],
                 "area": float(width * height),
                 "width": float(width),
@@ -327,8 +329,10 @@ class FocusResolver:
             values = raw[index]
             peer_indices = [
                 peer for peer in candidate_groups[group_by_index[index]]
-                if peer in raw
+                if peer in raw and geometries.get(peer) is not None
             ] if index in group_by_index else [index]
+            if not peer_indices:
+                peer_indices = [index]
             continuity = cls._peer_relative(
                 values["continuity"],
                 [raw[peer]["continuity"] for peer in peer_indices],
@@ -342,10 +346,18 @@ class FocusResolver:
             size_ratio = values["area"] / max(cls._median(peer_areas), 1.0)
             width_ratio = values["width"] / max(cls._median(peer_widths), 1.0)
             height_ratio = values["height"] / max(cls._median(peer_heights), 1.0)
-            score = (
-                cls.VISUAL_RING_CONTINUITY_WEIGHT * continuity
-                + cls.VISUAL_RING_CONTRAST_WEIGHT * ring
-                + cls.VISUAL_BACKGROUND_WEIGHT * background
+            outline_score = cls._clamp01(continuity * math.sqrt(ring))
+            highlight_side_support = values.get("side_support", {})
+            highlight_consistency = cls._clamp01(
+                sum(highlight_side_support.values()) / 4.0
+                if highlight_side_support else 0.0
+            )
+            highlight_score = cls._clamp01(background * highlight_consistency)
+            enlargement_score, protrusion, size_consistency, scale_details = (
+                cls._enlargement_evidence(index, peer_indices, raw, geometries)
+            )
+            direct_visual_confidence = max(
+                outline_score, highlight_score, enlargement_score
             )
             evidence.append({
                 "index": index,
@@ -368,11 +380,25 @@ class FocusResolver:
                 "ring_continuity": round(continuity, 4),
                 "outer_ring_contrast": round(ring, 4),
                 "background_highlight_evidence": round(background, 4),
+                "outline_score": round(outline_score, 4),
+                "highlight_score": round(highlight_score, 4),
+                "enlargement_score": round(enlargement_score, 4),
                 "size_ratio": round(size_ratio, 4),
                 "width_ratio": round(width_ratio, 4),
                 "height_ratio": round(height_ratio, 4),
                 "local_edge_strength": round(edge, 4),
-                "visual_focus_score": round(score, 4),
+                "relative_width": round(scale_details["relative_width"], 4),
+                "relative_height": round(scale_details["relative_height"], 4),
+                "relative_area": round(scale_details["relative_area"], 4),
+                "peer_size_consistency": round(size_consistency, 4),
+                "peer_protrusion_score": round(protrusion, 4),
+                "outline_side_support": scale_details["outline_side_support"],
+                "highlight_side_support": {
+                    side: round(value, 4)
+                    for side, value in highlight_side_support.items()
+                },
+                "direct_visual_confidence": round(direct_visual_confidence, 4),
+                "visual_focus_score": round(direct_visual_confidence, 4),
                 "container_proposals": [
                     {
                         "bbox": list(item["bbox"]),
@@ -530,7 +556,7 @@ class FocusResolver:
         cls,
         image: Image.Image,
         box: tuple[int, int, int, int],
-    ) -> tuple[float, float, float, float]:
+    ) -> tuple[float, float, float, float, dict[str, float]]:
         ring_continuity, ring_contrast = cls._perimeter_ring_evidence(image, box)
         background_mean = cls._mean_luma_band(image, box, 14, 5)
         perimeter_mean = cls._perimeter_luma(image, box)
@@ -538,7 +564,63 @@ class FocusResolver:
             abs(perimeter_mean - background_mean) / 255.0
         )
         edge_strength = cls._perimeter_edge_strength(image, box)
-        return ring_continuity, ring_contrast, background_delta, edge_strength
+        return (
+            ring_continuity,
+            ring_contrast,
+            background_delta,
+            edge_strength,
+            cls._highlight_side_support(image, box),
+        )
+
+    @classmethod
+    def _highlight_side_support(
+        cls,
+        image: Image.Image,
+        box: tuple[int, int, int, int],
+    ) -> dict[str, float]:
+        left, top, right, bottom = box
+        near = max(1, min(4, round(min(right - left, bottom - top) * 0.02)))
+        far = max(near + 2, min(24, round(min(right - left, bottom - top) * 0.08)))
+        side_values: dict[str, list[float]] = {
+            "top": [], "bottom": [], "left": [], "right": []
+        }
+        count = 24
+        for position in range(count):
+            fraction = (position + 0.5) / count
+            x = round(left + fraction * max(1, right - left - 1))
+            y = round(top + fraction * max(1, bottom - top - 1))
+            if top >= far:
+                side_values["top"].append(cls._clamp01(
+                    abs(
+                        cls._sample_luma(image, (x, top + near), True)
+                        - cls._sample_luma(image, (x, top - far), True)
+                    ) / 255.0
+                ))
+            if bottom + far < image.height:
+                side_values["bottom"].append(cls._clamp01(
+                    abs(
+                        cls._sample_luma(image, (x, bottom - near - 1), True)
+                        - cls._sample_luma(image, (x, bottom + far), True)
+                    ) / 255.0
+                ))
+            if left >= far:
+                side_values["left"].append(cls._clamp01(
+                    abs(
+                        cls._sample_luma(image, (left + near, y), False)
+                        - cls._sample_luma(image, (left - far, y), False)
+                    ) / 255.0
+                ))
+            if right + far < image.width:
+                side_values["right"].append(cls._clamp01(
+                    abs(
+                        cls._sample_luma(image, (right - near - 1, y), False)
+                        - cls._sample_luma(image, (right + far, y), False)
+                    ) / 255.0
+                ))
+        return {
+            side: cls._clamp01(sum(values) / len(values)) if values else 0.0
+            for side, values in side_values.items()
+        }
 
     @staticmethod
     def _pixel_luma(pixel: Any) -> float:
@@ -734,6 +816,134 @@ class FocusResolver:
             return cls._clamp01(value)
         median = cls._median(peers)
         return cls._clamp01((value - median) / max(median, 0.05))
+
+    @classmethod
+    def _enlargement_evidence(
+        cls,
+        index: int,
+        peer_indices: list[int],
+        raw: dict[int, dict[str, Any]],
+        geometries: dict[int, tuple[int, int, int, int] | None],
+    ) -> tuple[float, float, float, dict[str, Any]]:
+        details = {
+            "relative_width": 1.0,
+            "relative_height": 1.0,
+            "relative_area": 1.0,
+            "outline_side_support": {},
+        }
+        others = [peer for peer in peer_indices if peer != index and peer in raw]
+        if not others:
+            return 0.0, 0.0, 0.0, details
+        peer_widths = [raw[peer]["width"] for peer in peer_indices]
+        peer_heights = [raw[peer]["height"] for peer in peer_indices]
+        peer_areas = [raw[peer]["area"] for peer in peer_indices]
+        relative_width = raw[index]["width"] / max(cls._median(peer_widths), 1.0)
+        relative_height = raw[index]["height"] / max(cls._median(peer_heights), 1.0)
+        relative_area = raw[index]["area"] / max(cls._median(peer_areas), 1.0)
+        details.update({
+            "relative_width": relative_width,
+            "relative_height": relative_height,
+            "relative_area": relative_area,
+        })
+        log_widths = [math.log(max(raw[peer]["width"], 1.0)) for peer in peer_indices]
+        log_heights = [math.log(max(raw[peer]["height"], 1.0)) for peer in peer_indices]
+        log_areas = [math.log(max(raw[peer]["area"], 1.0)) for peer in peer_indices]
+        consistency_deviation = cls._median([
+            abs(log_widths[position] - cls._median(log_widths))
+            + abs(log_heights[position] - cls._median(log_heights))
+            + abs(log_areas[position] - cls._median(log_areas))
+            for position in range(len(peer_indices))
+        ]) / 3.0
+        consistency = cls._clamp01(1.0 - consistency_deviation / 0.35)
+
+        area_uniqueness = cls._positive_uniqueness(
+            raw[index]["area"], [raw[peer]["area"] for peer in others]
+        )
+        width_uniqueness = cls._positive_uniqueness(
+            raw[index]["width"], [raw[peer]["width"] for peer in others]
+        )
+        height_uniqueness = cls._positive_uniqueness(
+            raw[index]["height"], [raw[peer]["height"] for peer in others]
+        )
+        uniqueness = cls._clamp01(
+            (width_uniqueness + height_uniqueness + area_uniqueness) / 3.0
+        )
+        scale_evidence = cls._clamp01(
+            0.35 * width_uniqueness
+            + 0.35 * height_uniqueness
+            + 0.30 * cls._clamp01(relative_area - 1.0)
+        )
+        protrusion = cls._peer_protrusion_score(index, peer_indices, geometries)
+        structural_support = 0.5 + 0.5 * protrusion
+        enlargement = cls._clamp01(
+            scale_evidence * uniqueness * structural_support * consistency
+        )
+        return enlargement, protrusion, consistency, details
+
+    @classmethod
+    def _positive_uniqueness(
+        cls,
+        value: float,
+        peer_values: list[float],
+    ) -> float:
+        if not peer_values:
+            return 0.0
+        logs = [math.log(max(peer, 1.0)) for peer in peer_values]
+        median = cls._median(logs)
+        mad = cls._median([abs(item - median) for item in logs])
+        positive_difference = max(0.0, math.log(max(value, 1.0)) - median)
+        return cls._clamp01(positive_difference / max(0.15, 3.0 * mad + 0.05))
+
+    @classmethod
+    def _peer_protrusion_score(
+        cls,
+        index: int,
+        peer_indices: list[int],
+        geometries: dict[int, tuple[int, int, int, int] | None],
+    ) -> float:
+        geometry = geometries.get(index)
+        peers = [
+            geometries[peer]
+            for peer in peer_indices
+            if peer != index and geometries.get(peer) is not None
+        ]
+        if geometry is None or not peers:
+            return 0.0
+        left, top, right, bottom = geometry
+        width = max(1, right - left)
+        height = max(1, bottom - top)
+        center_x = (left + right) / 2.0
+        center_y = (top + bottom) / 2.0
+        row_peers = [
+            peer for peer in peers
+            if max(0, min(bottom, peer[3]) - max(top, peer[1]))
+            / max(1, min(height, peer[3] - peer[1])) >= 0.35
+            or abs(center_y - (peer[1] + peer[3]) / 2.0)
+            <= 0.65 * max(height, peer[3] - peer[1])
+        ]
+        column_peers = [
+            peer for peer in peers
+            if max(0, min(right, peer[2]) - max(left, peer[0]))
+            / max(1, min(width, peer[2] - peer[0])) >= 0.35
+            or abs(center_x - (peer[0] + peer[2]) / 2.0)
+            <= 0.65 * max(width, peer[2] - peer[0])
+        ]
+        protrusions: list[float] = []
+        if row_peers:
+            median_top = cls._median([peer[1] for peer in row_peers])
+            median_bottom = cls._median([peer[3] for peer in row_peers])
+            protrusions.extend([
+                max(0.0, (median_top - top) / height),
+                max(0.0, (bottom - median_bottom) / height),
+            ])
+        if column_peers:
+            median_left = cls._median([peer[0] for peer in column_peers])
+            median_right = cls._median([peer[2] for peer in column_peers])
+            protrusions.extend([
+                max(0.0, (median_left - left) / width),
+                max(0.0, (right - median_right) / width),
+            ])
+        return cls._clamp01(2.0 * sum(protrusions) / len(protrusions)) if protrusions else 0.0
 
     @staticmethod
     def _clamp01(value: float) -> float:
