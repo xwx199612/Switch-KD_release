@@ -88,6 +88,8 @@ class FocusResolver:
     VISUAL_RING_CONTINUITY_WEIGHT = 0.55
     VISUAL_RING_CONTRAST_WEIGHT = 0.30
     VISUAL_BACKGROUND_WEIGHT = 0.15
+    SCALE_BALANCE_SIGMA = 0.20
+    OUTLINE_EXCLUSIVITY_FLOOR = 0.5
     CONTAINER_PROPOSAL_EXPANSIONS = (0.0, 0.05, 0.10, 0.20)
 
     def __init__(self, engine: Any) -> None:
@@ -324,6 +326,12 @@ class FocusResolver:
                 "group_id": float(group_id),
             }
 
+        absolute_outline_scores = {
+            index: cls._clamp01(
+                raw[index]["continuity"] * math.sqrt(raw[index]["outer_ring"])
+            )
+            for index in raw
+        }
         evidence: list[dict[str, Any]] = []
         for index in range(len(candidates)):
             values = raw[index]
@@ -346,7 +354,22 @@ class FocusResolver:
             size_ratio = values["area"] / max(cls._median(peer_areas), 1.0)
             width_ratio = values["width"] / max(cls._median(peer_widths), 1.0)
             height_ratio = values["height"] / max(cls._median(peer_heights), 1.0)
-            outline_score = cls._clamp01(continuity * math.sqrt(ring))
+            absolute_outline_score = absolute_outline_scores[index]
+            other_outline_scores = [
+                absolute_outline_scores[peer]
+                for peer in peer_indices
+                if peer != index and peer in absolute_outline_scores
+            ]
+            outline_exclusivity = cls._outline_exclusivity(
+                absolute_outline_score, other_outline_scores
+            )
+            outline_exclusivity_gate = (
+                cls.OUTLINE_EXCLUSIVITY_FLOOR
+                + (1.0 - cls.OUTLINE_EXCLUSIVITY_FLOOR) * outline_exclusivity
+            )
+            outline_score = cls._clamp01(
+                absolute_outline_score * outline_exclusivity_gate
+            )
             highlight_side_support = values.get("side_support", {})
             highlight_consistency = cls._clamp01(
                 sum(highlight_side_support.values()) / 4.0
@@ -380,6 +403,10 @@ class FocusResolver:
                 "ring_continuity": round(continuity, 4),
                 "outer_ring_contrast": round(ring, 4),
                 "background_highlight_evidence": round(background, 4),
+                "absolute_outline_score": round(absolute_outline_score, 4),
+                "raw_outline_score": round(absolute_outline_score, 4),
+                "outline_exclusivity": round(outline_exclusivity, 4),
+                "outline_exclusivity_gate": round(outline_exclusivity_gate, 4),
                 "outline_score": round(outline_score, 4),
                 "highlight_score": round(highlight_score, 4),
                 "enlargement_score": round(enlargement_score, 4),
@@ -392,6 +419,14 @@ class FocusResolver:
                 "relative_area": round(scale_details["relative_area"], 4),
                 "peer_size_consistency": round(size_consistency, 4),
                 "peer_protrusion_score": round(protrusion, 4),
+                "width_growth": round(scale_details["width_growth"], 4),
+                "height_growth": round(scale_details["height_growth"], 4),
+                "uniform_growth": round(scale_details["uniform_growth"], 4),
+                "scale_balance": round(scale_details["scale_balance"], 4),
+                "scale_evidence": round(scale_details["scale_evidence"], 4),
+                "enlargement_uniqueness": round(
+                    scale_details["enlargement_uniqueness"], 4
+                ),
                 "outline_side_support": scale_details["outline_side_support"],
                 "highlight_side_support": {
                     side: round(value, 4)
@@ -829,6 +864,12 @@ class FocusResolver:
             "relative_width": 1.0,
             "relative_height": 1.0,
             "relative_area": 1.0,
+            "width_growth": 0.0,
+            "height_growth": 0.0,
+            "uniform_growth": 0.0,
+            "scale_balance": 0.0,
+            "scale_evidence": 0.0,
+            "enlargement_uniqueness": 0.0,
             "outline_side_support": {},
         }
         others = [peer for peer in peer_indices if peer != index and peer in raw]
@@ -840,6 +881,17 @@ class FocusResolver:
         relative_width = raw[index]["width"] / max(cls._median(peer_widths), 1.0)
         relative_height = raw[index]["height"] / max(cls._median(peer_heights), 1.0)
         relative_area = raw[index]["area"] / max(cls._median(peer_areas), 1.0)
+        width_growth = max(0.0, relative_width - 1.0)
+        height_growth = max(0.0, relative_height - 1.0)
+        uniform_growth = min(width_growth, height_growth)
+        safe_width = max(relative_width, 1e-6)
+        safe_height = max(relative_height, 1e-6)
+        scale_balance = math.exp(
+            -abs(math.log(safe_width / safe_height)) / cls.SCALE_BALANCE_SIGMA
+        )
+        scale_balance = cls._clamp01(
+            scale_balance if math.isfinite(scale_balance) else 0.0
+        )
         details.update({
             "relative_width": relative_width,
             "relative_height": relative_height,
@@ -868,17 +920,45 @@ class FocusResolver:
         uniqueness = cls._clamp01(
             (width_uniqueness + height_uniqueness + area_uniqueness) / 3.0
         )
+        uniform_growth_support = cls._clamp01(1.0 - math.exp(-3.0 * uniform_growth))
+        area_support = cls._clamp01(1.0 - 1.0 / max(relative_area, 1.0))
         scale_evidence = cls._clamp01(
-            0.35 * width_uniqueness
-            + 0.35 * height_uniqueness
-            + 0.30 * cls._clamp01(relative_area - 1.0)
+            (0.75 * uniform_growth_support + 0.25 * area_support)
+            * scale_balance
         )
         protrusion = cls._peer_protrusion_score(index, peer_indices, geometries)
         structural_support = 0.5 + 0.5 * protrusion
         enlargement = cls._clamp01(
             scale_evidence * uniqueness * structural_support * consistency
         )
+        details.update({
+            "width_growth": width_growth,
+            "height_growth": height_growth,
+            "uniform_growth": uniform_growth,
+            "scale_balance": scale_balance,
+            "scale_evidence": scale_evidence,
+            "enlargement_uniqueness": uniqueness,
+        })
         return enlargement, protrusion, consistency, details
+
+    @classmethod
+    def _outline_exclusivity(
+        cls,
+        raw_outline_score: float,
+        other_peer_scores: list[float],
+    ) -> float:
+        if not other_peer_scores:
+            # A singleton has no comparative evidence; retain a conservative
+            # amount of direct evidence without making it highly exclusive.
+            return 0.35
+        peer_median = cls._median(other_peer_scores)
+        peer_mad = cls._median([
+            abs(score - peer_median) for score in other_peer_scores
+        ])
+        return cls._clamp01(
+            max(0.0, raw_outline_score - peer_median)
+            / max(0.05, 3.0 * peer_mad + 0.02)
+        )
 
     @classmethod
     def _positive_uniqueness(

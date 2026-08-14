@@ -189,6 +189,10 @@ def extract_result(response: dict, image_path: Path) -> dict:
             "outer_ring_contrast": item.get("outer_ring_contrast"),
             "background_highlight_evidence": item.get("background_highlight_evidence"),
             "outline_score": item.get("outline_score"),
+            "absolute_outline_score": item.get("absolute_outline_score"),
+            "raw_outline_score": item.get("raw_outline_score"),
+            "outline_exclusivity": item.get("outline_exclusivity"),
+            "outline_exclusivity_gate": item.get("outline_exclusivity_gate"),
             "highlight_score": item.get("highlight_score"),
             "enlargement_score": item.get("enlargement_score"),
             "direct_visual_confidence": item.get("direct_visual_confidence"),
@@ -196,6 +200,8 @@ def extract_result(response: dict, image_path: Path) -> dict:
             "relative_height": item.get("relative_height"),
             "relative_area": item.get("relative_area"),
             "peer_protrusion_score": item.get("peer_protrusion_score"),
+            "uniform_growth": item.get("uniform_growth"),
+            "scale_balance": item.get("scale_balance"),
             "size_ratio": item.get("size_ratio"),
             "container_expansion_ratio": item.get("container_expansion_ratio"),
         })
@@ -260,10 +266,16 @@ def print_result(position: int, total: int, result: dict) -> None:
         print(
             f"  [{item['index']}] {item['text']}\n"
             f"      outline={item['outline_score']:.2f} "
+            f"(abs={item['absolute_outline_score']:.2f} "
+            f"raw={item['raw_outline_score']:.2f} "
+            f"excl={item['outline_exclusivity']:.2f} "
+            f"gate={item['outline_exclusivity_gate']:.2f}) "
             f"highlight={item['highlight_score']:.2f} "
             f"enlarge={item['enlargement_score']:.2f} "
             f"rel_w={item['relative_width']:.2f} "
             f"rel_h={item['relative_height']:.2f} "
+            f"ug={item['uniform_growth']:.2f} "
+            f"balance={item['scale_balance']:.2f} "
             f"protrude={item['peer_protrusion_score']:.2f}{marker}"
         )
     print(f"\nEvidence space:\n  {result.get('focus_visual_evidence_space')}")
