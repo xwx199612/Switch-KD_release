@@ -87,7 +87,7 @@ class FocusResolver:
     VISUAL_RING_CONTINUITY_WEIGHT = 0.55
     VISUAL_RING_CONTRAST_WEIGHT = 0.30
     VISUAL_BACKGROUND_WEIGHT = 0.15
-    VISUAL_RING_EXPANSION_SCALES = (0.0, 0.05, 0.10, 0.20, 0.30)
+    CONTAINER_PROPOSAL_EXPANSIONS = (0.0, 0.05, 0.10, 0.20)
 
     def __init__(self, engine: Any) -> None:
         self.engine = engine
@@ -217,14 +217,22 @@ class FocusResolver:
             for group_id, group in enumerate(candidate_groups)
             for index in group
         }
+        visual_cells = {
+            index: cls._peer_visual_cell(index, group, geometries, image)
+            for group in candidate_groups
+            for index in group
+            if index in geometries and geometries[index] is not None
+        }
         raw: dict[int, dict[str, float]] = {}
         for index, geometry in geometries.items():
             group_id = group_by_index.get(index, -1)
             if geometry is None:
                 raw[index] = {
-                    "best_scale": 0.0,
-                    "raw_best_score": 0.0,
-                    "scale_evidence": [],
+                    "visual_cell": None,
+                    "selected_container": None,
+                    "expansion_ratio": 0.0,
+                    "proposals": [],
+                    "raw_score": 0.0,
                     "continuity": 0.0,
                     "outer_ring": 0.0,
                     "background": 0.0,
@@ -237,22 +245,25 @@ class FocusResolver:
             left, top, right, bottom = geometry
             width = max(1, right - left)
             height = max(1, bottom - top)
-            scale_evidence: list[dict[str, float]] = []
-            for scale in cls.VISUAL_RING_EXPANSION_SCALES:
-                expanded = cls._expand_visual_box(
-                    image, (left, top, right, bottom), scale
-                )
+            cell = visual_cells.get(index)
+            proposals = cls._container_proposals(
+                image, index, geometry, cell, candidate_groups[group_id]
+                if group_id >= 0 else [index], geometries
+            )
+            scored_proposals: list[dict[str, Any]] = []
+            for proposal in proposals:
                 ring_continuity, ring_contrast, background_delta, edge_strength = (
-                    cls._decoration_features(image, expanded)
+                    cls._decoration_features(image, proposal["bbox"])
                 )
                 decoration_score = (
                     cls.VISUAL_RING_CONTINUITY_WEIGHT * ring_continuity
                     + cls.VISUAL_RING_CONTRAST_WEIGHT * ring_contrast
                     + cls.VISUAL_BACKGROUND_WEIGHT * background_delta
                 )
-                scale_penalty = max(0.75, 1.0 - 0.5 * scale)
-                scale_evidence.append({
-                    "scale": scale,
+                expansion = proposal["expansion_ratio"]
+                scale_penalty = max(0.75, 1.0 - 0.5 * expansion)
+                scored_proposals.append({
+                    **proposal,
                     "ring_continuity": ring_continuity,
                     "outer_ring_contrast": ring_contrast,
                     "background_highlight_evidence": background_delta,
@@ -261,13 +272,24 @@ class FocusResolver:
                     "edge": edge_strength,
                 })
             best = max(
-                scale_evidence,
-                key=lambda item: (item["score"], -item["scale"]),
-            )
+                scored_proposals,
+                key=lambda item: (item["score"], -item["expansion_ratio"]),
+            ) if scored_proposals else {
+                "bbox": geometry,
+                "expansion_ratio": 0.0,
+                "ring_continuity": 0.0,
+                "outer_ring_contrast": 0.0,
+                "background_highlight_evidence": 0.0,
+                "score": 0.0,
+                "raw_score": 0.0,
+                "edge": 0.0,
+            }
             raw[index] = {
-                "best_scale": best["scale"],
-                "raw_best_score": best["raw_score"],
-                "scale_evidence": scale_evidence,
+                "visual_cell": cell,
+                "selected_container": best["bbox"],
+                "expansion_ratio": best["expansion_ratio"],
+                "proposals": scored_proposals,
+                "raw_score": best["raw_score"],
                 "continuity": best["ring_continuity"],
                 "outer_ring": best["outer_ring_contrast"],
                 "background": best["background_highlight_evidence"],
@@ -306,8 +328,10 @@ class FocusResolver:
             evidence.append({
                 "index": index,
                 "group_id": group_by_index.get(index, -1),
-                "best_ring_scale": round(values["best_scale"], 4),
-                "raw_best_decoration_score": round(values["raw_best_score"], 4),
+                "visual_cell_bbox": values["visual_cell"],
+                "selected_container_bbox": values["selected_container"],
+                "container_expansion_ratio": round(values["expansion_ratio"], 4),
+                "raw_decoration_score": round(values["raw_score"], 4),
                 "ring_continuity": round(continuity, 4),
                 "outer_ring_contrast": round(ring, 4),
                 "background_highlight_evidence": round(background, 4),
@@ -316,17 +340,18 @@ class FocusResolver:
                 "height_ratio": round(height_ratio, 4),
                 "local_edge_strength": round(edge, 4),
                 "visual_focus_score": round(score, 4),
-                "ring_scale_evidence": [
+                "container_proposals": [
                     {
-                        "scale": round(item["scale"], 4),
+                        "bbox": list(item["bbox"]),
+                        "expansion_ratio": round(item["expansion_ratio"], 4),
                         "ring_continuity": round(item["ring_continuity"], 4),
                         "outer_ring_contrast": round(item["outer_ring_contrast"], 4),
                         "background_highlight_evidence": round(
                             item["background_highlight_evidence"], 4
                         ),
-                        "score": round(item["score"], 4),
+                        "raw_score": round(item["raw_score"], 4),
                     }
-                    for item in values["scale_evidence"]
+                    for item in values["proposals"]
                 ],
             })
         return evidence
@@ -344,23 +369,128 @@ class FocusResolver:
             max(1, min(image.height, round(bottom * image.height / 1000))),
         )
 
-    @staticmethod
-    def _expand_visual_box(
+    @classmethod
+    def _peer_visual_cell(
+        cls,
+        index: int,
+        group: list[int],
+        geometries: dict[int, tuple[int, int, int, int] | None],
         image: Image.Image,
-        box: tuple[int, int, int, int],
-        scale: float,
-    ) -> tuple[int, int, int, int]:
-        left, top, right, bottom = box
+    ) -> list[int] | None:
+        geometry = geometries.get(index)
+        if geometry is None:
+            return None
+        left, top, right, bottom = geometry
+        center_x = (left + right) / 2.0
+        center_y = (top + bottom) / 2.0
         width = max(1, right - left)
         height = max(1, bottom - top)
-        horizontal = max(1 if scale > 0.0 else 0, round(width * scale))
-        vertical = max(1 if scale > 0.0 else 0, round(height * scale))
-        return (
-            max(0, left - horizontal),
-            max(0, top - vertical),
-            min(image.width, right + horizontal),
-            min(image.height, bottom + vertical),
+        peers = [
+            geometries[peer]
+            for peer in group
+            if peer != index and geometries.get(peer) is not None
+        ]
+        row_peers = [
+            peer for peer in peers
+            if max(0, min(bottom, peer[3]) - max(top, peer[1]))
+            / max(1, min(height, peer[3] - peer[1])) >= 0.35
+            or abs(center_y - (peer[1] + peer[3]) / 2.0)
+            <= 0.65 * max(height, peer[3] - peer[1])
+        ]
+        column_peers = [
+            peer for peer in peers
+            if max(0, min(right, peer[2]) - max(left, peer[0]))
+            / max(1, min(width, peer[2] - peer[0])) >= 0.35
+            or abs(center_x - (peer[0] + peer[2]) / 2.0)
+            <= 0.65 * max(width, peer[2] - peer[0])
+        ]
+        row_peers.sort(key=lambda peer: (peer[0] + peer[2]) / 2.0)
+        column_peers.sort(key=lambda peer: (peer[1] + peer[3]) / 2.0)
+        previous_row = [peer for peer in row_peers if (peer[0] + peer[2]) / 2.0 < center_x]
+        next_row = [peer for peer in row_peers if (peer[0] + peer[2]) / 2.0 > center_x]
+        previous_column = [peer for peer in column_peers if (peer[1] + peer[3]) / 2.0 < center_y]
+        next_column = [peer for peer in column_peers if (peer[1] + peer[3]) / 2.0 > center_y]
+        cell_left = (
+            round((previous_row[-1][0] + previous_row[-1][2]) / 2.0)
+            if previous_row else left - max(1, round(width * 0.5))
         )
+        cell_right = (
+            round((next_row[0][0] + next_row[0][2]) / 2.0)
+            if next_row else right + max(1, round(width * 0.5))
+        )
+        cell_top = (
+            round((previous_column[-1][1] + previous_column[-1][3]) / 2.0)
+            if previous_column else top - max(1, round(height * 0.5))
+        )
+        cell_bottom = (
+            round((next_column[0][1] + next_column[0][3]) / 2.0)
+            if next_column else bottom + max(1, round(height * 0.5))
+        )
+        return [
+            max(0, min(cell_left, left)),
+            max(0, min(cell_top, top)),
+            min(image.width, max(cell_right, right)),
+            min(image.height, max(cell_bottom, bottom)),
+        ]
+
+    @classmethod
+    def _container_proposals(
+        cls,
+        image: Image.Image,
+        candidate_index: int,
+        geometry: tuple[int, int, int, int],
+        cell: list[int] | None,
+        group: list[int],
+        geometries: dict[int, tuple[int, int, int, int] | None],
+    ) -> list[dict[str, Any]]:
+        if cell is None:
+            return []
+        left, top, right, bottom = geometry
+        width = max(1, right - left)
+        height = max(1, bottom - top)
+        peer_centers = [
+            ((peer[0] + peer[2]) / 2.0, (peer[1] + peer[3]) / 2.0)
+            for index in group
+            if index in geometries and geometries[index] is not None
+            and index != candidate_index
+            for peer in [geometries[index]]
+        ]
+        proposals: list[dict[str, Any]] = []
+        for expansion in cls.CONTAINER_PROPOSAL_EXPANSIONS:
+            horizontal = max(1 if expansion > 0 else 0, round(width * expansion))
+            vertical = max(1 if expansion > 0 else 0, round(height * expansion))
+            proposal = (
+                max(cell[0], left - horizontal),
+                max(cell[1], top - vertical),
+                min(cell[2], right + horizontal),
+                min(cell[3], bottom + vertical),
+            )
+            if proposal[0] > left or proposal[1] > top or proposal[2] < right or proposal[3] < bottom:
+                continue
+            proposal_center = ((proposal[0] + proposal[2]) / 2.0, (proposal[1] + proposal[3]) / 2.0)
+            original_center = ((left + right) / 2.0, (top + bottom) / 2.0)
+            center_distance = math.hypot(
+                proposal_center[0] - original_center[0],
+                proposal_center[1] - original_center[1],
+            )
+            if center_distance > 0.25 * max(width, height):
+                continue
+            if any(
+                proposal[0] <= center_x < proposal[2]
+                and proposal[1] <= center_y < proposal[3]
+                for center_x, center_y in peer_centers
+            ):
+                continue
+            actual_expansion = max(
+                (proposal[2] - proposal[0]) / width - 1.0,
+                (proposal[3] - proposal[1]) / height - 1.0,
+                0.0,
+            )
+            proposals.append({
+                "bbox": proposal,
+                "expansion_ratio": actual_expansion,
+            })
+        return proposals
 
     @classmethod
     def _decoration_features(

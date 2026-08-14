@@ -184,11 +184,12 @@ def extract_result(response: dict, image_path: Path) -> dict:
             "index": index,
             "text": element_texts[index] if 0 <= index < len(element_texts) else "",
             "visual_focus_score": item.get("visual_focus_score"),
+            "raw_decoration_score": item.get("raw_decoration_score"),
             "ring_continuity": item.get("ring_continuity"),
             "outer_ring_contrast": item.get("outer_ring_contrast"),
             "background_highlight_evidence": item.get("background_highlight_evidence"),
             "size_ratio": item.get("size_ratio"),
-            "best_ring_scale": item.get("best_ring_scale"),
+            "container_expansion_ratio": item.get("container_expansion_ratio"),
         })
     return {
         "image": image_path.name,
@@ -250,10 +251,11 @@ def print_result(position: int, total: int, result: dict) -> None:
         print(
             f"  [{item['index']}] {item['text']} "
             f"score={item['visual_focus_score']:.2f} "
+            f"raw={item['raw_decoration_score']:.2f} "
             f"ring_cont={item['ring_continuity']:.2f} "
             f"ring={item['outer_ring_contrast']:.2f} "
             f"bg={item['background_highlight_evidence']:.2f} "
-            f"scale={item['best_ring_scale']:.2f}{marker}"
+            f"expand={item['container_expansion_ratio']:.2f}{marker}"
         )
     print("\nElements:")
     for index, text in enumerate(result.get("elements", [])):
