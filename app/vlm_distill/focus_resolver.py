@@ -159,6 +159,10 @@ class FocusResolver:
             "focus_montage_grid": montage_grid,
             "focus_montage_size": montage_size,
             "focus_montage_tile_sizes": montage_tile_sizes,
+            "focus_montage_group_tile_count": len(candidate_groups)
+            if focus_image_mode == "group_montage" else 0,
+            "focus_montage_group_tile_indices": candidate_groups
+            if focus_image_mode == "group_montage" else [],
         })
         return {
             "focused_index": focused_index,
@@ -687,48 +691,22 @@ class FocusResolver:
         list[int],
         list[list[int]],
     ] | None:
-        """Build enlarged candidate tiles while preserving their original indices."""
+        """Build one context-preserving crop tile for each candidate group."""
         if not candidate_boxes:
             return None
 
         try:
             montage_max_dimension = 2048
-            columns = min(3, len(candidate_boxes))
-            gap = 12
-            padding = 10
-            available_width = (
-                montage_max_dimension
-                - (columns - 1) * gap
-                - columns * (2 * padding)
-            )
-            max_content_width = available_width // columns
-            tile_data: list[tuple[Image.Image, int, int, float, int, int]] = []
-            group_counts: list[int] = []
-            for box in candidate_boxes:
-                if not group_counts or box[5] != candidate_boxes[sum(group_counts) - 1][5]:
-                    group_counts.append(0)
-                group_counts[-1] += 1
-            group_rows = [(count + columns - 1) // columns for count in group_counts]
-            total_rows = sum(group_rows)
-            group_separator = 24
-            available_height = (
-                montage_max_dimension
-                - (total_rows - 1) * gap
-                - max(0, len(group_rows) - 1) * group_separator
-                - 2 * padding * total_rows
-            )
-            target_content_height = min(
-                300,
-                available_height // max(1, total_rows),
-            )
-            if target_content_height < 144:
-                return None
-
-            for left, top, right, bottom, index, group_id in candidate_boxes:
-                width = right - left
-                height = bottom - top
-                margin_x = max(8, round(width * 0.12))
-                margin_y = max(8, round(height * 0.12))
+            gap = 24
+            padding = 12
+            group_tiles: list[dict[str, Any]] = []
+            for group_id, group_boxes in cls._group_candidate_boxes(candidate_boxes):
+                left = min(box[0] for box in group_boxes)
+                top = min(box[1] for box in group_boxes)
+                right = max(box[2] for box in group_boxes)
+                bottom = max(box[3] for box in group_boxes)
+                margin_x = max(12, round((right - left) * 0.10))
+                margin_y = max(12, round((bottom - top) * 0.20))
                 crop_left = max(0, left - margin_x)
                 crop_top = max(0, top - margin_y)
                 crop_right = min(image.width, right + margin_x)
@@ -736,79 +714,94 @@ class FocusResolver:
                 crop = image.crop((crop_left, crop_top, crop_right, crop_bottom)).convert("RGB")
                 if crop.width <= 0 or crop.height <= 0:
                     return None
+                group_tiles.append({
+                    "group_id": group_id,
+                    "indices": [box[4] for box in group_boxes],
+                    "boxes": group_boxes,
+                    "crop": crop,
+                    "crop_left": crop_left,
+                    "crop_top": crop_top,
+                })
+            if not group_tiles:
+                return None
 
-                scale = min(
-                    target_content_height / crop.height,
-                    max_content_width / crop.width,
-                )
-                if scale <= 0.0:
-                    return None
-                resized = crop.resize(
-                    (max(1, round(crop.width * scale)), max(1, round(crop.height * scale))),
-                    Image.Resampling.LANCZOS,
-                )
-                tile_data.append((resized, index, group_id, scale, crop_left, crop_top))
+            columns = min(3, max(1, round(len(group_tiles) ** 0.5)))
+            rows = (len(group_tiles) + columns - 1) // columns
+            layout_rows = [
+                group_tiles[row * columns:(row + 1) * columns]
+                for row in range(rows)
+            ]
+            natural_widths = [
+                sum(tile["crop"].width for tile in row) + gap * (len(row) - 1)
+                for row in layout_rows
+            ]
+            natural_heights = [max(tile["crop"].height for tile in row) for row in layout_rows]
+            natural_width = max(natural_widths) + 2 * padding
+            natural_height = sum(natural_heights) + gap * (rows - 1) + 2 * padding
+            scale = min(
+                2.0,
+                montage_max_dimension / natural_width,
+                montage_max_dimension / natural_height,
+            )
+            if scale <= 0.0:
+                return None
 
-            tile_width = max(tile.width for tile, *_ in tile_data) + (2 * padding)
-            tile_height = max(tile.height for tile, *_ in tile_data) + (2 * padding)
-            grouped_tiles: list[list[tuple[Image.Image, int, int, float, int, int]]] = []
-            for tile_data_item in tile_data:
-                if not grouped_tiles or grouped_tiles[-1][0][2] != tile_data_item[2]:
-                    grouped_tiles.append([])
-                grouped_tiles[-1].append(tile_data_item)
-            rows = sum(group_rows)
-            montage_width = columns * tile_width + (columns - 1) * gap
-            montage_height = rows * tile_height + max(0, len(grouped_tiles) - 1) * group_separator + (rows - 1) * gap
+            scaled_sizes = [
+                (max(1, round(tile["crop"].width * scale)), max(1, round(tile["crop"].height * scale)))
+                for tile in group_tiles
+            ]
+            row_heights = [
+                max(scaled_sizes[index][1] for index in range(row * columns, min((row + 1) * columns, len(group_tiles))))
+                for row in range(rows)
+            ]
+            row_widths = [
+                sum(scaled_sizes[index][0] for index in range(row * columns, min((row + 1) * columns, len(group_tiles))))
+                + gap * (len(layout_rows[row]) - 1)
+                for row in range(rows)
+            ]
+            montage_width = max(row_widths) + 2 * padding
+            montage_height = sum(row_heights) + gap * (rows - 1) + 2 * padding
             if montage_width > montage_max_dimension or montage_height > montage_max_dimension:
                 return None
 
             montage = Image.new("RGB", (montage_width, montage_height), (32, 32, 32))
             annotated_indices: list[int] = []
             tile_sizes: list[list[int]] = []
-            tile_position = 0
-            row_offset = 0
-            for group_position, group in enumerate(grouped_tiles):
-                for position_in_group, (tile, index, group_id, scale, crop_left, crop_top) in enumerate(group):
-                    row, column = divmod(position_in_group, columns)
-                    row += row_offset
-                    tile_position += 1
-                    tile_x = column * (tile_width + gap)
-                    tile_y = row * (tile_height + gap) + group_position * group_separator
-                    content_x = tile_x + padding
-                    content_y = tile_y + padding
-                    montage.paste(tile, (content_x, content_y))
-
-                    candidate_box = next(
-                        box for box in candidate_boxes if box[4] == index and box[5] == group_id
+            draw = ImageDraw.Draw(montage)
+            y = padding
+            for row in range(rows):
+                x = padding
+                row_start = row * columns
+                row_end = min((row + 1) * columns, len(group_tiles))
+                for tile_index in range(row_start, row_end):
+                    tile_data = group_tiles[tile_index]
+                    tile_width, tile_height = scaled_sizes[tile_index]
+                    tile = tile_data["crop"].resize(
+                        (tile_width, tile_height), Image.Resampling.LANCZOS
                     )
-                    candidate_x = content_x + round((candidate_box[0] - crop_left) * scale)
-                    candidate_y = content_y + round((candidate_box[1] - crop_top) * scale)
-                    draw = ImageDraw.Draw(montage)
-                    label = str(index)
-                    text_box = draw.textbbox((0, 0), label)
-                    label_width = text_box[2] - text_box[0]
-                    label_height = text_box[3] - text_box[1]
-                    label_x = min(
-                        max(tile_x + 2, candidate_x),
-                        tile_x + tile_width - label_width - 3,
-                    )
-                    if candidate_y >= label_height + 3:
-                        label_y = candidate_y - label_height - 2
-                    else:
-                        label_y = min(
-                            max(tile_y + 2, candidate_y + 2),
-                            tile_y + tile_height - label_height - 3,
+                    montage.paste(tile, (x, y))
+                    scale_x = tile_width / tile_data["crop"].width
+                    scale_y = tile_height / tile_data["crop"].height
+                    for left, top, right, bottom, index, _ in tile_data["boxes"]:
+                        label_x = x + round((left - tile_data["crop_left"]) * scale_x)
+                        label_y = y + round((top - tile_data["crop_top"]) * scale_y)
+                        label = str(index)
+                        text_box = draw.textbbox((0, 0), label)
+                        label_width = text_box[2] - text_box[0]
+                        label_height = text_box[3] - text_box[1]
+                        label_x = min(max(x + 2, label_x), x + tile_width - label_width - 3)
+                        label_y = min(max(y + 2, label_y), y + tile_height - label_height - 3)
+                        draw.text(
+                            (label_x, label_y),
+                            label,
+                            fill=(255, 255, 255),
+                            stroke_width=1,
+                            stroke_fill=(0, 0, 0),
                         )
-                    draw.text(
-                        (label_x, label_y),
-                        label,
-                        fill=(255, 255, 255),
-                        stroke_width=1,
-                        stroke_fill=(0, 0, 0),
-                    )
-                    annotated_indices.append(index)
+                        annotated_indices.append(index)
                     tile_sizes.append([tile_width, tile_height])
-                row_offset += group_rows[group_position]
+                    x += tile_width + gap
+                y += row_heights[row] + gap
 
             return (
                 montage,
@@ -823,6 +816,17 @@ class FocusResolver:
             )
         except (TypeError, ValueError, OSError):
             return None
+
+    @staticmethod
+    def _group_candidate_boxes(
+        candidate_boxes: list[tuple[int, int, int, int, int, int]],
+    ) -> list[tuple[int, list[tuple[int, int, int, int, int, int]]]]:
+        grouped: list[tuple[int, list[tuple[int, int, int, int, int, int]]]] = []
+        for box in candidate_boxes:
+            if not grouped or grouped[-1][0] != box[5]:
+                grouped.append((box[5], []))
+            grouped[-1][1].append(box)
+        return grouped
 
     @staticmethod
     def _parse_output(raw_output: str, candidate_count: int) -> int | None:
