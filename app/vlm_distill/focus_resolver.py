@@ -85,11 +85,26 @@ class FocusResolver:
     GRID_MAX_HORIZONTAL_SPAN_WIDTHS = 8.0
     DEBUG_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_input.png"
     DEBUG_UNANNOTATED_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_unannotated_input.png"
+    DEBUG_PEER_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_peers.jpg"
     VISUAL_RING_CONTINUITY_WEIGHT = 0.55
     VISUAL_RING_CONTRAST_WEIGHT = 0.30
     VISUAL_BACKGROUND_WEIGHT = 0.15
     SCALE_BALANCE_SIGMA = 0.20
     OUTLINE_EXCLUSIVITY_FLOOR = 0.5
+    PEER_MIN_WIDTH_RATIO = 0.6
+    PEER_MAX_WIDTH_RATIO = 1.7
+    PEER_MIN_HEIGHT_RATIO = 0.6
+    PEER_MAX_HEIGHT_RATIO = 1.7
+    PEER_MAX_ASPECT_LOG_DELTA = 0.65
+    PEER_MIN_AXIS_OVERLAP = 0.30
+    PEER_CENTER_ALIGNMENT_FACTOR = 0.75
+    MIN_COMPARABLE_PEERS = 1
+    OUTLINE_V5_MIN_SCORE = 0.50
+    OUTLINE_V5_MIN_MARGIN = 0.15
+    ENLARGEMENT_V5_MIN_SCORE = 0.50
+    ENLARGEMENT_V5_MIN_MARGIN = 0.15
+    HIGHLIGHT_V5_MIN_SCORE = 0.60
+    HIGHLIGHT_V5_MIN_MARGIN = 0.18
     CONTAINER_PROPOSAL_EXPANSIONS = (0.0, 0.05, 0.10, 0.20)
 
     def __init__(self, engine: Any) -> None:
@@ -140,16 +155,38 @@ class FocusResolver:
             focus_group_ids=focus_group_ids,
             use_montage=len(candidate_groups) >= 2,
         )
+        peer_analysis = self._build_peer_analysis(
+            candidate_groups, prepared_candidate_bboxes
+        )
         visual_evidence = self._visual_focus_evidence(
             unannotated_image,
             candidates,
             candidate_groups,
             prepared_candidate_bboxes,
+            comparison_groups=peer_analysis["peer_sets"],
+            peer_group_by_index=peer_analysis["peer_group_by_index"],
+        )
+        self._apply_v5_peer_evidence(visual_evidence, peer_analysis["peer_sets"])
+        v5_cascade = self._run_visual_focus_cascade(
+            visual_evidence,
+            peer_analysis["peer_sets"],
+            peer_analysis["peer_group_by_index"],
+            peer_analysis["isolated_indices"],
         )
         focus_debug_image_path: str | None = None
         try:
             annotated_image.save(self.DEBUG_IMAGE_PATH, format="PNG")
             focus_debug_image_path = self.DEBUG_IMAGE_PATH
+        except (OSError, ValueError):
+            pass
+        focus_peer_debug_image_path: str | None = None
+        try:
+            self._save_peer_debug_image(
+                unannotated_image,
+                prepared_candidate_bboxes,
+                peer_analysis,
+            )
+            focus_peer_debug_image_path = self.DEBUG_PEER_IMAGE_PATH
         except (OSError, ValueError):
             pass
         focus_debug_unannotated_image_path: str | None = None
@@ -204,6 +241,11 @@ class FocusResolver:
             "focus_debug_image_path": focus_debug_image_path,
             "focus_debug_unannotated_image_path": focus_debug_unannotated_image_path,
             "focus_visual_evidence_space": "prepared",
+            "focus_peer_debug_image_path": focus_peer_debug_image_path,
+            "focus_peer_groups": peer_analysis["peer_sets"],
+            "focus_isolated_indices": peer_analysis["isolated_indices"],
+            "focus_peer_debug": peer_analysis["debug"],
+            **v5_cascade,
             "focus_visual_evidence": visual_evidence,
             "focus_visual_evidence_top_indices": [
                 item["index"] for item in sorted(
@@ -219,12 +261,319 @@ class FocusResolver:
         }
 
     @classmethod
+    def _build_peer_analysis(
+        cls,
+        geometric_groups: list[list[int]],
+        prepared_candidate_bboxes: dict[int, list[int]],
+    ) -> dict[str, Any]:
+        """Build symmetric, geometry-only comparable peer sets."""
+
+        def bbox(index: int) -> tuple[float, float, float, float] | None:
+            value = prepared_candidate_bboxes.get(index)
+            if not isinstance(value, (list, tuple)) or len(value) < 4:
+                return None
+            try:
+                left, top, right, bottom = (float(value[i]) for i in range(4))
+            except (TypeError, ValueError):
+                return None
+            if not all(math.isfinite(v) for v in (left, top, right, bottom)):
+                return None
+            if right <= left or bottom <= top:
+                return None
+            return left, top, right, bottom
+
+        def pair_reason(first: int, second: int) -> str | None:
+            first_box = bbox(first)
+            second_box = bbox(second)
+            if first_box is None or second_box is None:
+                return "invalid_geometry"
+            fl, ft, fr, fb = first_box
+            sl, st, sr, sb = second_box
+            fw, fh = fr - fl, fb - ft
+            sw, sh = sr - sl, sb - st
+            width_ratio = fw / max(sw, 1e-6)
+            height_ratio = fh / max(sh, 1e-6)
+            if not (
+                cls.PEER_MIN_WIDTH_RATIO <= width_ratio <= cls.PEER_MAX_WIDTH_RATIO
+                and cls.PEER_MIN_WIDTH_RATIO <= 1.0 / max(width_ratio, 1e-6) <= cls.PEER_MAX_WIDTH_RATIO
+            ):
+                return "width_ratio_mismatch"
+            if not (
+                cls.PEER_MIN_HEIGHT_RATIO <= height_ratio <= cls.PEER_MAX_HEIGHT_RATIO
+                and cls.PEER_MIN_HEIGHT_RATIO <= 1.0 / max(height_ratio, 1e-6) <= cls.PEER_MAX_HEIGHT_RATIO
+            ):
+                return "height_ratio_mismatch"
+            first_aspect = fw / max(fh, 1e-6)
+            second_aspect = sw / max(sh, 1e-6)
+            if abs(math.log(max(first_aspect, 1e-6) / max(second_aspect, 1e-6))) > cls.PEER_MAX_ASPECT_LOG_DELTA:
+                return "aspect_ratio_mismatch"
+
+            vertical_overlap = max(0.0, min(fb, sb) - max(ft, st)) / max(min(fh, sh), 1e-6)
+            horizontal_overlap = max(0.0, min(fr, sr) - max(fl, sl)) / max(min(fw, sw), 1e-6)
+            center_y_delta = abs((ft + fb) / 2.0 - (st + sb) / 2.0)
+            center_x_delta = abs((fl + fr) / 2.0 - (sl + sr) / 2.0)
+            same_row = vertical_overlap >= cls.PEER_MIN_AXIS_OVERLAP or center_y_delta <= cls.PEER_CENTER_ALIGNMENT_FACTOR * max(fh, sh)
+            same_column = horizontal_overlap >= cls.PEER_MIN_AXIS_OVERLAP or center_x_delta <= cls.PEER_CENTER_ALIGNMENT_FACTOR * max(fw, sw)
+            if not (same_row or same_column):
+                return "row_column_mismatch"
+            return None
+
+        peer_sets: list[list[int]] = []
+        peer_group_by_index: dict[int, int] = {}
+        geometric_group_by_index: dict[int, int] = {}
+        rejection_reasons: dict[int, dict[str, str]] = {}
+        isolated_indices: list[int] = []
+
+        for geometric_group_id, raw_group in enumerate(geometric_groups):
+            indices = sorted({int(index) for index in raw_group})
+            for index in indices:
+                geometric_group_by_index[index] = geometric_group_id
+                rejection_reasons.setdefault(index, {})
+            parent = {index: index for index in indices}
+
+            def find(index: int) -> int:
+                while parent[index] != index:
+                    parent[index] = parent[parent[index]]
+                    index = parent[index]
+                return index
+
+            def union(first: int, second: int) -> None:
+                first_root, second_root = find(first), find(second)
+                if first_root != second_root:
+                    parent[second_root] = first_root
+
+            for position, first in enumerate(indices):
+                for second in indices[position + 1:]:
+                    reason = pair_reason(first, second)
+                    if reason is None:
+                        union(first, second)
+                    else:
+                        rejection_reasons[first][str(second)] = reason
+                        rejection_reasons[second][str(first)] = reason
+
+            components: dict[int, list[int]] = {}
+            for index in indices:
+                components.setdefault(find(index), []).append(index)
+            for component in sorted((sorted(value) for value in components.values()), key=lambda value: value[0] if value else -1):
+                if len(component) >= 2:
+                    peer_id = len(peer_sets)
+                    peer_sets.append(component)
+                    for index in component:
+                        peer_group_by_index[index] = peer_id
+                else:
+                    isolated_indices.extend(component)
+
+        for index in sorted(prepared_candidate_bboxes):
+            if index not in peer_group_by_index:
+                isolated_indices.append(index)
+                geometric_group_by_index.setdefault(index, -1)
+                rejection_reasons.setdefault(index, {})
+
+        isolated_indices = sorted(set(isolated_indices))
+        debug = []
+        for index in sorted(geometric_group_by_index):
+            peer_id = peer_group_by_index.get(index, -1)
+            comparable = [value for value in (peer_sets[peer_id] if peer_id >= 0 else []) if value != index]
+            debug.append({
+                "index": index,
+                "geometric_group_id": geometric_group_by_index[index],
+                "peer_group_id": peer_id,
+                "comparable_peer_indices": comparable,
+                "peer_count": len(comparable),
+                "is_isolated": not comparable,
+                "peer_rejection_reasons": rejection_reasons.get(index, {}),
+            })
+        return {
+            "peer_sets": peer_sets,
+            "peer_group_by_index": peer_group_by_index,
+            "isolated_indices": isolated_indices,
+            "debug": debug,
+        }
+
+    @classmethod
+    def _apply_v5_peer_evidence(
+        cls,
+        evidence: list[dict[str, Any]],
+        peer_sets: list[list[int]],
+    ) -> None:
+        """Rebase diagnostic channel comparisons on V5 comparable peers."""
+        by_index = {int(item["index"]): item for item in evidence}
+        peer_by_index = {
+            index: peer_id
+            for peer_id, peer_set in enumerate(peer_sets)
+            for index in peer_set
+        }
+        for item in evidence:
+            index = int(item["index"])
+            peer_id = peer_by_index.get(index, -1)
+            item["peer_group_id"] = peer_id
+            item["comparable_peer_indices"] = [
+                peer for peer in (peer_sets[peer_id] if peer_id >= 0 else []) if peer != index
+            ]
+            item["peer_count"] = len(item["comparable_peer_indices"])
+            item["is_isolated"] = peer_id < 0
+
+        def median(values: list[float]) -> float:
+            ordered = sorted(values)
+            if not ordered:
+                return 0.0
+            middle = len(ordered) // 2
+            return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2.0
+
+        def exclusivity(score: float, peers: list[float]) -> float:
+            if not peers:
+                return 0.0
+            baseline = median(peers)
+            return cls._clamp01((score - baseline) / max(0.15, 1.0 - baseline))
+
+        for peer_set in peer_sets:
+            available = [by_index[index] for index in peer_set if index in by_index]
+            for item in available:
+                index = int(item["index"])
+                others = [candidate for candidate in available if int(candidate["index"]) != index]
+                absolute = float(item.get("absolute_outline_score", item.get("raw_outline_score", 0.0)))
+                outline_excl = exclusivity(absolute, [float(candidate.get("absolute_outline_score", candidate.get("raw_outline_score", 0.0))) for candidate in others])
+                item["absolute_outline_score"] = absolute
+                item["raw_outline_score"] = absolute
+                item["outline_exclusivity"] = outline_excl
+                item["outline_exclusivity_gate"] = cls.OUTLINE_EXCLUSIVITY_FLOOR + (1.0 - cls.OUTLINE_EXCLUSIVITY_FLOOR) * outline_excl
+                item["outline_score"] = cls._clamp01(absolute * item["outline_exclusivity_gate"])
+
+            boxes = [candidate.get("prepared_bbox") for candidate in available]
+            if not all(isinstance(box, (list, tuple)) and len(box) >= 4 for box in boxes):
+                continue
+            widths = [max(1.0, float(box[2]) - float(box[0])) for box in boxes]
+            heights = [max(1.0, float(box[3]) - float(box[1])) for box in boxes]
+            areas = [width * height for width, height in zip(widths, heights)]
+            base_width, base_height, base_area = median(widths), median(heights), median(areas)
+            for position, (item, width, height, area) in enumerate(zip(available, widths, heights, areas)):
+                relative_width = width / max(base_width, 1e-6)
+                relative_height = height / max(base_height, 1e-6)
+                relative_area = area / max(base_area, 1e-6)
+                width_growth = max(0.0, relative_width - 1.0)
+                height_growth = max(0.0, relative_height - 1.0)
+                uniform_growth = min(width_growth, height_growth)
+                ratio = max(relative_width, 1e-6) / max(relative_height, 1e-6)
+                scale_balance = math.exp(-abs(math.log(max(ratio, 1e-6))) / cls.SCALE_BALANCE_SIGMA)
+                uniqueness = exclusivity(relative_area, [areas[index] / max(base_area, 1e-6) for index in range(len(areas)) if index != position])
+                consistency = float(item.get("peer_size_consistency", 1.0))
+                protrusion = float(item.get("peer_protrusion_score", 0.0))
+                scale_evidence = cls._clamp01(min(1.0, uniform_growth) * scale_balance)
+                item.update({
+                    "relative_width": relative_width,
+                    "relative_height": relative_height,
+                    "relative_area": relative_area,
+                    "width_growth": width_growth,
+                    "height_growth": height_growth,
+                    "uniform_growth": uniform_growth,
+                    "scale_balance": scale_balance,
+                    "scale_evidence": scale_evidence,
+                    "enlargement_uniqueness": uniqueness,
+                    "enlargement_score": cls._clamp01(scale_evidence * uniqueness * consistency * max(protrusion, 0.25)),
+                })
+
+    @classmethod
+    def _run_visual_focus_cascade(
+        cls,
+        evidence: list[dict[str, Any]],
+        peer_sets: list[list[int]],
+        peer_group_by_index: dict[int, int],
+        isolated_indices: list[int],
+    ) -> dict[str, Any]:
+        values = {int(item["index"]): item for item in evidence}
+
+        def skipped(stage: str) -> dict[str, Any]:
+            return {"stage": stage, "executed": False, "matched": False, "candidate_index": None, "score": None, "runner_up_score": None, "margin": None, "peer_group_id": None, "reason": "skipped_due_to_prior_match"}
+
+        def search(stage: str, field: str, minimum: float, margin_minimum: float) -> dict[str, Any]:
+            winners = []
+            for peer_id, peer_set in enumerate(peer_sets):
+                candidates = [values[index] for index in peer_set if index in values]
+                if len(candidates) < cls.MIN_COMPARABLE_PEERS + 1:
+                    continue
+                ranked = sorted(candidates, key=lambda item: (-float(item.get(field, 0.0)), int(item["index"])))
+                best = ranked[0]
+                runner_score = float(ranked[1].get(field, 0.0)) if len(ranked) > 1 else 0.0
+                winners.append((float(best.get(field, 0.0)), float(best.get(field, 0.0)) - runner_score, best, runner_score, peer_id))
+            if not winners:
+                return {"stage": stage, "executed": True, "matched": False, "candidate_index": None, "score": 0.0, "runner_up_score": 0.0, "margin": 0.0, "peer_group_id": None, "reason": "no_comparable_peer_set"}
+            score, margin, best, runner_score, peer_id = max(winners, key=lambda item: (item[0], item[1], -int(item[2]["index"])))
+            matched = score >= minimum and margin >= margin_minimum
+            return {"stage": stage, "executed": True, "matched": matched, "candidate_index": int(best["index"]), "score": score, "runner_up_score": runner_score, "margin": margin, "peer_group_id": peer_id, "reason": "confident_peer_winner" if matched else "below_threshold_or_margin"}
+
+        outline = search("outline", "outline_score", cls.OUTLINE_V5_MIN_SCORE, cls.OUTLINE_V5_MIN_MARGIN)
+        if outline["matched"]:
+            enlargement = skipped("enlargement")
+            highlight = skipped("highlight")
+            isolated = skipped("isolated_fallback")
+            final = outline
+        else:
+            enlargement = search("enlargement", "enlargement_score", cls.ENLARGEMENT_V5_MIN_SCORE, cls.ENLARGEMENT_V5_MIN_MARGIN)
+            if enlargement["matched"]:
+                highlight = skipped("highlight")
+                isolated = skipped("isolated_fallback")
+                final = enlargement
+            else:
+                highlight = search("highlight", "highlight_score", cls.HIGHLIGHT_V5_MIN_SCORE, cls.HIGHLIGHT_V5_MIN_MARGIN)
+                if highlight["matched"]:
+                    isolated = skipped("isolated_fallback")
+                    final = highlight
+                else:
+                    isolated_values = [values[index] for index in isolated_indices if index in values]
+                    best_isolated = max(isolated_values, key=lambda item: (float(item.get("direct_visual_confidence", 0.0)), -int(item["index"])), default=None)
+                    isolated = {"stage": "isolated_fallback", "executed": True, "matched": False, "candidate_index": int(best_isolated["index"]) if best_isolated else None, "score": float(best_isolated.get("direct_visual_confidence", 0.0)) if best_isolated else 0.0, "runner_up_score": None, "margin": None, "peer_group_id": -1 if best_isolated else None, "reason": "isolated_candidates_observed_no_auto_match" if best_isolated else "no_isolated_candidate"}
+                    final = {"stage": "isolated_fallback", "matched": False, "candidate_index": None, "score": isolated["score"], "margin": None, "peer_group_id": None, "reason": "no_peer_match"}
+        return {
+            "outline_decision": outline,
+            "enlargement_decision": enlargement,
+            "highlight_decision": highlight,
+            "isolated_decision": isolated,
+            "focus_visual_v5_stage": final["stage"],
+            "focus_visual_v5_matched": bool(final["matched"]),
+            "focus_visual_v5_candidate_index": final.get("candidate_index"),
+            "focus_visual_v5_score": final.get("score"),
+            "focus_visual_v5_margin": final.get("margin"),
+            "focus_visual_v5_peer_group_id": final.get("peer_group_id"),
+            "focus_visual_v5_reason": final.get("reason"),
+        }
+
+    @classmethod
+    def _save_peer_debug_image(
+        cls,
+        image: Image.Image,
+        prepared_candidate_bboxes: dict[int, list[int]],
+        peer_analysis: dict[str, Any],
+    ) -> None:
+        debug_image = image.convert("RGB").copy()
+        draw = ImageDraw.Draw(debug_image)
+        peer_by_index = peer_analysis["peer_group_by_index"]
+        for item in peer_analysis["debug"]:
+            index = int(item["index"])
+            bbox = prepared_candidate_bboxes.get(index)
+            if not bbox or len(bbox) < 4:
+                continue
+            left, top, right, bottom = [int(round(float(value))) for value in bbox[:4]]
+            peer_id = peer_by_index.get(index, -1)
+            label = f"P{peer_id}:#{index}" if peer_id >= 0 else f"ISO:#{index}"
+            color = (30, 150, 255) if peer_id >= 0 else (230, 120, 30)
+            draw.rectangle((left, top, right, bottom), outline=color, width=2)
+            text_bbox = draw.textbbox((0, 0), label)
+            text_width = text_bbox[2] - text_bbox[0]
+            text_height = text_bbox[3] - text_bbox[1]
+            label_top = max(0, top - text_height - 4)
+            draw.rectangle((left, label_top, left + text_width + 6, label_top + text_height + 4), fill=(0, 0, 0))
+            draw.text((left + 3, label_top + 2), label, fill=color)
+        debug_image.save(cls.DEBUG_PEER_IMAGE_PATH, format="JPEG", quality=95)
+
+    @classmethod
     def _visual_focus_evidence(
         cls,
         image: Image.Image,
         candidates: list[dict[str, Any]],
         candidate_groups: list[list[int]],
         prepared_candidate_bboxes: dict[int, list[int]],
+        comparison_groups: list[list[int]] | None = None,
+        peer_group_by_index: dict[int, int] | None = None,
     ) -> list[dict[str, Any]]:
         """Compute diagnostic-only focus decoration evidence from the source image."""
         geometries = {

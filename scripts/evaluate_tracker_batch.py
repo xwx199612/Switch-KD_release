@@ -222,6 +222,23 @@ def extract_result(response: dict, image_path: Path) -> dict:
     }
 
 
+def save_peer_debug_image(response: dict[str, Any], image_path: str, output_dir: str, docker_container: str | None = None) -> str | None:
+    """Copy the prepared-space V5 peer visualization beside the focus image."""
+    debug = response.get("tracker_debug", response.get("debug", {})) or {}
+    source = debug.get("focus_peer_debug_image_path")
+    if not source:
+        return None
+    destination = os.path.join(output_dir, f"{Path(image_path).stem}_peers.jpg")
+    if docker_container:
+        command = ["docker", "exec", docker_container, "cat", source]
+        completed = subprocess.run(command, check=True, stdout=subprocess.PIPE)
+        with open(destination, "wb") as handle:
+            handle.write(completed.stdout)
+    else:
+        shutil.copyfile(source, destination)
+    return destination
+
+
 def save_focus_image(
     response: dict,
     image_path: Path,
