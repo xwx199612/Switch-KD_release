@@ -87,6 +87,7 @@ class FocusResolver:
     VISUAL_RING_CONTINUITY_WEIGHT = 0.55
     VISUAL_RING_CONTRAST_WEIGHT = 0.30
     VISUAL_BACKGROUND_WEIGHT = 0.15
+    VISUAL_RING_EXPANSION_SCALES = (0.0, 0.05, 0.10, 0.20, 0.30)
 
     def __init__(self, engine: Any) -> None:
         self.engine = engine
@@ -221,6 +222,9 @@ class FocusResolver:
             group_id = group_by_index.get(index, -1)
             if geometry is None:
                 raw[index] = {
+                    "best_scale": 0.0,
+                    "raw_best_score": 0.0,
+                    "scale_evidence": [],
                     "continuity": 0.0,
                     "outer_ring": 0.0,
                     "background": 0.0,
@@ -233,20 +237,41 @@ class FocusResolver:
             left, top, right, bottom = geometry
             width = max(1, right - left)
             height = max(1, bottom - top)
-            ring_continuity, ring_contrast = cls._perimeter_ring_evidence(
-                image, (left, top, right, bottom)
+            scale_evidence: list[dict[str, float]] = []
+            for scale in cls.VISUAL_RING_EXPANSION_SCALES:
+                expanded = cls._expand_visual_box(
+                    image, (left, top, right, bottom), scale
+                )
+                ring_continuity, ring_contrast, background_delta, edge_strength = (
+                    cls._decoration_features(image, expanded)
+                )
+                decoration_score = (
+                    cls.VISUAL_RING_CONTINUITY_WEIGHT * ring_continuity
+                    + cls.VISUAL_RING_CONTRAST_WEIGHT * ring_contrast
+                    + cls.VISUAL_BACKGROUND_WEIGHT * background_delta
+                )
+                scale_penalty = max(0.75, 1.0 - 0.5 * scale)
+                scale_evidence.append({
+                    "scale": scale,
+                    "ring_continuity": ring_continuity,
+                    "outer_ring_contrast": ring_contrast,
+                    "background_highlight_evidence": background_delta,
+                    "score": decoration_score * scale_penalty,
+                    "raw_score": decoration_score,
+                    "edge": edge_strength,
+                })
+            best = max(
+                scale_evidence,
+                key=lambda item: (item["score"], -item["scale"]),
             )
-            background_mean = cls._mean_luma_band(image, (left, top, right, bottom), 14, 5)
-            perimeter_mean = cls._perimeter_luma(image, (left, top, right, bottom))
-            background_delta = cls._clamp01(
-                abs(perimeter_mean - background_mean) / 255.0
-            )
-            edge_strength = cls._perimeter_edge_strength(image, (left, top, right, bottom))
             raw[index] = {
-                "continuity": ring_continuity,
-                "outer_ring": ring_contrast,
-                "background": background_delta,
-                "edge": edge_strength,
+                "best_scale": best["scale"],
+                "raw_best_score": best["raw_score"],
+                "scale_evidence": scale_evidence,
+                "continuity": best["ring_continuity"],
+                "outer_ring": best["outer_ring_contrast"],
+                "background": best["background_highlight_evidence"],
+                "edge": best["edge"],
                 "area": float(width * height),
                 "width": float(width),
                 "height": float(height),
@@ -281,6 +306,8 @@ class FocusResolver:
             evidence.append({
                 "index": index,
                 "group_id": group_by_index.get(index, -1),
+                "best_ring_scale": round(values["best_scale"], 4),
+                "raw_best_decoration_score": round(values["raw_best_score"], 4),
                 "ring_continuity": round(continuity, 4),
                 "outer_ring_contrast": round(ring, 4),
                 "background_highlight_evidence": round(background, 4),
@@ -289,6 +316,18 @@ class FocusResolver:
                 "height_ratio": round(height_ratio, 4),
                 "local_edge_strength": round(edge, 4),
                 "visual_focus_score": round(score, 4),
+                "ring_scale_evidence": [
+                    {
+                        "scale": round(item["scale"], 4),
+                        "ring_continuity": round(item["ring_continuity"], 4),
+                        "outer_ring_contrast": round(item["outer_ring_contrast"], 4),
+                        "background_highlight_evidence": round(
+                            item["background_highlight_evidence"], 4
+                        ),
+                        "score": round(item["score"], 4),
+                    }
+                    for item in values["scale_evidence"]
+                ],
             })
         return evidence
 
@@ -304,6 +343,39 @@ class FocusResolver:
             max(1, min(image.width, round(right * image.width / 1000))),
             max(1, min(image.height, round(bottom * image.height / 1000))),
         )
+
+    @staticmethod
+    def _expand_visual_box(
+        image: Image.Image,
+        box: tuple[int, int, int, int],
+        scale: float,
+    ) -> tuple[int, int, int, int]:
+        left, top, right, bottom = box
+        width = max(1, right - left)
+        height = max(1, bottom - top)
+        horizontal = max(1 if scale > 0.0 else 0, round(width * scale))
+        vertical = max(1 if scale > 0.0 else 0, round(height * scale))
+        return (
+            max(0, left - horizontal),
+            max(0, top - vertical),
+            min(image.width, right + horizontal),
+            min(image.height, bottom + vertical),
+        )
+
+    @classmethod
+    def _decoration_features(
+        cls,
+        image: Image.Image,
+        box: tuple[int, int, int, int],
+    ) -> tuple[float, float, float, float]:
+        ring_continuity, ring_contrast = cls._perimeter_ring_evidence(image, box)
+        background_mean = cls._mean_luma_band(image, box, 14, 5)
+        perimeter_mean = cls._perimeter_luma(image, box)
+        background_delta = cls._clamp01(
+            abs(perimeter_mean - background_mean) / 255.0
+        )
+        edge_strength = cls._perimeter_edge_strength(image, box)
+        return ring_continuity, ring_contrast, background_delta, edge_strength
 
     @staticmethod
     def _pixel_luma(pixel: Any) -> float:

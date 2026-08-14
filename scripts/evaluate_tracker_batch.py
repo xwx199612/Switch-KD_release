@@ -188,6 +188,7 @@ def extract_result(response: dict, image_path: Path) -> dict:
             "outer_ring_contrast": item.get("outer_ring_contrast"),
             "background_highlight_evidence": item.get("background_highlight_evidence"),
             "size_ratio": item.get("size_ratio"),
+            "best_ring_scale": item.get("best_ring_scale"),
         })
     return {
         "image": image_path.name,
@@ -252,7 +253,7 @@ def print_result(position: int, total: int, result: dict) -> None:
             f"ring_cont={item['ring_continuity']:.2f} "
             f"ring={item['outer_ring_contrast']:.2f} "
             f"bg={item['background_highlight_evidence']:.2f} "
-            f"size={item['size_ratio']:.2f}{marker}"
+            f"scale={item['best_ring_scale']:.2f}{marker}"
         )
     print("\nElements:")
     for index, text in enumerate(result.get("elements", [])):
