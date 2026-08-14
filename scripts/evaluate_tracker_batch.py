@@ -170,6 +170,24 @@ def extract_result(response: dict, image_path: Path) -> dict:
         else None
     )
     focus_debug = debug.get("focus_resolver_debug") or {}
+    evidence_by_index = {
+        item.get("index"): item
+        for item in focus_debug.get("focus_visual_evidence", [])
+        if isinstance(item, dict) and isinstance(item.get("index"), int)
+    }
+    evidence_top = []
+    for index in (focus_debug.get("focus_visual_evidence_top_indices") or [])[:5]:
+        item = evidence_by_index.get(index)
+        if item is None:
+            continue
+        evidence_top.append({
+            "index": index,
+            "text": element_texts[index] if 0 <= index < len(element_texts) else "",
+            "visual_focus_score": item.get("visual_focus_score"),
+            "outer_ring_contrast": item.get("outer_ring_contrast"),
+            "container_background_delta": item.get("container_background_delta"),
+            "size_ratio": item.get("size_ratio"),
+        })
     return {
         "image": image_path.name,
         "focused_index": focused_index,
@@ -182,6 +200,7 @@ def extract_result(response: dict, image_path: Path) -> dict:
         "state_id": response.get("state_id"),
         "is_new": response.get("is_new"),
         "score": response.get("score"),
+        "visual_evidence_top": evidence_top,
     }
 
 
@@ -223,6 +242,16 @@ def print_result(position: int, total: int, result: dict) -> None:
         print("\nFocus:\n  index : null\n  text  : <NO FOCUS>")
     else:
         print(f"\nFocus:\n  index : {result['focused_index']}\n  text  : {result['focused_text']}")
+    print("\nVisual evidence:")
+    for item in result.get("visual_evidence_top", []):
+        marker = "  <-- VLM" if item["index"] == result.get("focused_index") else ""
+        print(
+            f"  [{item['index']}] {item['text']} "
+            f"score={item['visual_focus_score']:.2f} "
+            f"ring={item['outer_ring_contrast']:.2f} "
+            f"bg={item['container_background_delta']:.2f} "
+            f"size={item['size_ratio']:.2f}{marker}"
+        )
     print("\nElements:")
     for index, text in enumerate(result.get("elements", [])):
         marker = "  <-- FOCUS" if index == result.get("focused_index") else ""

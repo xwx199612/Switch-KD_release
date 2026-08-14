@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import tempfile
 import time
 from typing import Any
@@ -83,6 +84,9 @@ class FocusResolver:
     GRID_MAX_VERTICAL_SPAN_HEIGHTS = 5.0
     GRID_MAX_HORIZONTAL_SPAN_WIDTHS = 8.0
     DEBUG_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_input.png"
+    VISUAL_RING_WEIGHT = 0.45
+    VISUAL_BACKGROUND_WEIGHT = 0.35
+    VISUAL_SIZE_WEIGHT = 0.20
 
     def __init__(self, engine: Any) -> None:
         self.engine = engine
@@ -106,6 +110,7 @@ class FocusResolver:
             for index in group
         }
         focus_group_ids = [group_by_index[index] for index in focus_indices]
+        visual_evidence = self._visual_focus_evidence(image, candidates, candidate_groups)
         # Grouping is descriptive and controls presentation order; it must not
         # remove candidates from the resolver input.
         filter_used = False
@@ -180,12 +185,198 @@ class FocusResolver:
             "focus_montage_group_tile_indices": candidate_groups
             if focus_image_mode == "group_montage" else [],
             "focus_debug_image_path": focus_debug_image_path,
+            "focus_visual_evidence": visual_evidence,
+            "focus_visual_evidence_top_indices": [
+                item["index"] for item in sorted(
+                    visual_evidence,
+                    key=lambda item: (-item["visual_focus_score"], item["index"]),
+                )
+            ],
         })
         return {
             "focused_index": focused_index,
             "raw_output": raw_output,
             "inference_debug": debug,
         }
+
+    @classmethod
+    def _visual_focus_evidence(
+        cls,
+        image: Image.Image,
+        candidates: list[dict[str, Any]],
+        candidate_groups: list[list[int]],
+    ) -> list[dict[str, Any]]:
+        """Compute diagnostic-only focus decoration evidence from the source image."""
+        geometries = {
+            index: cls._candidate_pixel_geometry(image, candidate)
+            for index, candidate in enumerate(candidates)
+        }
+        group_by_index = {
+            index: group_id
+            for group_id, group in enumerate(candidate_groups)
+            for index in group
+        }
+        raw: dict[int, dict[str, float]] = {}
+        for index, geometry in geometries.items():
+            group_id = group_by_index.get(index, -1)
+            if geometry is None:
+                raw[index] = {
+                    "outer_ring": 0.0,
+                    "background": 0.0,
+                    "edge": 0.0,
+                    "area": 1.0,
+                    "width": 1.0,
+                    "height": 1.0,
+                }
+                continue
+            left, top, right, bottom = geometry
+            width = max(1, right - left)
+            height = max(1, bottom - top)
+            outer_mean = cls._mean_luma_band(image, (left, top, right, bottom), 4, 0)
+            background_mean = cls._mean_luma_band(image, (left, top, right, bottom), 14, 5)
+            perimeter_mean = cls._perimeter_luma(image, (left, top, right, bottom))
+            ring_contrast = cls._clamp01(abs(outer_mean - background_mean) / 255.0)
+            background_delta = cls._clamp01(abs(perimeter_mean - background_mean) / 255.0)
+            edge_strength = cls._perimeter_edge_strength(image, (left, top, right, bottom))
+            raw[index] = {
+                "outer_ring": cls._clamp01(0.6 * ring_contrast + 0.4 * edge_strength),
+                "background": background_delta,
+                "edge": edge_strength,
+                "area": float(width * height),
+                "width": float(width),
+                "height": float(height),
+                "group_id": float(group_id),
+            }
+
+        evidence: list[dict[str, Any]] = []
+        for index in range(len(candidates)):
+            values = raw[index]
+            peer_indices = [
+                peer for peer in candidate_groups[group_by_index[index]]
+                if peer in raw
+            ] if index in group_by_index else [index]
+            ring = cls._peer_relative(values["outer_ring"], [raw[peer]["outer_ring"] for peer in peer_indices])
+            background = cls._peer_relative(values["background"], [raw[peer]["background"] for peer in peer_indices])
+            edge = cls._peer_relative(values["edge"], [raw[peer]["edge"] for peer in peer_indices])
+            peer_areas = [raw[peer]["area"] for peer in peer_indices]
+            peer_widths = [raw[peer]["width"] for peer in peer_indices]
+            peer_heights = [raw[peer]["height"] for peer in peer_indices]
+            size_ratio = values["area"] / max(cls._median(peer_areas), 1.0)
+            width_ratio = values["width"] / max(cls._median(peer_widths), 1.0)
+            height_ratio = values["height"] / max(cls._median(peer_heights), 1.0)
+            normalized_size = cls._clamp01(abs(size_ratio - 1.0))
+            score = (
+                cls.VISUAL_RING_WEIGHT * ring
+                + cls.VISUAL_BACKGROUND_WEIGHT * background
+                + cls.VISUAL_SIZE_WEIGHT * normalized_size
+            )
+            evidence.append({
+                "index": index,
+                "group_id": group_by_index.get(index, -1),
+                "outer_ring_contrast": round(ring, 4),
+                "container_background_delta": round(background, 4),
+                "size_ratio": round(size_ratio, 4),
+                "width_ratio": round(width_ratio, 4),
+                "height_ratio": round(height_ratio, 4),
+                "local_edge_strength": round(edge, 4),
+                "visual_focus_score": round(score, 4),
+            })
+        return evidence
+
+    @staticmethod
+    def _candidate_pixel_geometry(image: Image.Image, candidate: Any) -> tuple[int, int, int, int] | None:
+        geometry = FocusResolver._candidate_geometry(candidate)
+        if geometry is None:
+            return None
+        _, _, _, _, left, top, right, bottom = geometry
+        return (
+            max(0, min(image.width - 1, round(left * image.width / 1000))),
+            max(0, min(image.height - 1, round(top * image.height / 1000))),
+            max(1, min(image.width, round(right * image.width / 1000))),
+            max(1, min(image.height, round(bottom * image.height / 1000))),
+        )
+
+    @staticmethod
+    def _pixel_luma(pixel: Any) -> float:
+        red, green, blue = pixel[:3]
+        return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+    @classmethod
+    def _mean_luma_band(
+        cls,
+        image: Image.Image,
+        box: tuple[int, int, int, int],
+        outer_margin: int,
+        inner_margin: int,
+    ) -> float:
+        left, top, right, bottom = box
+        outer = (
+            max(0, left - outer_margin), max(0, top - outer_margin),
+            min(image.width, right + outer_margin), min(image.height, bottom + outer_margin),
+        )
+        inner = (
+            max(0, left - inner_margin), max(0, top - inner_margin),
+            min(image.width, right + inner_margin), min(image.height, bottom + inner_margin),
+        )
+        return cls._mean_luma_region(image, outer, inner)
+
+    @classmethod
+    def _mean_luma_region(
+        cls,
+        image: Image.Image,
+        box: tuple[int, int, int, int],
+        excluded: tuple[int, int, int, int] | None = None,
+    ) -> float:
+        left, top, right, bottom = box
+        area = max(1, (right - left) * (bottom - top))
+        stride = max(1, round(math.sqrt(area / 2500)))
+        total = 0.0
+        count = 0
+        for y in range(top, bottom, stride):
+            for x in range(left, right, stride):
+                if excluded is not None and excluded[0] <= x < excluded[2] and excluded[1] <= y < excluded[3]:
+                    continue
+                total += cls._pixel_luma(image.getpixel((x, y)))
+                count += 1
+        return total / count if count else 0.0
+
+    @classmethod
+    def _perimeter_luma(cls, image: Image.Image, box: tuple[int, int, int, int]) -> float:
+        left, top, right, bottom = box
+        inset_x = max(1, (right - left) // 5)
+        inset_y = max(1, (bottom - top) // 5)
+        return cls._mean_luma_region(
+            image,
+            box,
+            (left + inset_x, top + inset_y, max(left + inset_x, right - inset_x), max(top + inset_y, bottom - inset_y)),
+        )
+
+    @classmethod
+    def _perimeter_edge_strength(cls, image: Image.Image, box: tuple[int, int, int, int]) -> float:
+        left, top, right, bottom = box
+        samples: list[float] = []
+        for x in range(left, right, max(1, (right - left) // 80)):
+            if top > 0 and top < image.height:
+                samples.append(abs(cls._pixel_luma(image.getpixel((x, top))) - cls._pixel_luma(image.getpixel((x, top - 1)))) / 255.0)
+            if bottom > 0 and bottom < image.height:
+                samples.append(abs(cls._pixel_luma(image.getpixel((x, bottom - 1))) - cls._pixel_luma(image.getpixel((x, bottom)))) / 255.0)
+        for y in range(top, bottom, max(1, (bottom - top) // 80)):
+            if left > 0 and left < image.width:
+                samples.append(abs(cls._pixel_luma(image.getpixel((left, y))) - cls._pixel_luma(image.getpixel((left - 1, y)))) / 255.0)
+            if right > 0 and right < image.width:
+                samples.append(abs(cls._pixel_luma(image.getpixel((right - 1, y))) - cls._pixel_luma(image.getpixel((right, y)))) / 255.0)
+        return sum(samples) / len(samples) if samples else 0.0
+
+    @classmethod
+    def _peer_relative(cls, value: float, peers: list[float]) -> float:
+        if len(peers) <= 1:
+            return cls._clamp01(value)
+        median = cls._median(peers)
+        return cls._clamp01((value - median) / max(median, 0.05))
+
+    @staticmethod
+    def _clamp01(value: float) -> float:
+        return max(0.0, min(1.0, value))
 
     @classmethod
     def _focus_candidate_indices(cls, candidates: list[dict[str, Any]]) -> list[int]:
