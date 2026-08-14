@@ -185,6 +185,38 @@ def extract_result(response: dict, image_path: Path) -> dict:
     }
 
 
+def save_focus_image(
+    response: dict,
+    image_path: Path,
+    output_dir: Path,
+    docker_container: str | None,
+) -> Path:
+    focus_debug = (response.get("tracker_debug") or {}).get("focus_resolver_debug") or {}
+    debug_path = focus_debug.get("focus_debug_image_path")
+    if not isinstance(debug_path, str) or not debug_path:
+        raise RequestFailure("FocusResolver did not expose a debug image path")
+    if docker_container:
+        completed = subprocess.run(
+            ["docker", "exec", docker_container, "cat", debug_path],
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        if completed.returncode != 0:
+            stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+            raise RequestFailure(
+                f"could not read focus debug image from container (return code {completed.returncode})"
+                + (f": {stderr}" if stderr else "")
+            )
+        image_bytes = completed.stdout
+    else:
+        image_bytes = Path(debug_path).read_bytes()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    destination = output_dir / f"{image_path.stem}_focus.png"
+    destination.write_bytes(image_bytes)
+    return destination
+
+
 def print_result(position: int, total: int, result: dict) -> None:
     print(f"[{position:03d}/{total:03d}] {result['image']}")
     if result.get("focused_index") is None:
@@ -228,6 +260,7 @@ def main() -> int:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--start-from")
     parser.add_argument("--review-file", type=Path)
+    parser.add_argument("--save-focus-images", type=Path)
     args = parser.parse_args()
 
     images = discover_images(args.image_dir)
@@ -273,6 +306,19 @@ def main() -> int:
                         image_path,
                         docker_container=args.docker_container,
                     )
+                    if args.save_focus_images is not None:
+                        try:
+                            save_focus_image(
+                                response,
+                                image_path,
+                                args.save_focus_images,
+                                args.docker_container,
+                            )
+                        except (OSError, RequestFailure, subprocess.SubprocessError) as exc:
+                            print(
+                                f"[WARN] could not save focus image for {image_path.name}: {exc}",
+                                file=sys.stderr,
+                            )
                     result = extract_result(response, image_path)
                     started_tracker = True
                     results.append(result)

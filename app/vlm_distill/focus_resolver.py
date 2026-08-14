@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import time
 from typing import Any
 
@@ -73,6 +74,7 @@ class FocusResolver:
     PEER_MAX_VERTICAL_GAP_RATIO = 2.0
     GRID_MAX_VERTICAL_SPAN_HEIGHTS = 5.0
     GRID_MAX_HORIZONTAL_SPAN_WIDTHS = 8.0
+    DEBUG_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_input.png"
 
     def __init__(self, engine: Any) -> None:
         self.engine = engine
@@ -120,6 +122,12 @@ class FocusResolver:
             focus_group_ids=focus_group_ids,
             use_montage=len(candidate_groups) >= 2,
         )
+        focus_debug_image_path: str | None = None
+        try:
+            annotated_image.save(self.DEBUG_IMAGE_PATH, format="PNG")
+            focus_debug_image_path = self.DEBUG_IMAGE_PATH
+        except (OSError, ValueError):
+            pass
         candidate_lines = "\n".join(
             f'{index}. text="{candidate.get("text", "")}" '
             f'bbox={candidate.get("bbox_norm")} '
@@ -163,6 +171,7 @@ class FocusResolver:
             if focus_image_mode == "group_montage" else 0,
             "focus_montage_group_tile_indices": candidate_groups
             if focus_image_mode == "group_montage" else [],
+            "focus_debug_image_path": focus_debug_image_path,
         })
         return {
             "focused_index": focused_index,
