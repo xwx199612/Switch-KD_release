@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from PIL import Image, ImageDraw
+from PIL import ImageFont
 
 from .state_tracker import StateObservationError
 
@@ -17,9 +18,11 @@ FOCUS_RESOLVER_PROMPT_TEMPLATE = """Inspect the screenshot and choose the candid
 Candidate numbers are drawn directly on the image. Compare the annotated
 candidate containers in their shared visual context; the number in the image
 exactly matches the index in the Candidates list.
-When shown as numbered tiles, each tile is an enlarged crop of one candidate
-from the same screenshot. The original navigation-focus appearance is
-preserved; compare border, outline, scale, ring, elevation, and emphasis.
+When shown as separated group crops, each crop preserves the original local
+layout of multiple candidates from the same screenshot. Candidate numbers mark
+their corresponding elements inside each crop. The original navigation-focus
+appearance is preserved; compare border, outline, scale, ring, elevation, and
+emphasis.
 The image may be arranged into separated UI groups cropped from the same
 original screenshot; candidate indices remain the original indices.
 
@@ -27,9 +30,12 @@ Candidates are already detected UI elements and have been restricted to
 geometrically comparable peer groups.
 Do not detect new elements.
 
-For every candidate, bbox_norm and size describe the full interactive
-container, not just the text. Inspect the annotated candidate containers
-directly. Within each visually comparable peer group, compare:
+Candidate annotations identify parsed UI elements. Their boxes may cover the
+element itself or only part of a larger visual container. Use the surrounding
+visual context in the image to determine whether the candidate belongs to a
+focused card, button, icon, tab, or other container. Inspect the annotated
+elements and their surrounding context directly. Within each visually
+comparable peer group, compare:
 
 1. full container width and height,
 2. scale relative to neighboring peers,
@@ -37,13 +43,15 @@ directly. Within each visually comparable peer group, compare:
 4. focus ring,
 5. elevation or container emphasis.
 
-A candidate that is uniquely larger than its neighboring peers is strong focus
-evidence. A size difference can be sufficient when it clearly distinguishes one
-peer. A visible outer border or outline strengthens that evidence. Also use a
-focus ring and elevation or other container emphasis when visible.
+A visible outer focus ring, bright or contrasting outline, highlighted
+container background, visibly enlarged focused container, or clearly unique
+elevation/glow is strong direct focus evidence. Direct visible focus evidence
+must dominate semantic salience. A size difference can be sufficient when it
+clearly distinguishes one peer.
 
-Semantic content, recommendation importance, row position, and brightness alone
-must not determine focus.
+Semantic relevance, text importance, content brightness by itself, a colorful
+icon by itself, being a heading or title, and being first in a row are weak or
+non-focus evidence and must not determine focus.
 
 Choose the visually distinguished candidate, not the most semantically salient
 candidate.
@@ -638,25 +646,7 @@ class FocusResolver:
                 continue
             x1 = max(left, roi[0]) - roi[0]
             y1 = max(top, roi[1]) - roi[1]
-            label = str(index)
-            text_box = draw.textbbox((0, 0), label)
-            label_width = text_box[2] - text_box[0]
-            label_height = text_box[3] - text_box[1]
-            label_x = min(max(0, x1), max(0, crop.width - label_width - 4))
-            if y1 >= label_height + 4:
-                label_y = y1 - label_height - 3
-            elif x1 >= label_width + 4:
-                label_x = x1 - label_width - 3
-                label_y = min(max(0, y1), max(0, crop.height - label_height - 4))
-            else:
-                label_y = min(max(0, y1 + 2), max(0, crop.height - label_height - 4))
-            draw.text(
-                (label_x, label_y),
-                label,
-                fill=(255, 255, 255),
-                stroke_width=1,
-                stroke_fill=(0, 0, 0),
-            )
+            cls._draw_focus_index_label(draw, index, x1, y1, crop.size)
             annotated_indices.append(index)
 
         input_image = crop
@@ -682,6 +672,58 @@ class FocusResolver:
             [0, 0],
             [0, 0],
             [],
+        )
+
+    @staticmethod
+    def _focus_label_font(image_size: tuple[int, int]) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+        font_size = max(16, min(30, round(min(image_size) * 0.035)))
+        for font_path in (
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+        ):
+            try:
+                return ImageFont.truetype(font_path, font_size)
+            except OSError:
+                continue
+        return ImageFont.load_default()
+
+    @classmethod
+    def _draw_focus_index_label(
+        cls,
+        draw: ImageDraw.ImageDraw,
+        index: int,
+        anchor_x: int,
+        anchor_y: int,
+        image_size: tuple[int, int],
+    ) -> None:
+        label = str(index)
+        font = cls._focus_label_font(image_size)
+        text_box = draw.textbbox((0, 0), label, font=font)
+        text_width = text_box[2] - text_box[0]
+        text_height = text_box[3] - text_box[1]
+        pad_x = max(5, round(text_height * 0.35))
+        pad_y = max(3, round(text_height * 0.20))
+        badge_width = text_width + 2 * pad_x
+        badge_height = text_height + 2 * pad_y
+        image_width, image_height = image_size
+        label_x = min(max(2, anchor_x), max(2, image_width - badge_width - 2))
+        if anchor_y >= badge_height + 5:
+            label_y = anchor_y - badge_height - 4
+        else:
+            label_y = anchor_y + 3
+        label_y = min(max(2, label_y), max(2, image_height - badge_height - 2))
+        draw.rounded_rectangle(
+            (label_x, label_y, label_x + badge_width, label_y + badge_height),
+            radius=max(3, round(badge_height * 0.18)),
+            fill=(0, 0, 0),
+            outline=(255, 255, 255),
+            width=1,
+        )
+        draw.text(
+            (label_x + pad_x, label_y + pad_y - text_box[1]),
+            label,
+            font=font,
+            fill=(255, 255, 255),
         )
 
     @classmethod
@@ -788,26 +830,21 @@ class FocusResolver:
                     tile = tile_data["crop"].resize(
                         (tile_width, tile_height), Image.Resampling.LANCZOS
                     )
-                    montage.paste(tile, (x, y))
+                    tile_draw = ImageDraw.Draw(tile)
                     scale_x = tile_width / tile_data["crop"].width
                     scale_y = tile_height / tile_data["crop"].height
                     for left, top, right, bottom, index, _ in tile_data["boxes"]:
-                        label_x = x + round((left - tile_data["crop_left"]) * scale_x)
-                        label_y = y + round((top - tile_data["crop_top"]) * scale_y)
-                        label = str(index)
-                        text_box = draw.textbbox((0, 0), label)
-                        label_width = text_box[2] - text_box[0]
-                        label_height = text_box[3] - text_box[1]
-                        label_x = min(max(x + 2, label_x), x + tile_width - label_width - 3)
-                        label_y = min(max(y + 2, label_y), y + tile_height - label_height - 3)
-                        draw.text(
-                            (label_x, label_y),
-                            label,
-                            fill=(255, 255, 255),
-                            stroke_width=1,
-                            stroke_fill=(0, 0, 0),
+                        label_x = round((left - tile_data["crop_left"]) * scale_x)
+                        label_y = round((top - tile_data["crop_top"]) * scale_y)
+                        cls._draw_focus_index_label(
+                            tile_draw,
+                            index,
+                            label_x,
+                            label_y,
+                            tile.size,
                         )
                         annotated_indices.append(index)
+                    montage.paste(tile, (x, y))
                     tile_sizes.append([tile_width, tile_height])
                     x += tile_width + gap
                 y += row_heights[row] + gap
