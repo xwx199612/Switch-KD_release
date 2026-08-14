@@ -7,6 +7,7 @@ import argparse
 import csv
 import json
 import statistics
+import subprocess
 import sys
 import time
 import uuid
@@ -19,10 +20,19 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 class RequestFailure(Exception):
-    def __init__(self, message: str, status: int | None = None, body: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        status: int | None = None,
+        body: str | None = None,
+        returncode: int | None = None,
+        stderr: str | None = None,
+    ):
         super().__init__(message)
         self.status = status
         self.body = body
+        self.returncode = returncode
+        self.stderr = stderr
 
 
 def multipart_image(image_path: Path) -> tuple[bytes, str]:
@@ -42,7 +52,87 @@ def multipart_image(image_path: Path) -> tuple[bytes, str]:
     return body, f"multipart/form-data; boundary={boundary}"
 
 
-def post(base_url: str, endpoint: str, image_path: Path | None = None) -> dict:
+def post(
+    base_url: str,
+    endpoint: str,
+    image_path: Path | None = None,
+    docker_container: str | None = None,
+) -> dict:
+    if docker_container:
+        command = [
+            "docker", "exec",
+            *( ["-i"] if image_path is not None else [] ),
+            docker_container,
+            "curl", "-sS", "-X", "POST",
+            "--write-out", "\n__TRACKER_HTTP_STATUS__:%{http_code}",
+        ]
+        if image_path is not None:
+            command.extend(["-F", f"image=@-;filename={image_path.name}"])
+            input_bytes = image_path.read_bytes()
+        else:
+            input_bytes = None
+        command.append(base_url.rstrip("/") + endpoint)
+        try:
+            completed = subprocess.run(
+                command,
+                input=input_bytes,
+                capture_output=True,
+                timeout=600,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RequestFailure(str(exc)) from exc
+        stdout = completed.stdout.decode("utf-8", errors="replace")
+        stderr = completed.stderr.decode("utf-8", errors="replace")
+        marker = "\n__TRACKER_HTTP_STATUS__:"
+        if marker not in stdout:
+            detail = f"docker/curl failed with return code {completed.returncode}"
+            if stderr:
+                detail += f"; stderr: {stderr.strip()}"
+            if stdout:
+                detail += f"; stdout: {stdout.strip()}"
+            raise RequestFailure(
+                detail,
+                returncode=completed.returncode,
+                stderr=stderr,
+                body=stdout,
+            )
+        body, status_text = stdout.rsplit(marker, 1)
+        try:
+            status = int(status_text.strip())
+        except ValueError as exc:
+            raise RequestFailure(
+                f"invalid HTTP status from docker/curl: {status_text.strip()}",
+                returncode=completed.returncode,
+                stderr=stderr,
+                body=body,
+            ) from exc
+        if completed.returncode != 0 or not 200 <= status < 300:
+            detail = f"HTTP {status} from {endpoint} in container {docker_container}"
+            if completed.returncode != 0:
+                detail += f"; return code: {completed.returncode}"
+            if stderr:
+                detail += f"; stderr: {stderr.strip()}"
+            if body:
+                detail += f"; stdout: {body.strip()}"
+            raise RequestFailure(
+                detail,
+                status=status,
+                body=body,
+                returncode=completed.returncode,
+                stderr=stderr,
+            )
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise RequestFailure(
+                f"invalid JSON from {endpoint} in container {docker_container}: {exc}",
+                status=status,
+                body=body,
+                returncode=completed.returncode,
+                stderr=stderr,
+            ) from exc
+
     request = Request(base_url.rstrip("/") + endpoint, method="POST")
     if image_path is None:
         request.data = b""
@@ -133,6 +223,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image-dir", required=True, type=Path)
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
+    parser.add_argument("--docker-container")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--start-from")
@@ -168,7 +259,7 @@ def main() -> int:
     started_tracker = False
     try:
         try:
-            post(args.base_url, "/debug/tracker/reset")
+            post(args.base_url, "/debug/tracker/reset", docker_container=args.docker_container)
         except RequestFailure as exc:
             print(f"[ERROR] tracker reset\n{exc}", file=sys.stderr)
 
@@ -176,7 +267,12 @@ def main() -> int:
             for position, image_path in enumerate(images, start=1):
                 endpoint = "/debug/tracker/start" if not started_tracker else "/debug/tracker/step"
                 try:
-                    response = post(args.base_url, endpoint, image_path)
+                    response = post(
+                        args.base_url,
+                        endpoint,
+                        image_path,
+                        docker_container=args.docker_container,
+                    )
                     result = extract_result(response, image_path)
                     started_tracker = True
                     results.append(result)
