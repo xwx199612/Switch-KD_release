@@ -84,9 +84,9 @@ class FocusResolver:
     GRID_MAX_VERTICAL_SPAN_HEIGHTS = 5.0
     GRID_MAX_HORIZONTAL_SPAN_WIDTHS = 8.0
     DEBUG_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_input.png"
-    VISUAL_RING_WEIGHT = 0.45
-    VISUAL_BACKGROUND_WEIGHT = 0.35
-    VISUAL_SIZE_WEIGHT = 0.20
+    VISUAL_RING_CONTINUITY_WEIGHT = 0.55
+    VISUAL_RING_CONTRAST_WEIGHT = 0.30
+    VISUAL_BACKGROUND_WEIGHT = 0.15
 
     def __init__(self, engine: Any) -> None:
         self.engine = engine
@@ -221,6 +221,7 @@ class FocusResolver:
             group_id = group_by_index.get(index, -1)
             if geometry is None:
                 raw[index] = {
+                    "continuity": 0.0,
                     "outer_ring": 0.0,
                     "background": 0.0,
                     "edge": 0.0,
@@ -232,14 +233,18 @@ class FocusResolver:
             left, top, right, bottom = geometry
             width = max(1, right - left)
             height = max(1, bottom - top)
-            outer_mean = cls._mean_luma_band(image, (left, top, right, bottom), 4, 0)
+            ring_continuity, ring_contrast = cls._perimeter_ring_evidence(
+                image, (left, top, right, bottom)
+            )
             background_mean = cls._mean_luma_band(image, (left, top, right, bottom), 14, 5)
             perimeter_mean = cls._perimeter_luma(image, (left, top, right, bottom))
-            ring_contrast = cls._clamp01(abs(outer_mean - background_mean) / 255.0)
-            background_delta = cls._clamp01(abs(perimeter_mean - background_mean) / 255.0)
+            background_delta = cls._clamp01(
+                abs(perimeter_mean - background_mean) / 255.0
+            )
             edge_strength = cls._perimeter_edge_strength(image, (left, top, right, bottom))
             raw[index] = {
-                "outer_ring": cls._clamp01(0.6 * ring_contrast + 0.4 * edge_strength),
+                "continuity": ring_continuity,
+                "outer_ring": ring_contrast,
                 "background": background_delta,
                 "edge": edge_strength,
                 "area": float(width * height),
@@ -255,26 +260,30 @@ class FocusResolver:
                 peer for peer in candidate_groups[group_by_index[index]]
                 if peer in raw
             ] if index in group_by_index else [index]
+            continuity = cls._peer_relative(
+                values["continuity"],
+                [raw[peer]["continuity"] for peer in peer_indices],
+            )
             ring = cls._peer_relative(values["outer_ring"], [raw[peer]["outer_ring"] for peer in peer_indices])
             background = cls._peer_relative(values["background"], [raw[peer]["background"] for peer in peer_indices])
-            edge = cls._peer_relative(values["edge"], [raw[peer]["edge"] for peer in peer_indices])
+            edge = values["edge"]
             peer_areas = [raw[peer]["area"] for peer in peer_indices]
             peer_widths = [raw[peer]["width"] for peer in peer_indices]
             peer_heights = [raw[peer]["height"] for peer in peer_indices]
             size_ratio = values["area"] / max(cls._median(peer_areas), 1.0)
             width_ratio = values["width"] / max(cls._median(peer_widths), 1.0)
             height_ratio = values["height"] / max(cls._median(peer_heights), 1.0)
-            normalized_size = cls._clamp01(abs(size_ratio - 1.0))
             score = (
-                cls.VISUAL_RING_WEIGHT * ring
+                cls.VISUAL_RING_CONTINUITY_WEIGHT * continuity
+                + cls.VISUAL_RING_CONTRAST_WEIGHT * ring
                 + cls.VISUAL_BACKGROUND_WEIGHT * background
-                + cls.VISUAL_SIZE_WEIGHT * normalized_size
             )
             evidence.append({
                 "index": index,
                 "group_id": group_by_index.get(index, -1),
+                "ring_continuity": round(continuity, 4),
                 "outer_ring_contrast": round(ring, 4),
-                "container_background_delta": round(background, 4),
+                "background_highlight_evidence": round(background, 4),
                 "size_ratio": round(size_ratio, 4),
                 "width_ratio": round(width_ratio, 4),
                 "height_ratio": round(height_ratio, 4),
@@ -339,6 +348,90 @@ class FocusResolver:
                 total += cls._pixel_luma(image.getpixel((x, y)))
                 count += 1
         return total / count if count else 0.0
+
+    @classmethod
+    def _perimeter_ring_evidence(
+        cls,
+        image: Image.Image,
+        box: tuple[int, int, int, int],
+    ) -> tuple[float, float]:
+        """Measure sustained intermediate decoration around a candidate."""
+        left, top, right, bottom = box
+        samples: list[tuple[int, bool, float]] = []
+        sample_count = 32
+        threshold = 0.10
+
+        def add_sample(
+            side: int,
+            position: int,
+            inner: tuple[int, int],
+            immediate: tuple[int, int],
+            farther: tuple[int, int],
+            horizontal: bool,
+        ) -> None:
+            if not all(
+                0 <= point[0] < image.width and 0 <= point[1] < image.height
+                for point in (inner, immediate, farther)
+            ):
+                return
+            inner_luma = cls._sample_luma(image, inner, horizontal)
+            immediate_luma = cls._sample_luma(image, immediate, horizontal)
+            farther_luma = cls._sample_luma(image, farther, horizontal)
+            inner_delta = abs(immediate_luma - inner_luma) / 255.0
+            background_delta = abs(immediate_luma - farther_luma) / 255.0
+            contrast = min(inner_delta, background_delta)
+            samples.append((side, contrast >= threshold, contrast))
+
+        for position in range(sample_count):
+            fraction = (position + 0.5) / sample_count
+            x = round(left + fraction * max(1, right - left - 1))
+            y = round(top + fraction * max(1, bottom - top - 1))
+            if top >= 7:
+                add_sample(0, position, (x, top + 1), (x, top - 2), (x, top - 7), True)
+            if bottom + 7 < image.height:
+                add_sample(1, position, (x, bottom - 1), (x, bottom + 2), (x, bottom + 7), True)
+            if left >= 7:
+                add_sample(2, position, (left + 1, y), (left - 2, y), (left - 7, y), False)
+            if right + 7 < image.width:
+                add_sample(3, position, (right - 1, y), (right + 2, y), (right + 7, y), False)
+
+        if not samples:
+            return 0.0, 0.0
+        positive_fraction = sum(positive for _, positive, _ in samples) / len(samples)
+        side_runs: list[float] = []
+        for side in range(4):
+            side_samples = [positive for sample_side, positive, _ in samples if sample_side == side]
+            if not side_samples:
+                continue
+            longest = current = 0
+            for positive in side_samples:
+                current = current + 1 if positive else 0
+                longest = max(longest, current)
+            side_runs.append(longest / len(side_samples))
+        sustained_factor = 0.5 + 0.5 * min(1.0, 2.0 * max(side_runs, default=0.0))
+        continuity = cls._clamp01(positive_fraction * sustained_factor)
+        contrast = sum(value for _, _, value in samples) / len(samples)
+        return continuity, cls._clamp01(contrast)
+
+    @classmethod
+    def _sample_luma(
+        cls,
+        image: Image.Image,
+        point: tuple[int, int],
+        horizontal: bool,
+    ) -> float:
+        x, y = point
+        tangent_points = (
+            ((x - 1, y), (x, y), (x + 1, y))
+            if horizontal
+            else ((x, y - 1), (x, y), (x, y + 1))
+        )
+        valid = [
+            cls._pixel_luma(image.getpixel(sample))
+            for sample in tangent_points
+            if 0 <= sample[0] < image.width and 0 <= sample[1] < image.height
+        ]
+        return sum(valid) / len(valid) if valid else 0.0
 
     @classmethod
     def _perimeter_luma(cls, image: Image.Image, box: tuple[int, int, int, int]) -> float:

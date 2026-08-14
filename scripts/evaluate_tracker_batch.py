@@ -184,8 +184,9 @@ def extract_result(response: dict, image_path: Path) -> dict:
             "index": index,
             "text": element_texts[index] if 0 <= index < len(element_texts) else "",
             "visual_focus_score": item.get("visual_focus_score"),
+            "ring_continuity": item.get("ring_continuity"),
             "outer_ring_contrast": item.get("outer_ring_contrast"),
-            "container_background_delta": item.get("container_background_delta"),
+            "background_highlight_evidence": item.get("background_highlight_evidence"),
             "size_ratio": item.get("size_ratio"),
         })
     return {
@@ -248,8 +249,9 @@ def print_result(position: int, total: int, result: dict) -> None:
         print(
             f"  [{item['index']}] {item['text']} "
             f"score={item['visual_focus_score']:.2f} "
+            f"ring_cont={item['ring_continuity']:.2f} "
             f"ring={item['outer_ring_contrast']:.2f} "
-            f"bg={item['container_background_delta']:.2f} "
+            f"bg={item['background_highlight_evidence']:.2f} "
             f"size={item['size_ratio']:.2f}{marker}"
         )
     print("\nElements:")

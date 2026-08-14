@@ -15,7 +15,7 @@
 #4 DONE 0.0s
 
 #5 [internal] load build context
-#5 transferring context: 40.72kB done
+#5 transferring context: 49.43kB done
 #5 DONE 0.0s
 
 #6 [ 3/10] WORKDIR /app
@@ -43,11 +43,11 @@
 #13 DONE 0.0s
 
 #14 [10/10] RUN useradd --create-home --uid 10001 runtime     && mkdir -p /output/cache/huggingface /output/cache/triton /output/cache/torch     && chown -R runtime:runtime /output /app /config /usr/local/bin/entrypoint.sh     && python3.11 -m compileall -q /app/vlm_distill
-#14 DONE 0.3s
+#14 DONE 0.4s
 
 #15 exporting to image
 #15 exporting layers 0.1s done
-#15 writing image sha256:cb5a215d0cffc179b91051c70069b6eeaaf0889e52ee26f8693609a898965e1b done
+#15 writing image sha256:b6f1ee5dbb933ac4df8b97250cbb58f6be4bd532272f65b9d283b7d4da5ec69e done
 #15 naming to docker.io/library/vlm-online-dbild-runtime:1.2.0 done
 #15 DONE 0.1s
 image=vlm-online-dbild-runtime:1.2.0
