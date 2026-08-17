@@ -1,0 +1,768 @@
+{
+  "image_name": null,
+  "focus_image_mode": "group_montage",
+  "prepared_size": [
+    2045,
+    548
+  ],
+  "roi_bbox_pixels": null,
+  "montage_grid": [
+    3,
+    2
+  ],
+  "montage_size": [
+    2045,
+    548
+  ],
+  "montage_tile_sizes": [
+    [
+      254,
+      66
+    ],
+    [
+      1743,
+      279
+    ],
+    [
+      388,
+      142
+    ],
+    [
+      555,
+      52
+    ],
+    [
+      1183,
+      55
+    ],
+    [
+      94,
+      48
+    ]
+  ],
+  "montage_tile_bboxes": [],
+  "prepared_candidate_bboxes": {
+    "18": [
+      34,
+      25,
+      244,
+      65
+    ],
+    "0": [
+      435,
+      52,
+      601,
+      124
+    ],
+    "1": [
+      610,
+      52,
+      929,
+      124
+    ],
+    "2": [
+      938,
+      52,
+      1252,
+      124
+    ],
+    "3": [
+      1259,
+      52,
+      1567,
+      124
+    ],
+    "4": [
+      1576,
+      52,
+      1888,
+      124
+    ],
+    "5": [
+      452,
+      150,
+      556,
+      251
+    ],
+    "6": [
+      563,
+      150,
+      667,
+      251
+    ],
+    "7": [
+      675,
+      150,
+      778,
+      251
+    ],
+    "8": [
+      44,
+      335,
+      147,
+      437
+    ],
+    "9": [
+      153,
+      335,
+      256,
+      437
+    ],
+    "10": [
+      265,
+      335,
+      368,
+      437
+    ],
+    "11": [
+      470,
+      328,
+      590,
+      354
+    ],
+    "12": [
+      774,
+      328,
+      933,
+      354
+    ],
+    "13": [
+      111,
+      494,
+      265,
+      523
+    ],
+    "14": [
+      409,
+      494,
+      479,
+      523
+    ],
+    "15": [
+      694,
+      494,
+      815,
+      523
+    ],
+    "16": [
+      981,
+      494,
+      1096,
+      523
+    ],
+    "17": [
+      1232,
+      494,
+      1300,
+      516
+    ]
+  },
+  "peer_groups": [
+    [
+      1,
+      2,
+      3,
+      4
+    ],
+    [
+      5,
+      6,
+      7
+    ],
+    [
+      8,
+      9,
+      10
+    ],
+    [
+      11,
+      12
+    ],
+    [
+      13,
+      14,
+      15,
+      16
+    ]
+  ],
+  "isolated_indices": [
+    0,
+    17,
+    18
+  ],
+  "enlargement_sibling_groups": [
+    [
+      1,
+      2,
+      3,
+      4
+    ],
+    [
+      5,
+      6,
+      7
+    ],
+    [
+      8,
+      9,
+      10
+    ],
+    [
+      15,
+      16
+    ]
+  ],
+  "candidates": [
+    {
+      "index": 0,
+      "text": "Hub",
+      "prepared_bbox": [
+        435,
+        52,
+        601,
+        124
+      ],
+      "visual_cell_bbox": [
+        352,
+        16,
+        770,
+        200
+      ],
+      "enlargement_local_observation_bbox": [
+        352.0,
+        16.0,
+        684.0,
+        160.0
+      ],
+      "visual_extent_bbox": [
+        435.0,
+        52.0,
+        683.0,
+        160.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 1,
+      "text": "Home Office",
+      "prepared_bbox": [
+        610,
+        52,
+        929,
+        124
+      ],
+      "visual_cell_bbox": [
+        518,
+        16,
+        1095,
+        200
+      ],
+      "enlargement_local_observation_bbox": [
+        518.0,
+        16.0,
+        1088.5,
+        160.0
+      ],
+      "visual_extent_bbox": [
+        550.0,
+        52.0,
+        1089.0,
+        124.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 2,
+      "text": "Accessibility",
+      "prepared_bbox": [
+        938,
+        52,
+        1252,
+        124
+      ],
+      "visual_cell_bbox": [
+        770,
+        16,
+        1413,
+        160
+      ],
+      "enlargement_local_observation_bbox": [
+        781.0,
+        16.0,
+        1409.0,
+        160.0
+      ],
+      "visual_extent_bbox": [
+        782.0,
+        52.0,
+        1408.0,
+        160.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 3,
+      "text": "Sports",
+      "prepared_bbox": [
+        1259,
+        52,
+        1567,
+        124
+      ],
+      "visual_cell_bbox": [
+        1095,
+        16,
+        1732,
+        160
+      ],
+      "enlargement_local_observation_bbox": [
+        1105.0,
+        16.0,
+        1721.0,
+        160.0
+      ],
+      "visual_extent_bbox": [
+        1105.0,
+        52.0,
+        1569.0,
+        160.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 4,
+      "text": "Edit",
+      "prepared_bbox": [
+        1576,
+        52,
+        1888,
+        124
+      ],
+      "visual_cell_bbox": [
+        1413,
+        16,
+        2044,
+        160
+      ],
+      "enlargement_local_observation_bbox": [
+        1420.0,
+        16.0,
+        2044.0,
+        160.0
+      ],
+      "visual_extent_bbox": [
+        1436.0,
+        52.0,
+        2032.0,
+        128.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 5,
+      "text": "APPS",
+      "prepared_bbox": [
+        452,
+        150,
+        556,
+        251
+      ],
+      "visual_cell_bbox": [
+        400,
+        88,
+        615,
+        301
+      ],
+      "enlargement_local_observation_bbox": [
+        400.0,
+        99.5,
+        608.0,
+        301.0
+      ],
+      "visual_extent_bbox": [
+        452.0,
+        102.0,
+        556.0,
+        251.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 6,
+      "text": "YouTube",
+      "prepared_bbox": [
+        563,
+        150,
+        667,
+        251
+      ],
+      "visual_cell_bbox": [
+        504,
+        88,
+        726,
+        301
+      ],
+      "enlargement_local_observation_bbox": [
+        511.0,
+        99.5,
+        719.0,
+        301.0
+      ],
+      "visual_extent_bbox": [
+        512.0,
+        102.0,
+        718.0,
+        251.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 7,
+      "text": "prime video",
+      "prepared_bbox": [
+        675,
+        150,
+        778,
+        251
+      ],
+      "visual_cell_bbox": [
+        615,
+        88,
+        830,
+        301
+      ],
+      "enlargement_local_observation_bbox": [
+        623.5,
+        99.5,
+        829.5,
+        301.0
+      ],
+      "visual_extent_bbox": [
+        651.0,
+        102.0,
+        829.0,
+        251.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 8,
+      "text": "Gaming Portal",
+      "prepared_bbox": [
+        44,
+        335,
+        147,
+        437
+      ],
+      "visual_cell_bbox": [
+        0,
+        284,
+        204,
+        488
+      ],
+      "enlargement_local_observation_bbox": [
+        0.0,
+        284.0,
+        198.5,
+        488.0
+      ],
+      "visual_extent_bbox": [
+        44.0,
+        335.0,
+        177.0,
+        437.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 9,
+      "text": "NETFLIX",
+      "prepared_bbox": [
+        153,
+        335,
+        256,
+        437
+      ],
+      "visual_cell_bbox": [
+        96,
+        284,
+        316,
+        488
+      ],
+      "enlargement_local_observation_bbox": [
+        101.5,
+        284.0,
+        307.5,
+        488.0
+      ],
+      "visual_extent_bbox": [
+        102.0,
+        335.0,
+        304.0,
+        440.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 10,
+      "text": "Edit App List",
+      "prepared_bbox": [
+        265,
+        335,
+        368,
+        437
+      ],
+      "visual_cell_bbox": [
+        204,
+        284,
+        420,
+        488
+      ],
+      "enlargement_local_observation_bbox": [
+        213.5,
+        284.0,
+        419.5,
+        488.0
+      ],
+      "visual_extent_bbox": [
+        256.0,
+        335.0,
+        368.0,
+        449.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 11,
+      "text": "Recent Input",
+      "prepared_bbox": [
+        470,
+        328,
+        590,
+        354
+      ],
+      "visual_cell_bbox": [
+        410,
+        315,
+        854,
+        367
+      ],
+      "enlargement_local_observation_bbox": [
+        410.0,
+        315.0,
+        650.0,
+        367.0
+      ],
+      "visual_extent_bbox": [
+        410.0,
+        315.0,
+        650.0,
+        356.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 12,
+      "text": "Device Functions",
+      "prepared_bbox": [
+        774,
+        328,
+        933,
+        354
+      ],
+      "visual_cell_bbox": [
+        530,
+        315,
+        1013,
+        367
+      ],
+      "enlargement_local_observation_bbox": [
+        694.5,
+        315.0,
+        1012.5,
+        367.0
+      ],
+      "visual_extent_bbox": [
+        694.0,
+        315.0,
+        1013.0,
+        367.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 13,
+      "text": "Edit App List",
+      "prepared_bbox": [
+        111,
+        494,
+        265,
+        523
+      ],
+      "visual_cell_bbox": [
+        34,
+        480,
+        444,
+        537
+      ],
+      "enlargement_local_observation_bbox": [
+        34.0,
+        480.0,
+        342.0,
+        537.0
+      ],
+      "visual_extent_bbox": [
+        34.0,
+        480.0,
+        342.0,
+        537.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 14,
+      "text": "Guide",
+      "prepared_bbox": [
+        409,
+        494,
+        479,
+        523
+      ],
+      "visual_cell_bbox": [
+        188,
+        480,
+        754,
+        537
+      ],
+      "enlargement_local_observation_bbox": [
+        374.0,
+        480.0,
+        514.0,
+        537.0
+      ],
+      "visual_extent_bbox": [
+        374.0,
+        480.0,
+        514.0,
+        537.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 15,
+      "text": "User Guide",
+      "prepared_bbox": [
+        694,
+        494,
+        815,
+        523
+      ],
+      "visual_cell_bbox": [
+        444,
+        480,
+        1038,
+        537
+      ],
+      "enlargement_local_observation_bbox": [
+        633.5,
+        480.0,
+        875.5,
+        537.0
+      ],
+      "visual_extent_bbox": [
+        683.0,
+        481.0,
+        875.0,
+        535.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 16,
+      "text": "Home Hub",
+      "prepared_bbox": [
+        981,
+        494,
+        1096,
+        523
+      ],
+      "visual_cell_bbox": [
+        754,
+        480,
+        1154,
+        537
+      ],
+      "enlargement_local_observation_bbox": [
+        923.5,
+        480.0,
+        1153.5,
+        537.0
+      ],
+      "visual_extent_bbox": [
+        923.0,
+        480.0,
+        1154.0,
+        537.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 17,
+      "text": "HDMI 1",
+      "prepared_bbox": [
+        1232,
+        494,
+        1300,
+        516
+      ],
+      "visual_cell_bbox": [
+        1198,
+        483,
+        1334,
+        527
+      ],
+      "enlargement_local_observation_bbox": [
+        1198.0,
+        483.0,
+        1334.0,
+        527.0
+      ],
+      "visual_extent_bbox": [
+        1198.0,
+        483.0,
+        1334.0,
+        527.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    },
+    {
+      "index": 18,
+      "text": "Network Settings",
+      "prepared_bbox": [
+        34,
+        25,
+        244,
+        65
+      ],
+      "visual_cell_bbox": [
+        0,
+        5,
+        349,
+        85
+      ],
+      "enlargement_local_observation_bbox": [
+        0.0,
+        5.0,
+        349.0,
+        85.0
+      ],
+      "visual_extent_bbox": [
+        0.0,
+        5.0,
+        349.0,
+        85.0
+      ],
+      "enlargement_extent_reason": "direct_visual_extent"
+    }
+  ]
+}

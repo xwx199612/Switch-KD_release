@@ -121,6 +121,10 @@ class FocusResolver:
     ENLARGEMENT_LOCAL_MARGIN_X = 0.50
     ENLARGEMENT_LOCAL_MARGIN_Y = 0.50
     ENLARGEMENT_SYMMETRY_FLOOR = 0.5
+    ENLARGEMENT_OBS_BOUNDARY_TOLERANCE_PX = 2
+    ENLARGEMENT_EDGE_SAMPLE_INSET = 0.15
+    ENLARGEMENT_BOUNDARY_MIN_SCORE = 0.55
+    ENLARGEMENT_BOUNDARY_MIN_SAMPLE_SUPPORT = 0.60
     HIGHLIGHT_V5_MIN_SCORE = 0.60
     HIGHLIGHT_V5_MIN_MARGIN = 0.18
     CONTAINER_PROPOSAL_EXPANSIONS = (0.0, 0.05, 0.10, 0.20)
@@ -609,6 +613,7 @@ class FocusResolver:
             cell = clipped_box(item.get("visual_cell_bbox"))
             if semantic is None or cell is None:
                 item["enlargement_extent_reason"] = "invalid_geometry"
+                item["extent_reliable"] = False
                 return
             left, top, right, bottom = semantic
             width = right - left
@@ -623,63 +628,127 @@ class FocusResolver:
             def luminance(color: tuple[int, int, int]) -> float:
                 return (0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]) / 255.0
 
-            def sample_band(side: str, distance: int, samples: int) -> tuple[float, float]:
-                values: list[float] = []
-                gradients: list[float] = []
-                for sample_index in range(samples):
-                    fraction = (sample_index + 0.5) / samples
-                    if side in ("left", "right"):
-                        y = int(max(0, min(image_height - 1, round(top + fraction * height))))
-                        x = int(round(left - distance if side == "left" else right + distance))
-                        x = max(int(observation[0]), min(int(observation[2]) - 1, x))
-                        inside_x = max(int(observation[0]), min(int(observation[2]) - 1, int(round(left + (2 if side == "left" else -2)))))
-                        outside = luminance(pixel_data[x, y])
-                        inside = luminance(pixel_data[inside_x, y])
-                    else:
-                        x = int(max(0, min(image_width - 1, round(left + fraction * width))))
-                        y = int(round(top - distance if side == "top" else bottom + distance))
-                        y = max(int(observation[1]), min(int(observation[3]) - 1, y))
-                        inside_y = max(int(observation[1]), min(int(observation[3]) - 1, int(round(top + (2 if side == "top" else -2)))))
-                        outside = luminance(pixel_data[x, y])
-                        inside = luminance(pixel_data[x, inside_y])
-                    values.append(outside)
-                    gradients.append(abs(outside - inside))
-                return sum(values) / max(len(values), 1), sum(gradients) / max(len(gradients), 1)
-
-            reference_values: list[float] = []
-            for row in range(3):
-                for column in range(3):
-                    x = int(max(0, min(image_width - 1, round(left + (column + 0.5) * width / 3.0))))
-                    y = int(max(0, min(image_height - 1, round(top + (row + 0.5) * height / 3.0))))
-                    reference_values.append(luminance(pixel_data[x, y]))
-            reference = sum(reference_values) / max(len(reference_values), 1)
-            reference_variance = sum((value - reference) ** 2 for value in reference_values) / max(len(reference_values), 1)
             step = max(1, min(4, int(round(min(width, height) * 0.025))))
             growth: dict[str, int] = {"left": 0, "right": 0, "top": 0, "bottom": 0}
-            side_support: dict[str, float] = {}
-            samples = max(5, min(15, int(round(max(width, height) / 20.0))))
+            boundary_debug: dict[str, dict[str, Any]] = {}
+            sample_count = max(5, min(15, int(round(max(width, height) / 20.0))))
+
+            def coordinate(side: str, distance: int, fraction: float, farther: int = 0) -> tuple[int, int]:
+                if side in ("left", "right"):
+                    y = int(round(top + fraction * height))
+                    x = int(round(left - distance - farther if side == "left" else right + distance + farther))
+                else:
+                    x = int(round(left + fraction * width))
+                    y = int(round(top - distance - farther if side == "top" else bottom + distance + farther))
+                return (
+                    max(int(observation[0]), min(int(observation[2]) - 1, x)),
+                    max(int(observation[1]), min(int(observation[3]) - 1, y)),
+                )
+
+            def inner_coordinate(side: str, fraction: float) -> tuple[int, int]:
+                inset = max(1, step)
+                if side in ("left", "right"):
+                    y = int(round(top + fraction * height))
+                    x = int(round(left + inset if side == "left" else right - inset))
+                else:
+                    x = int(round(left + fraction * width))
+                    y = int(round(top + inset if side == "top" else bottom - inset))
+                return (
+                    max(int(observation[0]), min(int(observation[2]) - 1, x)),
+                    max(int(observation[1]), min(int(observation[3]) - 1, y)),
+                )
+
             for side in growth:
-                maximum = int(round((left - observation[0]) if side == "left" else (observation[2] - right) if side == "right" else (top - observation[1]) if side == "top" else (observation[3] - bottom)))
-                consecutive = 0
-                best = 0
-                support_values: list[float] = []
-                for distance in range(step, maximum + 1, step):
-                    outside_mean, gradient = sample_band(side, distance, samples)
-                    continuity = cls._clamp01(1.0 - abs(outside_mean - reference) / max(0.12, math.sqrt(reference_variance) * 3.0 + 0.04))
-                    edge_support = cls._clamp01(gradient / 0.10)
-                    support = 0.70 * continuity + 0.30 * edge_support
-                    support_values.append(support)
-                    if support >= 0.48:
-                        consecutive += 1
-                        best = distance
-                    elif consecutive >= 2:
-                        break
-                    else:
-                        consecutive = 0
-                growth[side] = best
-                side_support[side] = sum(support_values[-2:]) / max(1, len(support_values[-2:])) if support_values else 0.0
+                maximum = int(round(
+                    (left - observation[0]) if side == "left"
+                    else (observation[2] - right) if side == "right"
+                    else (top - observation[1]) if side == "top"
+                    else (observation[3] - bottom)
+                ))
+                if maximum < step:
+                    boundary_debug[side] = {
+                        "found": False, "growth": 0, "score": 0.0,
+                        "confidence": 0.0, "reason": "insufficient_scan_space",
+                        "obs_hit": False,
+                    }
+                    continue
+                positions: list[tuple[int, float]] = []
+                scores: list[float] = []
+                inset = cls.ENLARGEMENT_EDGE_SAMPLE_INSET
+                for sample_index in range(sample_count):
+                    fraction = inset + (1.0 - 2.0 * inset) * (sample_index + 0.5) / sample_count
+                    inner = luminance(pixel_data[inner_coordinate(side, fraction)])
+                    found_position: tuple[int, float] | None = None
+                    for distance in range(step, maximum + 1, step):
+                        current = luminance(pixel_data[coordinate(side, distance, fraction)])
+                        farther = luminance(pixel_data[coordinate(side, distance, fraction, step)])
+                        farther_next = luminance(pixel_data[coordinate(side, distance, fraction, 2 * step)])
+                        inner_support = cls._clamp01(1.0 - abs(current - inner) / 0.18)
+                        outward_change = cls._clamp01(abs(current - farther) / 0.12)
+                        boundary_gradient = outward_change
+                        background_stability = cls._clamp01(1.0 - abs(farther - farther_next) / 0.08)
+                        score = (
+                            0.35 * outward_change
+                            + 0.30 * boundary_gradient
+                            + 0.20 * background_stability
+                            + 0.15 * inner_support
+                        )
+                        if (
+                            score >= cls.ENLARGEMENT_BOUNDARY_MIN_SCORE
+                            and background_stability >= 0.55
+                            and inner_support >= 0.30
+                        ):
+                            found_position = (distance, score)
+                            break
+                    if found_position is not None:
+                        positions.append(found_position)
+                        scores.append(found_position[1])
+                required = max(1, math.ceil(sample_count * cls.ENLARGEMENT_BOUNDARY_MIN_SAMPLE_SUPPORT))
+                if len(positions) >= required:
+                    ordered_positions = sorted(position for position, _ in positions)
+                    growth[side] = ordered_positions[len(ordered_positions) // 2]
+                    boundary_debug[side] = {
+                        "found": True,
+                        "growth": growth[side],
+                        "score": sum(scores) / len(scores),
+                        "confidence": len(positions) / sample_count,
+                        "reason": "stable_transition",
+                        "obs_hit": False,
+                    }
+                else:
+                    growth[side] = maximum
+                    boundary_debug[side] = {
+                        "found": False,
+                        "growth": maximum,
+                        "score": max(scores, default=0.0),
+                        "confidence": len(positions) / sample_count,
+                        "reason": "observation_boundary_reached",
+                        "obs_hit": True,
+                    }
 
             extent = clipped_box((left - growth["left"], top - growth["top"], right + growth["right"], bottom + growth["bottom"])) or semantic
+            tolerance = cls.ENLARGEMENT_OBS_BOUNDARY_TOLERANCE_PX
+            obs_hits = {
+                "left": abs(extent[0] - observation[0]) <= tolerance,
+                "right": abs(extent[2] - observation[2]) <= tolerance,
+                "top": abs(extent[1] - observation[1]) <= tolerance,
+                "bottom": abs(extent[3] - observation[3]) <= tolerance,
+            }
+            for side, hit in obs_hits.items():
+                boundary_debug[side]["obs_hit"] = hit
+            horizontal_truncated = obs_hits["left"] and obs_hits["right"]
+            vertical_truncated = obs_hits["top"] and obs_hits["bottom"]
+            extent_truncated = horizontal_truncated or vertical_truncated
+            valid_confidences = [entry["confidence"] for entry in boundary_debug.values() if entry["found"]]
+            reliability = sum(
+                entry["confidence"] if entry["found"] else 0.0
+                for entry in boundary_debug.values()
+            ) / len(boundary_debug)
+            extent_reliable = (
+                not extent_truncated
+                and not any(obs_hits.values())
+                and len(valid_confidences) == 4
+            )
             horizontal_balance = min(growth["left"], growth["right"]) / max(growth["left"], growth["right"], 1.0)
             vertical_balance = min(growth["top"], growth["bottom"]) / max(growth["top"], growth["bottom"], 1.0)
             item.update({
@@ -699,8 +768,43 @@ class FocusResolver:
                 "extent_horizontal_balance": horizontal_balance,
                 "extent_vertical_balance": vertical_balance,
                 "extent_symmetry": math.sqrt(max(0.0, horizontal_balance * vertical_balance)),
-                "enlargement_extent_reason": "direct_visual_extent",
-                "extent_side_support": side_support,
+                "extent_boundary_method": "stable_transition_v5_2",
+                "extent_boundary_left_found": boundary_debug["left"]["found"],
+                "extent_boundary_right_found": boundary_debug["right"]["found"],
+                "extent_boundary_top_found": boundary_debug["top"]["found"],
+                "extent_boundary_bottom_found": boundary_debug["bottom"]["found"],
+                "extent_boundary_left_score": boundary_debug["left"]["score"],
+                "extent_boundary_right_score": boundary_debug["right"]["score"],
+                "extent_boundary_top_score": boundary_debug["top"]["score"],
+                "extent_boundary_bottom_score": boundary_debug["bottom"]["score"],
+                "extent_boundary_left_confidence": boundary_debug["left"]["confidence"],
+                "extent_boundary_right_confidence": boundary_debug["right"]["confidence"],
+                "extent_boundary_top_confidence": boundary_debug["top"]["confidence"],
+                "extent_boundary_bottom_confidence": boundary_debug["bottom"]["confidence"],
+                "extent_boundary_left_reason": boundary_debug["left"]["reason"],
+                "extent_boundary_right_reason": boundary_debug["right"]["reason"],
+                "extent_boundary_top_reason": boundary_debug["top"]["reason"],
+                "extent_boundary_bottom_reason": boundary_debug["bottom"]["reason"],
+                "extent_obs_hit_left": obs_hits["left"],
+                "extent_obs_hit_right": obs_hits["right"],
+                "extent_obs_hit_top": obs_hits["top"],
+                "extent_obs_hit_bottom": obs_hits["bottom"],
+                "extent_obs_boundary_hit_count": sum(obs_hits.values()),
+                "extent_horizontal_truncated": horizontal_truncated,
+                "extent_vertical_truncated": vertical_truncated,
+                "extent_truncated": extent_truncated,
+                "extent_boundary_reliability": reliability,
+                "extent_reliable": extent_reliable,
+                "enlargement_extent_reason": (
+                    "observation_boundary_truncated" if extent_truncated
+                    else "stable_boundary_extent" if extent_reliable
+                    else "no_stable_boundary"
+                ),
+                "extent_side_support": {
+                    side: entry["confidence"]
+                    for side, entry in boundary_debug.items()
+                },
+                "extent_boundary_debug": boundary_debug,
             })
 
         for item in evidence:
@@ -914,7 +1018,7 @@ class FocusResolver:
                 extent_symmetry = float(item.get("extent_symmetry", 0.0))
                 extent_symmetry_gate = cls.ENLARGEMENT_SYMMETRY_FLOOR + (1.0 - cls.ENLARGEMENT_SYMMETRY_FLOOR) * extent_symmetry
                 extent_valid = (
-                    item.get("enlargement_extent_reason") == "direct_visual_extent"
+                    bool(item.get("extent_reliable", False))
                     and float(item.get("visual_extent_width", 0.0)) > 0.0
                     and float(item.get("visual_extent_height", 0.0)) > 0.0
                 )
@@ -1090,7 +1194,16 @@ class FocusResolver:
             draw_box(item.get("visual_cell_bbox"), (0, 180, 255), 2)
             draw_box(item.get("enlargement_local_observation_bbox"), (255, 140, 0), 2)
             draw_box(item.get("visual_extent_bbox"), (80, 255, 100), 3)
-            label = f"#{index} P{peer_id}/S{sibling_id if sibling_id >= 0 else '-'}"
+            extent_state = "R" if item.get("extent_reliable") else "T" if item.get("extent_truncated") else "-"
+            hit_sides = "".join(
+                marker for marker, field in (
+                    ("L!", "extent_obs_hit_left"),
+                    ("R!", "extent_obs_hit_right"),
+                    ("T!", "extent_obs_hit_top"),
+                    ("B!", "extent_obs_hit_bottom"),
+                ) if item.get(field)
+            )
+            label = f"#{index} P{peer_id}/S{sibling_id if sibling_id >= 0 else '-'} EXT:{extent_state} {hit_sides}".rstrip()
             try:
                 left = int(round(float(bbox[0])))
                 top = max(62, int(round(float(bbox[1]))) - 16)
@@ -1114,6 +1227,10 @@ class FocusResolver:
                 "enlargement_local_observation_bbox": item.get("enlargement_local_observation_bbox"),
                 "visual_extent_bbox": item.get("visual_extent_bbox"),
                 "enlargement_extent_reason": item.get("enlargement_extent_reason"),
+                "extent_reliable": item.get("extent_reliable"),
+                "extent_truncated": item.get("extent_truncated"),
+                "extent_obs_boundary_hit_count": item.get("extent_obs_boundary_hit_count"),
+                "extent_boundary_debug": item.get("extent_boundary_debug"),
             })
         metadata = {
             "image_name": None,

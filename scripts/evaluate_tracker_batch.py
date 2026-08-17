@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import csv
 import json
 import statistics
@@ -493,7 +494,12 @@ def main() -> int:
 
         with args.output.open("w", encoding="utf-8") as output:
             for position, image_path in enumerate(images, start=1):
-                endpoint = "/debug/tracker/start" if not started_tracker else "/debug/tracker/step"
+                endpoint = (
+                    "/debug/tracker/start"
+                    if not started_tracker
+                    else "/debug/tracker/step"
+                )
+
                 try:
                     response = post(
                         args.base_url,
@@ -501,6 +507,7 @@ def main() -> int:
                         image_path,
                         docker_container=args.docker_container,
                     )
+
                     if args.save_focus_images is not None:
                         try:
                             save_focus_image(
@@ -509,41 +516,94 @@ def main() -> int:
                                 args.save_focus_images,
                                 args.docker_container,
                             )
-                        except (OSError, RequestFailure, subprocess.SubprocessError) as exc:
+                        except (
+                            OSError,
+                            RequestFailure,
+                            subprocess.SubprocessError,
+                        ) as exc:
                             print(
-                                f"[WARN] could not save focus image for {image_path.name}: {exc}",
+                                f"[WARN] could not save focus image for "
+                                f"{image_path.name}: {exc}",
                                 file=sys.stderr,
                             )
-            if args.debug_dir is not None:
-                args.debug_dir.mkdir(parents=True, exist_ok=True)
-                try:
-                    save_peer_debug_image(
+
+                    if args.debug_dir is not None:
+                        args.debug_dir.mkdir(
+                            parents=True,
+                            exist_ok=True,
+                        )
+                        try:
+                            save_peer_debug_image(
+                                response,
+                                str(image_path),
+                                str(args.debug_dir),
+                                args.docker_container,
+                            )
+                        except (
+                            OSError,
+                            RequestFailure,
+                            subprocess.SubprocessError,
+                        ) as exc:
+                            print(
+                                f"[WARN] could not save CV debug artifacts for "
+                                f"{image_path.name}: {exc}",
+                                file=sys.stderr,
+                            )
+
+                    result = extract_result(
                         response,
-                        str(image_path),
-                        str(args.debug_dir),
-                        args.docker_container,
+                        image_path,
                     )
-                except (OSError, RequestFailure, subprocess.SubprocessError) as exc:
+
+                    started_tracker = True
+                    results.append(result)
+                    print_result(
+                        position,
+                        len(images),
+                        result,
+                    )
+
+                    if review_writer is not None:
+                        write_review_row(
+                            review_writer,
+                            result,
+                        )
+                        review_handle.flush()
+
+                except (
+                    RequestFailure,
+                    OSError,
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                ) as exc:
+                    result = {
+                        "image": image_path.name,
+                        "status": "ERROR_RUNTIME",
+                        "error": str(exc),
+                    }
+                    results.append(result)
+
                     print(
-                        f"[WARN] could not save CV debug artifacts for {image_path.name}: {exc}",
+                        f"[ERROR] {image_path.name}\n{exc}",
                         file=sys.stderr,
                     )
 
-            result = extract_result(response, image_path)
-                    started_tracker = True
-                    results.append(result)
-                    print_result(position, len(images), result)
                     if review_writer is not None:
-                        write_review_row(review_writer, result)
+                        write_review_row(
+                            review_writer,
+                            result,
+                        )
                         review_handle.flush()
-                except (RequestFailure, OSError, KeyError, TypeError, ValueError) as exc:
-                    result = {"image": image_path.name, "status": "ERROR_RUNTIME", "error": str(exc)}
-                    results.append(result)
-                    print(f"[ERROR] {image_path.name}\n{exc}", file=sys.stderr)
-                    if review_writer is not None:
-                        write_review_row(review_writer, result)
-                        review_handle.flush()
-                output.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+                output.write(
+                    json.dumps(
+                        result,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
                 output.flush()
     finally:
         if review_handle is not None:
