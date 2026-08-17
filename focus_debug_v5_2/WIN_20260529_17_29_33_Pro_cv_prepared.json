@@ -1,0 +1,1471 @@
+{
+  "image_name": null,
+  "focus_image_mode": "group_montage",
+  "prepared_size": [
+    2045,
+    548
+  ],
+  "roi_bbox_pixels": null,
+  "montage_grid": [
+    3,
+    2
+  ],
+  "montage_size": [
+    2045,
+    548
+  ],
+  "montage_tile_sizes": [
+    [
+      254,
+      66
+    ],
+    [
+      1743,
+      279
+    ],
+    [
+      388,
+      142
+    ],
+    [
+      555,
+      52
+    ],
+    [
+      1183,
+      55
+    ],
+    [
+      94,
+      48
+    ]
+  ],
+  "montage_tile_bboxes": [],
+  "prepared_candidate_bboxes": {
+    "18": [
+      34,
+      25,
+      244,
+      65
+    ],
+    "0": [
+      435,
+      52,
+      601,
+      124
+    ],
+    "1": [
+      610,
+      52,
+      929,
+      124
+    ],
+    "2": [
+      938,
+      52,
+      1252,
+      124
+    ],
+    "3": [
+      1259,
+      52,
+      1567,
+      124
+    ],
+    "4": [
+      1576,
+      52,
+      1888,
+      124
+    ],
+    "5": [
+      452,
+      150,
+      556,
+      251
+    ],
+    "6": [
+      563,
+      150,
+      667,
+      251
+    ],
+    "7": [
+      675,
+      150,
+      778,
+      251
+    ],
+    "8": [
+      44,
+      335,
+      147,
+      437
+    ],
+    "9": [
+      153,
+      335,
+      256,
+      437
+    ],
+    "10": [
+      265,
+      335,
+      368,
+      437
+    ],
+    "11": [
+      470,
+      328,
+      590,
+      354
+    ],
+    "12": [
+      774,
+      328,
+      933,
+      354
+    ],
+    "13": [
+      111,
+      494,
+      265,
+      523
+    ],
+    "14": [
+      409,
+      494,
+      479,
+      523
+    ],
+    "15": [
+      694,
+      494,
+      815,
+      523
+    ],
+    "16": [
+      981,
+      494,
+      1096,
+      523
+    ],
+    "17": [
+      1232,
+      494,
+      1300,
+      516
+    ]
+  },
+  "peer_groups": [
+    [
+      1,
+      2,
+      3,
+      4
+    ],
+    [
+      5,
+      6,
+      7
+    ],
+    [
+      8,
+      9,
+      10
+    ],
+    [
+      11,
+      12
+    ],
+    [
+      13,
+      14,
+      15,
+      16
+    ]
+  ],
+  "isolated_indices": [
+    0,
+    17,
+    18
+  ],
+  "enlargement_sibling_groups": [
+    [
+      1,
+      2,
+      3,
+      4
+    ],
+    [
+      5,
+      6,
+      7
+    ],
+    [
+      8,
+      9,
+      10
+    ],
+    [
+      15,
+      16
+    ]
+  ],
+  "candidates": [
+    {
+      "index": 0,
+      "text": "Hub",
+      "prepared_bbox": [
+        435,
+        52,
+        601,
+        124
+      ],
+      "visual_cell_bbox": [
+        352,
+        16,
+        770,
+        200
+      ],
+      "enlargement_local_observation_bbox": [
+        352.0,
+        16.0,
+        684.0,
+        160.0
+      ],
+      "visual_extent_bbox": [
+        415.0,
+        16.0,
+        684.0,
+        152.0
+      ],
+      "enlargement_extent_reason": "no_stable_boundary",
+      "extent_reliable": false,
+      "extent_truncated": false,
+      "extent_obs_boundary_hit_count": 2,
+      "extent_boundary_debug": {
+        "left": {
+          "found": true,
+          "growth": 20,
+          "score": 0.9218142156862744,
+          "confidence": 0.75,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "right": {
+          "found": false,
+          "growth": 83,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 36,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": true,
+          "growth": 28,
+          "score": 0.8835034313725489,
+          "confidence": 0.75,
+          "reason": "stable_transition",
+          "obs_hit": false
+        }
+      }
+    },
+    {
+      "index": 1,
+      "text": "Home Office",
+      "prepared_bbox": [
+        610,
+        52,
+        929,
+        124
+      ],
+      "visual_cell_bbox": [
+        518,
+        16,
+        1095,
+        200
+      ],
+      "enlargement_local_observation_bbox": [
+        518.0,
+        16.0,
+        1088.5,
+        160.0
+      ],
+      "visual_extent_bbox": [
+        518.0,
+        16.0,
+        941.0,
+        160.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 3,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 92,
+          "score": 0.5932039215686276,
+          "confidence": 0.06666666666666667,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": true,
+          "growth": 12,
+          "score": 0.8403661021984553,
+          "confidence": 0.7333333333333333,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "top": {
+          "found": false,
+          "growth": 36,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 36,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 2,
+      "text": "Accessibility",
+      "prepared_bbox": [
+        938,
+        52,
+        1252,
+        124
+      ],
+      "visual_cell_bbox": [
+        770,
+        16,
+        1413,
+        160
+      ],
+      "enlargement_local_observation_bbox": [
+        781.0,
+        16.0,
+        1409.0,
+        160.0
+      ],
+      "visual_extent_bbox": [
+        781.0,
+        16.0,
+        1409.0,
+        160.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 4,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 157,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": false,
+          "growth": 157,
+          "score": 0.9916235294117641,
+          "confidence": 0.3333333333333333,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 36,
+          "score": 0.971240522875817,
+          "confidence": 0.4,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 36,
+          "score": 0.9090346405228757,
+          "confidence": 0.4,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 3,
+      "text": "Sports",
+      "prepared_bbox": [
+        1259,
+        52,
+        1567,
+        124
+      ],
+      "visual_cell_bbox": [
+        1095,
+        16,
+        1732,
+        160
+      ],
+      "enlargement_local_observation_bbox": [
+        1105.0,
+        16.0,
+        1721.0,
+        160.0
+      ],
+      "visual_extent_bbox": [
+        1105.0,
+        16.0,
+        1583.0,
+        160.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 3,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 154,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": true,
+          "growth": 16,
+          "score": 0.708398319327731,
+          "confidence": 0.9333333333333333,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "top": {
+          "found": false,
+          "growth": 36,
+          "score": 0.9994313725490195,
+          "confidence": 0.3333333333333333,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 36,
+          "score": 0.9970816993464051,
+          "confidence": 0.5333333333333333,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 4,
+      "text": "Edit",
+      "prepared_bbox": [
+        1576,
+        52,
+        1888,
+        124
+      ],
+      "visual_cell_bbox": [
+        1413,
+        16,
+        2044,
+        160
+      ],
+      "enlargement_local_observation_bbox": [
+        1420.0,
+        16.0,
+        2044.0,
+        160.0
+      ],
+      "visual_extent_bbox": [
+        1420.0,
+        16.0,
+        2044.0,
+        128.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 3,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 156,
+          "score": 0.9792150326797389,
+          "confidence": 0.4666666666666667,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": false,
+          "growth": 156,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 36,
+          "score": 0.589862091503268,
+          "confidence": 0.06666666666666667,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": true,
+          "growth": 4,
+          "score": 0.8642427124183006,
+          "confidence": 0.6666666666666666,
+          "reason": "stable_transition",
+          "obs_hit": false
+        }
+      }
+    },
+    {
+      "index": 5,
+      "text": "APPS",
+      "prepared_bbox": [
+        452,
+        150,
+        556,
+        251
+      ],
+      "visual_cell_bbox": [
+        400,
+        88,
+        615,
+        301
+      ],
+      "enlargement_local_observation_bbox": [
+        400.0,
+        99.5,
+        608.0,
+        301.0
+      ],
+      "visual_extent_bbox": [
+        400.0,
+        100.0,
+        565.0,
+        301.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 3,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 52,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": true,
+          "growth": 9,
+          "score": 0.9329891067538126,
+          "confidence": 0.6,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "top": {
+          "found": false,
+          "growth": 50,
+          "score": 0.8302071895424834,
+          "confidence": 0.4,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 50,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 6,
+      "text": "YouTube",
+      "prepared_bbox": [
+        563,
+        150,
+        667,
+        251
+      ],
+      "visual_cell_bbox": [
+        504,
+        88,
+        726,
+        301
+      ],
+      "enlargement_local_observation_bbox": [
+        511.0,
+        99.5,
+        719.0,
+        301.0
+      ],
+      "visual_extent_bbox": [
+        511.0,
+        100.0,
+        719.0,
+        301.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 4,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 52,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": false,
+          "growth": 52,
+          "score": 0.8920764705882349,
+          "confidence": 0.4,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 50,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 50,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 7,
+      "text": "prime video",
+      "prepared_bbox": [
+        675,
+        150,
+        778,
+        251
+      ],
+      "visual_cell_bbox": [
+        615,
+        88,
+        830,
+        301
+      ],
+      "enlargement_local_observation_bbox": [
+        623.5,
+        99.5,
+        829.5,
+        301.0
+      ],
+      "visual_extent_bbox": [
+        623.0,
+        100.0,
+        817.0,
+        301.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 3,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 52,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": true,
+          "growth": 39,
+          "score": 0.9033078431372549,
+          "confidence": 0.6,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "top": {
+          "found": false,
+          "growth": 50,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 50,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 8,
+      "text": "Gaming Portal",
+      "prepared_bbox": [
+        44,
+        335,
+        147,
+        437
+      ],
+      "visual_cell_bbox": [
+        0,
+        284,
+        204,
+        488
+      ],
+      "enlargement_local_observation_bbox": [
+        0.0,
+        284.0,
+        198.5,
+        488.0
+      ],
+      "visual_extent_bbox": [
+        35.0,
+        317.0,
+        150.0,
+        488.0
+      ],
+      "enlargement_extent_reason": "no_stable_boundary",
+      "extent_reliable": false,
+      "extent_truncated": false,
+      "extent_obs_boundary_hit_count": 1,
+      "extent_boundary_debug": {
+        "left": {
+          "found": true,
+          "growth": 9,
+          "score": 0.7814485294117648,
+          "confidence": 0.8,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "right": {
+          "found": true,
+          "growth": 3,
+          "score": 0.9404297385620914,
+          "confidence": 0.8,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "top": {
+          "found": true,
+          "growth": 18,
+          "score": 0.618481111111111,
+          "confidence": 1.0,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "bottom": {
+          "found": false,
+          "growth": 51,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 9,
+      "text": "NETFLIX",
+      "prepared_bbox": [
+        153,
+        335,
+        256,
+        437
+      ],
+      "visual_cell_bbox": [
+        96,
+        284,
+        316,
+        488
+      ],
+      "enlargement_local_observation_bbox": [
+        101.5,
+        284.0,
+        307.5,
+        488.0
+      ],
+      "visual_extent_bbox": [
+        101.0,
+        317.0,
+        308.0,
+        488.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 3,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 52,
+          "score": 0.9035202614379085,
+          "confidence": 0.4,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": false,
+          "growth": 52,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": true,
+          "growth": 18,
+          "score": 0.7698172549019607,
+          "confidence": 1.0,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "bottom": {
+          "found": false,
+          "growth": 51,
+          "score": 0.9422875816993462,
+          "confidence": 0.4,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 10,
+      "text": "Edit App List",
+      "prepared_bbox": [
+        265,
+        335,
+        368,
+        437
+      ],
+      "visual_cell_bbox": [
+        204,
+        284,
+        420,
+        488
+      ],
+      "enlargement_local_observation_bbox": [
+        213.5,
+        284.0,
+        419.5,
+        488.0
+      ],
+      "visual_extent_bbox": [
+        256.0,
+        284.0,
+        420.0,
+        488.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 3,
+      "extent_boundary_debug": {
+        "left": {
+          "found": true,
+          "growth": 9,
+          "score": 0.9344546405228756,
+          "confidence": 1.0,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "right": {
+          "found": false,
+          "growth": 52,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 51,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 51,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 11,
+      "text": "Recent Input",
+      "prepared_bbox": [
+        470,
+        328,
+        590,
+        354
+      ],
+      "visual_cell_bbox": [
+        410,
+        315,
+        854,
+        367
+      ],
+      "enlargement_local_observation_bbox": [
+        410.0,
+        315.0,
+        650.0,
+        367.0
+      ],
+      "visual_extent_bbox": [
+        410.0,
+        315.0,
+        650.0,
+        367.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 4,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 60,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": false,
+          "growth": 60,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 13,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 13,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 12,
+      "text": "Device Functions",
+      "prepared_bbox": [
+        774,
+        328,
+        933,
+        354
+      ],
+      "visual_cell_bbox": [
+        530,
+        315,
+        1013,
+        367
+      ],
+      "enlargement_local_observation_bbox": [
+        694.5,
+        315.0,
+        1012.5,
+        367.0
+      ],
+      "visual_extent_bbox": [
+        694.0,
+        316.0,
+        978.0,
+        367.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 3,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 80,
+          "score": 0.5605035947712418,
+          "confidence": 0.125,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": true,
+          "growth": 45,
+          "score": 0.7472562091503269,
+          "confidence": 1.0,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "top": {
+          "found": true,
+          "growth": 12,
+          "score": 0.5983387799564269,
+          "confidence": 0.75,
+          "reason": "stable_transition",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 13,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 13,
+      "text": "Edit App List",
+      "prepared_bbox": [
+        111,
+        494,
+        265,
+        523
+      ],
+      "visual_cell_bbox": [
+        34,
+        480,
+        444,
+        537
+      ],
+      "enlargement_local_observation_bbox": [
+        34.0,
+        480.0,
+        342.0,
+        537.0
+      ],
+      "visual_extent_bbox": [
+        84.0,
+        480.0,
+        342.0,
+        537.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 3,
+      "extent_boundary_debug": {
+        "left": {
+          "found": true,
+          "growth": 27,
+          "score": 0.8416411111111108,
+          "confidence": 0.625,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "right": {
+          "found": false,
+          "growth": 77,
+          "score": 0.9214539215686275,
+          "confidence": 0.375,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 14,
+          "score": 0.7446460784313728,
+          "confidence": 0.5,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 14,
+          "score": 0.6157669934640522,
+          "confidence": 0.25,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 14,
+      "text": "Guide",
+      "prepared_bbox": [
+        409,
+        494,
+        479,
+        523
+      ],
+      "visual_cell_bbox": [
+        188,
+        480,
+        754,
+        537
+      ],
+      "enlargement_local_observation_bbox": [
+        374.0,
+        480.0,
+        514.0,
+        537.0
+      ],
+      "visual_extent_bbox": [
+        374.0,
+        481.0,
+        514.0,
+        535.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 4,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 35,
+          "score": 0.9318294117647058,
+          "confidence": 0.4,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": false,
+          "growth": 35,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": true,
+          "growth": 13,
+          "score": 0.875255473856209,
+          "confidence": 0.8,
+          "reason": "stable_transition",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": true,
+          "growth": 12,
+          "score": 0.9455993464052286,
+          "confidence": 0.6,
+          "reason": "stable_transition",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 15,
+      "text": "User Guide",
+      "prepared_bbox": [
+        694,
+        494,
+        815,
+        523
+      ],
+      "visual_cell_bbox": [
+        444,
+        480,
+        1038,
+        537
+      ],
+      "enlargement_local_observation_bbox": [
+        633.5,
+        480.0,
+        875.5,
+        537.0
+      ],
+      "visual_extent_bbox": [
+        664.0,
+        481.0,
+        875.0,
+        535.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 3,
+      "extent_boundary_debug": {
+        "left": {
+          "found": true,
+          "growth": 30,
+          "score": 0.5911373366013074,
+          "confidence": 0.6666666666666666,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "right": {
+          "found": false,
+          "growth": 60,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": true,
+          "growth": 13,
+          "score": 0.9851794117647058,
+          "confidence": 1.0,
+          "reason": "stable_transition",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": true,
+          "growth": 12,
+          "score": 0.903628431372549,
+          "confidence": 1.0,
+          "reason": "stable_transition",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 16,
+      "text": "Home Hub",
+      "prepared_bbox": [
+        981,
+        494,
+        1096,
+        523
+      ],
+      "visual_cell_bbox": [
+        754,
+        480,
+        1154,
+        537
+      ],
+      "enlargement_local_observation_bbox": [
+        923.5,
+        480.0,
+        1153.5,
+        537.0
+      ],
+      "visual_extent_bbox": [
+        950.0,
+        480.0,
+        1154.0,
+        535.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 3,
+      "extent_boundary_debug": {
+        "left": {
+          "found": true,
+          "growth": 31,
+          "score": 0.7970589869281045,
+          "confidence": 1.0,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "right": {
+          "found": false,
+          "growth": 58,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 14,
+          "score": 0.990154248366013,
+          "confidence": 0.5,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": true,
+          "growth": 12,
+          "score": 0.9013233986928103,
+          "confidence": 0.8333333333333334,
+          "reason": "stable_transition",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 17,
+      "text": "HDMI 1",
+      "prepared_bbox": [
+        1232,
+        494,
+        1300,
+        516
+      ],
+      "visual_cell_bbox": [
+        1198,
+        483,
+        1334,
+        527
+      ],
+      "enlargement_local_observation_bbox": [
+        1198.0,
+        483.0,
+        1334.0,
+        527.0
+      ],
+      "visual_extent_bbox": [
+        1198.0,
+        483.0,
+        1312.0,
+        527.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 3,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 34,
+          "score": 0.7598901960784313,
+          "confidence": 0.2,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": true,
+          "growth": 12,
+          "score": 0.9794350326797385,
+          "confidence": 1.0,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "top": {
+          "found": false,
+          "growth": 11,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 11,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 18,
+      "text": "Network Settings",
+      "prepared_bbox": [
+        34,
+        25,
+        244,
+        65
+      ],
+      "visual_cell_bbox": [
+        0,
+        5,
+        349,
+        85
+      ],
+      "enlargement_local_observation_bbox": [
+        0.0,
+        5.0,
+        349.0,
+        85.0
+      ],
+      "visual_extent_bbox": [
+        12.0,
+        5.0,
+        265.0,
+        85.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 2,
+      "extent_boundary_debug": {
+        "left": {
+          "found": true,
+          "growth": 22,
+          "score": 0.7149186819172114,
+          "confidence": 0.6,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "right": {
+          "found": true,
+          "growth": 21,
+          "score": 0.9699503267973857,
+          "confidence": 1.0,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "top": {
+          "found": false,
+          "growth": 20,
+          "score": 0.9005584967320261,
+          "confidence": 0.3,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 20,
+          "score": 0.8854032679738562,
+          "confidence": 0.3,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    }
+  ]
+}

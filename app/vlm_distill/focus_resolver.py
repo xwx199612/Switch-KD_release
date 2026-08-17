@@ -125,6 +125,8 @@ class FocusResolver:
     ENLARGEMENT_EDGE_SAMPLE_INSET = 0.15
     ENLARGEMENT_BOUNDARY_MIN_SCORE = 0.55
     ENLARGEMENT_BOUNDARY_MIN_SAMPLE_SUPPORT = 0.60
+    ENLARGEMENT_COMPLETION_MIN_RETAINED_RATIO = 0.70
+    ENLARGEMENT_MIRRORED_CONFIDENCE_FACTOR = 0.75
     HIGHLIGHT_V5_MIN_SCORE = 0.60
     HIGHLIGHT_V5_MIN_MARGIN = 0.18
     CONTAINER_PROPOSAL_EXPANSIONS = (0.0, 0.05, 0.10, 0.20)
@@ -726,45 +728,122 @@ class FocusResolver:
                         "obs_hit": True,
                     }
 
-            extent = clipped_box((left - growth["left"], top - growth["top"], right + growth["right"], bottom + growth["bottom"])) or semantic
+            raw_growth = dict(growth)
+            raw_extent = clipped_box((
+                left - raw_growth["left"],
+                top - raw_growth["top"],
+                right + raw_growth["right"],
+                bottom + raw_growth["bottom"],
+            )) or semantic
             tolerance = cls.ENLARGEMENT_OBS_BOUNDARY_TOLERANCE_PX
             obs_hits = {
-                "left": abs(extent[0] - observation[0]) <= tolerance,
-                "right": abs(extent[2] - observation[2]) <= tolerance,
-                "top": abs(extent[1] - observation[1]) <= tolerance,
-                "bottom": abs(extent[3] - observation[3]) <= tolerance,
+                "left": abs(raw_extent[0] - observation[0]) <= tolerance,
+                "right": abs(raw_extent[2] - observation[2]) <= tolerance,
+                "top": abs(raw_extent[1] - observation[1]) <= tolerance,
+                "bottom": abs(raw_extent[3] - observation[3]) <= tolerance,
             }
             for side, hit in obs_hits.items():
                 boundary_debug[side]["obs_hit"] = hit
             horizontal_truncated = obs_hits["left"] and obs_hits["right"]
             vertical_truncated = obs_hits["top"] and obs_hits["bottom"]
             extent_truncated = horizontal_truncated or vertical_truncated
-            valid_confidences = [entry["confidence"] for entry in boundary_debug.values() if entry["found"]]
-            reliability = sum(
-                entry["confidence"] if entry["found"] else 0.0
-                for entry in boundary_debug.values()
-            ) / len(boundary_debug)
-            extent_reliable = (
-                not extent_truncated
-                and not any(obs_hits.values())
-                and len(valid_confidences) == 4
+
+            available_space = {
+                "left": max(0.0, left - observation[0]),
+                "right": max(0.0, observation[2] - right),
+                "top": max(0.0, top - observation[1]),
+                "bottom": max(0.0, observation[3] - bottom),
+            }
+            reconstructed_growth = {side: 0.0 for side in growth}
+            reconstructed_confidence = {side: 0.0 for side in growth}
+            reconstructed_source = {side: "unresolved" for side in growth}
+            completion_clipped = {side: False for side in growth}
+
+            def reconstruct_axis(
+                first: str,
+                second: str,
+                truncated: bool,
+            ) -> tuple[bool, float]:
+                first_found = bool(boundary_debug[first]["found"])
+                second_found = bool(boundary_debug[second]["found"])
+                if first_found and second_found:
+                    reconstructed_growth[first] = raw_growth[first]
+                    reconstructed_growth[second] = raw_growth[second]
+                    reconstructed_confidence[first] = boundary_debug[first]["confidence"]
+                    reconstructed_confidence[second] = boundary_debug[second]["confidence"]
+                    reconstructed_source[first] = "measured"
+                    reconstructed_source[second] = "measured"
+                    return (not truncated, (reconstructed_confidence[first] + reconstructed_confidence[second]) / 2.0)
+                if not first_found and not second_found:
+                    return False, 0.0
+
+                measured, missing = (first, second) if first_found else (second, first)
+                requested = float(raw_growth[measured])
+                completed = min(requested, available_space[missing])
+                retained = completed / max(requested, 1e-6)
+                completion_clipped[missing] = completed + 1e-6 < requested
+                reconstructed_growth[measured] = requested
+                reconstructed_growth[missing] = completed
+                reconstructed_confidence[measured] = boundary_debug[measured]["confidence"]
+                reconstructed_confidence[missing] = (
+                    boundary_debug[measured]["confidence"]
+                    * cls.ENLARGEMENT_MIRRORED_CONFIDENCE_FACTOR
+                )
+                reconstructed_source[measured] = "measured"
+                reconstructed_source[missing] = f"mirrored_from_{measured}"
+                axis_reliable = (
+                    not truncated
+                    and retained >= cls.ENLARGEMENT_COMPLETION_MIN_RETAINED_RATIO
+                )
+                return (
+                    axis_reliable,
+                    (reconstructed_confidence[first] + reconstructed_confidence[second]) / 2.0,
+                )
+
+            horizontal_count = int(boundary_debug["left"]["found"]) + int(boundary_debug["right"]["found"])
+            vertical_count = int(boundary_debug["top"]["found"]) + int(boundary_debug["bottom"]["found"])
+            horizontal_reliable, horizontal_confidence = reconstruct_axis(
+                "left", "right", horizontal_truncated
             )
-            horizontal_balance = min(growth["left"], growth["right"]) / max(growth["left"], growth["right"], 1.0)
-            vertical_balance = min(growth["top"], growth["bottom"]) / max(growth["top"], growth["bottom"], 1.0)
+            vertical_reliable, vertical_confidence = reconstruct_axis(
+                "top", "bottom", vertical_truncated
+            )
+            extent_reliable = horizontal_reliable and vertical_reliable
+            reliability = (
+                math.sqrt(max(0.0, horizontal_confidence * vertical_confidence))
+                if extent_reliable else 0.0
+            )
+            used_mirror = any(source.startswith("mirrored_") for source in reconstructed_source.values())
+            extent = clipped_box((
+                left - reconstructed_growth["left"],
+                top - reconstructed_growth["top"],
+                right + reconstructed_growth["right"],
+                bottom + reconstructed_growth["bottom"],
+            )) or semantic
+            horizontal_balance = min(reconstructed_growth["left"], reconstructed_growth["right"]) / max(reconstructed_growth["left"], reconstructed_growth["right"], 1.0)
+            vertical_balance = min(reconstructed_growth["top"], reconstructed_growth["bottom"]) / max(reconstructed_growth["top"], reconstructed_growth["bottom"], 1.0)
             item.update({
                 "enlargement_local_observation_bbox": [round(value, 2) for value in observation],
                 "visual_extent_bbox": [round(value, 2) for value in extent],
                 "visual_extent_width": max(0.0, extent[2] - extent[0]),
                 "visual_extent_height": max(0.0, extent[3] - extent[1]),
                 "visual_extent_area": max(0.0, extent[2] - extent[0]) * max(0.0, extent[3] - extent[1]),
-                "visual_extent_left_growth": growth["left"],
-                "visual_extent_right_growth": growth["right"],
-                "visual_extent_top_growth": growth["top"],
-                "visual_extent_bottom_growth": growth["bottom"],
-                "visual_extent_left_growth_ratio": growth["left"] / max(width, 1e-6),
-                "visual_extent_right_growth_ratio": growth["right"] / max(width, 1e-6),
-                "visual_extent_top_growth_ratio": growth["top"] / max(height, 1e-6),
-                "visual_extent_bottom_growth_ratio": growth["bottom"] / max(height, 1e-6),
+                "visual_extent_left_growth_raw": raw_growth["left"],
+                "visual_extent_right_growth_raw": raw_growth["right"],
+                "visual_extent_top_growth_raw": raw_growth["top"],
+                "visual_extent_bottom_growth_raw": raw_growth["bottom"],
+                "visual_extent_left_growth_reconstructed": reconstructed_growth["left"],
+                "visual_extent_right_growth_reconstructed": reconstructed_growth["right"],
+                "visual_extent_top_growth_reconstructed": reconstructed_growth["top"],
+                "visual_extent_bottom_growth_reconstructed": reconstructed_growth["bottom"],
+                "visual_extent_left_growth": reconstructed_growth["left"],
+                "visual_extent_right_growth": reconstructed_growth["right"],
+                "visual_extent_top_growth": reconstructed_growth["top"],
+                "visual_extent_bottom_growth": reconstructed_growth["bottom"],
+                "visual_extent_left_growth_ratio": reconstructed_growth["left"] / max(width, 1e-6),
+                "visual_extent_right_growth_ratio": reconstructed_growth["right"] / max(width, 1e-6),
+                "visual_extent_top_growth_ratio": reconstructed_growth["top"] / max(height, 1e-6),
+                "visual_extent_bottom_growth_ratio": reconstructed_growth["bottom"] / max(height, 1e-6),
                 "extent_horizontal_balance": horizontal_balance,
                 "extent_vertical_balance": vertical_balance,
                 "extent_symmetry": math.sqrt(max(0.0, horizontal_balance * vertical_balance)),
@@ -790,6 +869,25 @@ class FocusResolver:
                 "extent_obs_hit_top": obs_hits["top"],
                 "extent_obs_hit_bottom": obs_hits["bottom"],
                 "extent_obs_boundary_hit_count": sum(obs_hits.values()),
+                "extent_horizontal_boundary_count": horizontal_count,
+                "extent_vertical_boundary_count": vertical_count,
+                "extent_horizontal_reliable": horizontal_reliable,
+                "extent_vertical_reliable": vertical_reliable,
+                "extent_left_source": reconstructed_source["left"],
+                "extent_right_source": reconstructed_source["right"],
+                "extent_top_source": reconstructed_source["top"],
+                "extent_bottom_source": reconstructed_source["bottom"],
+                "extent_completion_clipped_left": completion_clipped["left"],
+                "extent_completion_clipped_right": completion_clipped["right"],
+                "extent_completion_clipped_top": completion_clipped["top"],
+                "extent_completion_clipped_bottom": completion_clipped["bottom"],
+                "extent_completion_clip_count": sum(completion_clipped.values()),
+                "extent_reconstructed_left_confidence": reconstructed_confidence["left"],
+                "extent_reconstructed_right_confidence": reconstructed_confidence["right"],
+                "extent_reconstructed_top_confidence": reconstructed_confidence["top"],
+                "extent_reconstructed_bottom_confidence": reconstructed_confidence["bottom"],
+                "extent_horizontal_confidence": horizontal_confidence,
+                "extent_vertical_confidence": vertical_confidence,
                 "extent_horizontal_truncated": horizontal_truncated,
                 "extent_vertical_truncated": vertical_truncated,
                 "extent_truncated": extent_truncated,
@@ -797,8 +895,9 @@ class FocusResolver:
                 "extent_reliable": extent_reliable,
                 "enlargement_extent_reason": (
                     "observation_boundary_truncated" if extent_truncated
+                    else "partial_boundary_reconstructed" if extent_reliable and used_mirror
                     else "stable_boundary_extent" if extent_reliable
-                    else "no_stable_boundary"
+                    else "insufficient_axis_boundary"
                 ),
                 "extent_side_support": {
                     side: entry["confidence"]
@@ -1194,7 +1293,21 @@ class FocusResolver:
             draw_box(item.get("visual_cell_bbox"), (0, 180, 255), 2)
             draw_box(item.get("enlargement_local_observation_bbox"), (255, 140, 0), 2)
             draw_box(item.get("visual_extent_bbox"), (80, 255, 100), 3)
-            extent_state = "R" if item.get("extent_reliable") else "T" if item.get("extent_truncated") else "-"
+            mirrored_extent = any(
+                str(item.get(field, "")).startswith("mirrored_")
+                for field in (
+                    "extent_left_source",
+                    "extent_right_source",
+                    "extent_top_source",
+                    "extent_bottom_source",
+                )
+            )
+            extent_state = (
+                "R" if item.get("extent_reliable") and not mirrored_extent
+                else "M" if item.get("extent_reliable") and mirrored_extent
+                else "T" if item.get("extent_truncated")
+                else "-"
+            )
             hit_sides = "".join(
                 marker for marker, field in (
                     ("L!", "extent_obs_hit_left"),
