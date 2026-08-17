@@ -224,8 +224,9 @@ def extract_result(response: dict, image_path: Path) -> dict:
 
 def save_peer_debug_image(response: dict[str, Any], image_path: str, output_dir: str, docker_container: str | None = None) -> str | None:
     """Copy the prepared-space V5 peer visualization beside the focus image."""
-    debug = response.get("tracker_debug", response.get("debug", {})) or {}
-    source = debug.get("focus_peer_debug_image_path")
+    tracker_debug = response.get("tracker_debug") or {}
+    focus_debug = tracker_debug.get("focus_resolver_debug") or {}
+    source = focus_debug.get("focus_peer_debug_image_path")
     if not source:
         return None
     destination = os.path.join(output_dir, f"{Path(image_path).stem}_peers.jpg")
@@ -437,7 +438,10 @@ def _format_float(value: object) -> str:
 def print_result(*args: object, **kwargs: object) -> None:
     """Compact human-facing V5 presentation; detailed diagnostics stay in JSONL."""
     result = dict(next((value for value in args if isinstance(value, dict)), {}))
-    debug = result.get("tracker_debug") or result.get("debug") or {}
+    tracker_debug = result.get("tracker_debug") or {}
+    debug = tracker_debug.get("focus_resolver_debug") or {}
+    if not debug:
+        debug = result.get("focus_resolver_debug") or {}
     if isinstance(debug, dict):
         result.setdefault("peer_groups", debug.get("focus_peer_groups", []))
         result.setdefault("isolated_indices", debug.get("focus_isolated_indices", []))
@@ -463,9 +467,11 @@ def print_result(*args: object, **kwargs: object) -> None:
     print(f"  index : {result.get('focused_index')}")
     print(f"  text  : {result.get('focused_text')}")
     print("\nHierarchy Focus Decision:")
-    matched = bool(result.get("v5_visual_focus_matched", False))
-    print(f"  result : {'MATCH' if matched else 'ABSTAIN'}")
-    print(f"  stage  : {result.get('v5_visual_focus_stage') or 'no_peer_match'}")
+    matched_value = result.get("v5_visual_focus_matched")
+    missing_v5 = matched_value is None
+    matched = bool(matched_value) if not missing_v5 else False
+    print(f"  result : {'UNKNOWN' if missing_v5 else ('MATCH' if matched else 'ABSTAIN')}")
+    print(f"  stage  : {result.get('v5_visual_focus_stage') if not missing_v5 else 'UNKNOWN'}")
     index = result.get("v5_visual_focus_candidate") if matched else None
     print(f"  index  : {index}")
     print(f"  text   : {result.get('v5_visual_focus_text') if matched else None}")
@@ -474,7 +480,11 @@ def print_result(*args: object, **kwargs: object) -> None:
         print(f"  margin : {_format_float(result.get('v5_visual_focus_margin'))}")
         print(f"  peer   : {result.get('v5_visual_focus_peer_group_id')}")
     for name in ("outline", "enlargement", "highlight", "isolated"):
-        decision = result.get(f"{name}_decision") or {}
+        decision_value = result.get(f"{name}_decision")
+        if decision_value is None:
+            print(f"  {name:<11}: UNKNOWN")
+            continue
+        decision = decision_value or {}
         if not decision.get("executed", False):
             print(f"  {name:<11}: SKIPPED")
         else:
