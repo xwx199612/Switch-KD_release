@@ -108,6 +108,13 @@ class FocusResolver:
     ENLARGEMENT_MIN_MEANINGFUL_GROWTH = 0.10
     VISUAL_FOOTPRINT_EXPANSIONS = (0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30)
     VISUAL_FOOTPRINT_SCORE_TOLERANCE = 0.05
+    ENLARGEMENT_SIBLING_MIN_WIDTH_RATIO = 0.80
+    ENLARGEMENT_SIBLING_MAX_WIDTH_RATIO = 1.25
+    ENLARGEMENT_SIBLING_MIN_HEIGHT_RATIO = 0.80
+    ENLARGEMENT_SIBLING_MAX_HEIGHT_RATIO = 1.25
+    ENLARGEMENT_SIBLING_MAX_ASPECT_LOG_DELTA = 0.20
+    ENLARGEMENT_SIBLING_MIN_AXIS_OVERLAP = 0.45
+    ENLARGEMENT_V5_MIN_CROSS_SET_MARGIN = 0.10
     HIGHLIGHT_V5_MIN_SCORE = 0.60
     HIGHLIGHT_V5_MIN_MARGIN = 0.18
     CONTAINER_PROPOSAL_EXPANSIONS = (0.0, 0.05, 0.10, 0.20)
@@ -171,7 +178,7 @@ class FocusResolver:
             comparison_groups=peer_analysis["peer_sets"],
             peer_group_by_index=peer_analysis["peer_group_by_index"],
         )
-        self._apply_v5_peer_evidence(
+        enlargement_sibling_analysis = self._apply_v5_peer_evidence(
             visual_evidence,
             peer_analysis["peer_sets"],
             unannotated_image,
@@ -181,6 +188,7 @@ class FocusResolver:
             peer_analysis["peer_sets"],
             peer_analysis["peer_group_by_index"],
             peer_analysis["isolated_indices"],
+            enlargement_peer_sets=enlargement_sibling_analysis["sibling_sets"],
         )
         focus_debug_image_path: str | None = None
         try:
@@ -194,6 +202,7 @@ class FocusResolver:
                 unannotated_image,
                 prepared_candidate_bboxes,
                 peer_analysis,
+                enlargement_sibling_analysis,
             )
             focus_peer_debug_image_path = self.DEBUG_PEER_IMAGE_PATH
         except (OSError, ValueError):
@@ -254,6 +263,7 @@ class FocusResolver:
             "focus_peer_groups": peer_analysis["peer_sets"],
             "focus_isolated_indices": peer_analysis["isolated_indices"],
             "focus_peer_debug": peer_analysis["debug"],
+            "focus_enlargement_sibling_groups": enlargement_sibling_analysis["sibling_sets"],
             **v5_cascade,
             "focus_visual_evidence": visual_evidence,
             "focus_visual_evidence_top_indices": [
@@ -405,7 +415,7 @@ class FocusResolver:
         evidence: list[dict[str, Any]],
         peer_sets: list[list[int]],
         image: Image.Image,
-    ) -> None:
+    ) -> dict[str, Any]:
         """Rebase diagnostic channel comparisons on V5 comparable peers."""
         by_index = {int(item["index"]): item for item in evidence}
         peer_by_index = {
@@ -638,6 +648,148 @@ class FocusResolver:
                     "enlargement_score": scale_evidence,
                 })
 
+        def semantic_metrics(item: dict[str, Any]) -> tuple[float, float, float, float, float, float] | None:
+            box = item.get("prepared_bbox")
+            if not isinstance(box, (list, tuple)) or len(box) < 4:
+                return None
+            try:
+                left, top, right, bottom = [float(value) for value in box[:4]]
+            except (TypeError, ValueError):
+                return None
+            width = max(1.0, right - left)
+            height = max(1.0, bottom - top)
+            return width, height, width / height, (left + right) / 2.0, (top + bottom) / 2.0, left
+
+        def sibling_compatible(item: dict[str, Any], members: list[dict[str, Any]]) -> tuple[bool, str]:
+            metrics = semantic_metrics(item)
+            member_metrics = [semantic_metrics(member) for member in members]
+            if metrics is None or any(value is None for value in member_metrics):
+                return False, "invalid_geometry"
+            widths = [value[0] for value in member_metrics if value is not None]
+            heights = [value[1] for value in member_metrics if value is not None]
+            aspects = [value[2] for value in member_metrics if value is not None]
+            median_width = median(widths)
+            median_height = median(heights)
+            median_aspect = median(aspects)
+            width_ratio = metrics[0] / max(median_width, 1e-6)
+            height_ratio = metrics[1] / max(median_height, 1e-6)
+            if not cls.ENLARGEMENT_SIBLING_MIN_WIDTH_RATIO <= width_ratio <= cls.ENLARGEMENT_SIBLING_MAX_WIDTH_RATIO:
+                return False, "width_ratio_mismatch"
+            if not cls.ENLARGEMENT_SIBLING_MIN_HEIGHT_RATIO <= height_ratio <= cls.ENLARGEMENT_SIBLING_MAX_HEIGHT_RATIO:
+                return False, "height_ratio_mismatch"
+            if abs(math.log(max(metrics[2], 1e-6) / max(median_aspect, 1e-6))) > cls.ENLARGEMENT_SIBLING_MAX_ASPECT_LOG_DELTA:
+                return False, "aspect_ratio_mismatch"
+            member_box = members[0].get("prepared_bbox")
+            if not isinstance(member_box, (list, tuple)) or len(member_box) < 4:
+                return False, "invalid_geometry"
+            same_row = False
+            same_column = False
+            item_box = item.get("prepared_bbox")
+            for member in members:
+                other_box = member.get("prepared_bbox")
+                if not isinstance(item_box, (list, tuple)) or not isinstance(other_box, (list, tuple)) or len(item_box) < 4 or len(other_box) < 4:
+                    continue
+                overlap_y = max(0.0, min(float(item_box[3]), float(other_box[3])) - max(float(item_box[1]), float(other_box[1]))) / max(min(metrics[1], semantic_metrics(member)[1]), 1.0)
+                overlap_x = max(0.0, min(float(item_box[2]), float(other_box[2])) - max(float(item_box[0]), float(other_box[0]))) / max(min(metrics[0], semantic_metrics(member)[0]), 1.0)
+                same_row = same_row or overlap_y >= cls.ENLARGEMENT_SIBLING_MIN_AXIS_OVERLAP
+                same_column = same_column or overlap_x >= cls.ENLARGEMENT_SIBLING_MIN_AXIS_OVERLAP
+            return (same_row or same_column), "row_column_mismatch" if not (same_row or same_column) else ""
+
+        sibling_sets: list[list[int]] = []
+        sibling_group_by_index: dict[int, int] = {}
+        sibling_rejections: dict[int, dict[str, str]] = {}
+        for peer_set in peer_sets:
+            clusters: list[list[dict[str, Any]]] = []
+            for index in sorted(peer_set):
+                item = by_index.get(index)
+                if item is None:
+                    continue
+                candidates: list[tuple[float, int, list[dict[str, Any]]]] = []
+                for cluster_id, cluster in enumerate(clusters):
+                    compatible, reason = sibling_compatible(item, cluster)
+                    if compatible:
+                        metrics = semantic_metrics(item)
+                        medians = [median([semantic_metrics(member)[axis] for member in cluster]) for axis in (0, 1, 2)]
+                        distance = sum(abs(math.log(max(metrics[axis], 1e-6) / max(medians[axis], 1e-6))) for axis in range(3)) if metrics else float("inf")
+                        candidates.append((distance, cluster_id, cluster))
+                    else:
+                        sibling_rejections.setdefault(index, {})[str(cluster_id)] = reason
+                if candidates:
+                    _, _, selected_cluster = min(candidates, key=lambda value: (value[0], value[1]))
+                    selected_cluster.append(item)
+                else:
+                    clusters.append([item])
+            for cluster in clusters:
+                indices = sorted(int(item["index"]) for item in cluster)
+                for item in cluster:
+                    index = int(item["index"])
+                    item["enlargement_sibling_group_id"] = len(sibling_sets) if len(cluster) >= 2 else -1
+                    item["enlargement_sibling_indices"] = indices if len(cluster) >= 2 else []
+                    item["enlargement_sibling_count"] = max(0, len(cluster) - 1) if len(cluster) >= 2 else 0
+                    item["enlargement_sibling_rejection_reasons"] = sibling_rejections.get(index, {})
+                if len(cluster) >= 2:
+                    sibling_sets.append(indices)
+                    for index in indices:
+                        sibling_group_by_index[index] = len(sibling_sets) - 1
+
+        for sibling_set in sibling_sets:
+            members = [by_index[index] for index in sibling_set if index in by_index]
+            visual_widths = [max(1.0, float(item.get("visual_footprint_width", 0.0))) for item in members]
+            visual_heights = [max(1.0, float(item.get("visual_footprint_height", 0.0))) for item in members]
+            visual_areas = [width * height for width, height in zip(visual_widths, visual_heights)]
+            base_width, base_height, base_area = median(visual_widths), median(visual_heights), median(visual_areas)
+            expansion_widths = []
+            expansion_heights = []
+            for item in members:
+                metrics = semantic_metrics(item)
+                expansion_widths.append(float(item.get("visual_footprint_width", 0.0)) / max(metrics[0], 1e-6) if metrics else 1.0)
+                expansion_heights.append(float(item.get("visual_footprint_height", 0.0)) / max(metrics[1], 1e-6) if metrics else 1.0)
+            median_expansion_width = median(expansion_widths)
+            median_expansion_height = median(expansion_heights)
+            for item, width, height, area, expansion_width, expansion_height in zip(members, visual_widths, visual_heights, visual_areas, expansion_widths, expansion_heights):
+                relative_visual_width = width / max(base_width, 1e-6)
+                relative_visual_height = height / max(base_height, 1e-6)
+                relative_visual_area = area / max(base_area, 1e-6)
+                width_consistency = math.exp(-abs(math.log(max(expansion_width, 1e-6) / max(median_expansion_width, 1e-6))) / 0.45)
+                height_consistency = math.exp(-abs(math.log(max(expansion_height, 1e-6) / max(median_expansion_height, 1e-6))) / 0.45)
+                aspect_consistency = math.exp(-abs(math.log(max(relative_visual_width / max(relative_visual_height, 1e-6), 1e-6))) / cls.SCALE_BALANCE_SIGMA)
+                footprint_consistency = cls._clamp01((width_consistency * height_consistency * aspect_consistency) ** (1.0 / 3.0))
+                footprint_valid = footprint_consistency >= 0.20
+                uniform_scale = math.sqrt(max(relative_visual_width * relative_visual_height, 0.0))
+                scale_growth = max(0.0, uniform_scale - 1.0)
+                width_growth = max(0.0, relative_visual_width - 1.0)
+                height_growth = max(0.0, relative_visual_height - 1.0)
+                uniform_growth = min(width_growth, height_growth)
+                scale_balance = math.exp(-abs(math.log(max(relative_visual_width / max(relative_visual_height, 1e-6), 1e-6))) / cls.SCALE_BALANCE_SIGMA)
+                base_score = cls._clamp01(scale_growth / max(cls.ENLARGEMENT_FULL_SCALE_GROWTH, 1e-6))
+                balance_gate = cls.ENLARGEMENT_BALANCE_FLOOR + (1.0 - cls.ENLARGEMENT_BALANCE_FLOOR) * scale_balance
+                two_axis_support = cls._clamp01(uniform_growth / max(cls.ENLARGEMENT_MIN_MEANINGFUL_GROWTH, 1e-6))
+                footprint_gate = 0.5 + 0.5 * footprint_consistency
+                item.update({
+                    "relative_visual_width": relative_visual_width,
+                    "relative_visual_height": relative_visual_height,
+                    "relative_visual_area": relative_visual_area,
+                    "visual_width_growth": width_growth,
+                    "visual_height_growth": height_growth,
+                    "visual_uniform_growth": uniform_growth,
+                    "visual_uniform_scale": uniform_scale,
+                    "visual_scale_growth": scale_growth,
+                    "visual_scale_balance": scale_balance,
+                    "visual_scale_balance_gate": balance_gate,
+                    "visual_two_axis_support": two_axis_support,
+                    "sibling_median_footprint_width_ratio": median_expansion_width,
+                    "sibling_median_footprint_height_ratio": median_expansion_height,
+                    "footprint_to_semantic_width_ratio": expansion_width,
+                    "footprint_to_semantic_height_ratio": expansion_height,
+                    "footprint_consistency_score": footprint_consistency,
+                    "footprint_valid": footprint_valid,
+                    "enlargement_score": 0.0 if not footprint_valid else cls._clamp01(base_score * balance_gate * two_axis_support * footprint_gate),
+                    "base_enlargement_score": base_score,
+                    "scale_evidence": cls._clamp01(base_score * balance_gate * two_axis_support),
+                })
+
+        return {"sibling_sets": sibling_sets, "sibling_group_by_index": sibling_group_by_index}
+
     @classmethod
     def _run_visual_focus_cascade(
         cls,
@@ -645,15 +797,16 @@ class FocusResolver:
         peer_sets: list[list[int]],
         peer_group_by_index: dict[int, int],
         isolated_indices: list[int],
+        enlargement_peer_sets: list[list[int]] | None = None,
     ) -> dict[str, Any]:
         values = {int(item["index"]): item for item in evidence}
 
         def skipped(stage: str) -> dict[str, Any]:
             return {"stage": stage, "executed": False, "matched": False, "candidate_index": None, "score": None, "runner_up_score": None, "margin": None, "peer_group_id": None, "reason": "skipped_due_to_prior_match"}
 
-        def search(stage: str, field: str, minimum: float, margin_minimum: float) -> dict[str, Any]:
+        def search(stage: str, field: str, minimum: float, margin_minimum: float, stage_peer_sets: list[list[int]]) -> dict[str, Any]:
             winners = []
-            for peer_id, peer_set in enumerate(peer_sets):
+            for peer_id, peer_set in enumerate(stage_peer_sets):
                 candidates = [values[index] for index in peer_set if index in values]
                 if len(candidates) < cls.MIN_COMPARABLE_PEERS + 1:
                     continue
@@ -665,22 +818,31 @@ class FocusResolver:
                 return {"stage": stage, "executed": True, "matched": False, "candidate_index": None, "score": 0.0, "runner_up_score": 0.0, "margin": 0.0, "peer_group_id": None, "reason": "no_comparable_peer_set"}
             score, margin, best, runner_score, peer_id = max(winners, key=lambda item: (item[0], item[1], -int(item[2]["index"])))
             matched = score >= minimum and margin >= margin_minimum
-            return {"stage": stage, "executed": True, "matched": matched, "candidate_index": int(best["index"]), "score": score, "runner_up_score": runner_score, "margin": margin, "peer_group_id": peer_id, "reason": "confident_peer_winner" if matched else "below_threshold_or_margin"}
+            confident = sorted(
+                [winner for winner in winners if winner[0] >= minimum and winner[1] >= margin_minimum],
+                key=lambda item: (-item[0], -item[1], int(item[2]["index"])),
+            )
+            cross_set_margin = None
+            if len(confident) > 1:
+                cross_set_margin = confident[0][0] - confident[1][0]
+                if cross_set_margin < cls.ENLARGEMENT_V5_MIN_CROSS_SET_MARGIN and stage == "enlargement":
+                    matched = False
+            return {"stage": stage, "executed": True, "matched": matched, "candidate_index": int(best["index"]), "score": score, "runner_up_score": runner_score, "margin": margin, "cross_set_margin": cross_set_margin, "peer_group_id": peer_id, "reason": "confident_peer_winner" if matched else ("ambiguous_multiple_sibling_sets" if stage == "enlargement" and cross_set_margin is not None else "below_threshold_or_margin")}
 
-        outline = search("outline", "outline_score", cls.OUTLINE_V5_MIN_SCORE, cls.OUTLINE_V5_MIN_MARGIN)
+        outline = search("outline", "outline_score", cls.OUTLINE_V5_MIN_SCORE, cls.OUTLINE_V5_MIN_MARGIN, peer_sets)
         if outline["matched"]:
             enlargement = skipped("enlargement")
             highlight = skipped("highlight")
             isolated = skipped("isolated_fallback")
             final = outline
         else:
-            enlargement = search("enlargement", "enlargement_score", cls.ENLARGEMENT_V5_MIN_SCORE, cls.ENLARGEMENT_V5_MIN_MARGIN)
+            enlargement = search("enlargement", "enlargement_score", cls.ENLARGEMENT_V5_MIN_SCORE, cls.ENLARGEMENT_V5_MIN_MARGIN, enlargement_peer_sets or [])
             if enlargement["matched"]:
                 highlight = skipped("highlight")
                 isolated = skipped("isolated_fallback")
                 final = enlargement
             else:
-                highlight = search("highlight", "highlight_score", cls.HIGHLIGHT_V5_MIN_SCORE, cls.HIGHLIGHT_V5_MIN_MARGIN)
+                highlight = search("highlight", "highlight_score", cls.HIGHLIGHT_V5_MIN_SCORE, cls.HIGHLIGHT_V5_MIN_MARGIN, peer_sets)
                 if highlight["matched"]:
                     isolated = skipped("isolated_fallback")
                     final = highlight
@@ -709,6 +871,7 @@ class FocusResolver:
         image: Image.Image,
         prepared_candidate_bboxes: dict[int, list[int]],
         peer_analysis: dict[str, Any],
+        enlargement_sibling_analysis: dict[str, Any] | None = None,
     ) -> None:
         debug_image = image.convert("RGB").copy()
         draw = ImageDraw.Draw(debug_image)
@@ -720,7 +883,11 @@ class FocusResolver:
                 continue
             left, top, right, bottom = [int(round(float(value))) for value in bbox[:4]]
             peer_id = peer_by_index.get(index, -1)
-            label = f"P{peer_id}:#{index}" if peer_id >= 0 else f"ISO:#{index}"
+            sibling_id = (enlargement_sibling_analysis or {}).get("sibling_group_by_index", {}).get(index, -1)
+            if peer_id >= 0:
+                label = f"P{peer_id}/S{sibling_id}:#{index}" if sibling_id >= 0 else f"P{peer_id}/S-:#{index}"
+            else:
+                label = f"ISO:#{index}"
             color = (30, 150, 255) if peer_id >= 0 else (230, 120, 30)
             draw.rectangle((left, top, right, bottom), outline=color, width=2)
             text_bbox = draw.textbbox((0, 0), label)
