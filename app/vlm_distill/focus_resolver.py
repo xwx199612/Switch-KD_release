@@ -115,6 +115,9 @@ class FocusResolver:
     ENLARGEMENT_SIBLING_MAX_ASPECT_LOG_DELTA = 0.20
     ENLARGEMENT_SIBLING_MIN_AXIS_OVERLAP = 0.45
     ENLARGEMENT_V5_MIN_CROSS_SET_MARGIN = 0.10
+    ENLARGEMENT_LOCAL_MARGIN_X = 0.50
+    ENLARGEMENT_LOCAL_MARGIN_Y = 0.50
+    ENLARGEMENT_SYMMETRY_FLOOR = 0.5
     HIGHLIGHT_V5_MIN_SCORE = 0.60
     HIGHLIGHT_V5_MIN_MARGIN = 0.18
     CONTAINER_PROPOSAL_EXPANSIONS = (0.0, 0.05, 0.10, 0.20)
@@ -564,8 +567,108 @@ class FocusResolver:
             item["visual_footprint_source"] = source
             item["visual_footprint_proposals"] = proposals[:3]
 
+        def measure_direct_extent(item: dict[str, Any]) -> None:
+            semantic = clipped_box(item.get("prepared_bbox"))
+            cell = clipped_box(item.get("visual_cell_bbox"))
+            if semantic is None or cell is None:
+                item["enlargement_extent_reason"] = "invalid_geometry"
+                return
+            left, top, right, bottom = semantic
+            width = right - left
+            height = bottom - top
+            observation = clipped_box((
+                max(cell[0], left - width * cls.ENLARGEMENT_LOCAL_MARGIN_X),
+                max(cell[1], top - height * cls.ENLARGEMENT_LOCAL_MARGIN_Y),
+                min(cell[2], right + width * cls.ENLARGEMENT_LOCAL_MARGIN_X),
+                min(cell[3], bottom + height * cls.ENLARGEMENT_LOCAL_MARGIN_Y),
+            )) or semantic
+
+            def luminance(color: tuple[int, int, int]) -> float:
+                return (0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]) / 255.0
+
+            def sample_band(side: str, distance: int, samples: int) -> tuple[float, float]:
+                values: list[float] = []
+                gradients: list[float] = []
+                for sample_index in range(samples):
+                    fraction = (sample_index + 0.5) / samples
+                    if side in ("left", "right"):
+                        y = int(max(0, min(image_height - 1, round(top + fraction * height))))
+                        x = int(round(left - distance if side == "left" else right + distance))
+                        x = max(int(observation[0]), min(int(observation[2]) - 1, x))
+                        inside_x = max(int(observation[0]), min(int(observation[2]) - 1, int(round(left + (2 if side == "left" else -2)))))
+                        outside = luminance(pixel_data[x, y])
+                        inside = luminance(pixel_data[inside_x, y])
+                    else:
+                        x = int(max(0, min(image_width - 1, round(left + fraction * width))))
+                        y = int(round(top - distance if side == "top" else bottom + distance))
+                        y = max(int(observation[1]), min(int(observation[3]) - 1, y))
+                        inside_y = max(int(observation[1]), min(int(observation[3]) - 1, int(round(top + (2 if side == "top" else -2)))))
+                        outside = luminance(pixel_data[x, y])
+                        inside = luminance(pixel_data[x, inside_y])
+                    values.append(outside)
+                    gradients.append(abs(outside - inside))
+                return sum(values) / max(len(values), 1), sum(gradients) / max(len(gradients), 1)
+
+            reference_values: list[float] = []
+            for row in range(3):
+                for column in range(3):
+                    x = int(max(0, min(image_width - 1, round(left + (column + 0.5) * width / 3.0))))
+                    y = int(max(0, min(image_height - 1, round(top + (row + 0.5) * height / 3.0))))
+                    reference_values.append(luminance(pixel_data[x, y]))
+            reference = sum(reference_values) / max(len(reference_values), 1)
+            reference_variance = sum((value - reference) ** 2 for value in reference_values) / max(len(reference_values), 1)
+            step = max(1, min(4, int(round(min(width, height) * 0.025))))
+            growth: dict[str, int] = {"left": 0, "right": 0, "top": 0, "bottom": 0}
+            side_support: dict[str, float] = {}
+            samples = max(5, min(15, int(round(max(width, height) / 20.0))))
+            for side in growth:
+                maximum = int(round((left - observation[0]) if side == "left" else (observation[2] - right) if side == "right" else (top - observation[1]) if side == "top" else (observation[3] - bottom)))
+                consecutive = 0
+                best = 0
+                support_values: list[float] = []
+                for distance in range(step, maximum + 1, step):
+                    outside_mean, gradient = sample_band(side, distance, samples)
+                    continuity = cls._clamp01(1.0 - abs(outside_mean - reference) / max(0.12, math.sqrt(reference_variance) * 3.0 + 0.04))
+                    edge_support = cls._clamp01(gradient / 0.10)
+                    support = 0.70 * continuity + 0.30 * edge_support
+                    support_values.append(support)
+                    if support >= 0.48:
+                        consecutive += 1
+                        best = distance
+                    elif consecutive >= 2:
+                        break
+                    else:
+                        consecutive = 0
+                growth[side] = best
+                side_support[side] = sum(support_values[-2:]) / max(1, len(support_values[-2:])) if support_values else 0.0
+
+            extent = clipped_box((left - growth["left"], top - growth["top"], right + growth["right"], bottom + growth["bottom"])) or semantic
+            horizontal_balance = min(growth["left"], growth["right"]) / max(growth["left"], growth["right"], 1.0)
+            vertical_balance = min(growth["top"], growth["bottom"]) / max(growth["top"], growth["bottom"], 1.0)
+            item.update({
+                "enlargement_local_observation_bbox": [round(value, 2) for value in observation],
+                "visual_extent_bbox": [round(value, 2) for value in extent],
+                "visual_extent_width": max(0.0, extent[2] - extent[0]),
+                "visual_extent_height": max(0.0, extent[3] - extent[1]),
+                "visual_extent_area": max(0.0, extent[2] - extent[0]) * max(0.0, extent[3] - extent[1]),
+                "visual_extent_left_growth": growth["left"],
+                "visual_extent_right_growth": growth["right"],
+                "visual_extent_top_growth": growth["top"],
+                "visual_extent_bottom_growth": growth["bottom"],
+                "visual_extent_left_growth_ratio": growth["left"] / max(width, 1e-6),
+                "visual_extent_right_growth_ratio": growth["right"] / max(width, 1e-6),
+                "visual_extent_top_growth_ratio": growth["top"] / max(height, 1e-6),
+                "visual_extent_bottom_growth_ratio": growth["bottom"] / max(height, 1e-6),
+                "extent_horizontal_balance": horizontal_balance,
+                "extent_vertical_balance": vertical_balance,
+                "extent_symmetry": math.sqrt(max(0.0, horizontal_balance * vertical_balance)),
+                "enlargement_extent_reason": "direct_visual_extent",
+                "extent_side_support": side_support,
+            })
+
         for item in evidence:
             detect_visual_footprint(item)
+            measure_direct_extent(item)
 
         for peer_set in peer_sets:
             available = [by_index[index] for index in peer_set if index in by_index]
@@ -734,16 +837,16 @@ class FocusResolver:
 
         for sibling_set in sibling_sets:
             members = [by_index[index] for index in sibling_set if index in by_index]
-            visual_widths = [max(1.0, float(item.get("visual_footprint_width", 0.0))) for item in members]
-            visual_heights = [max(1.0, float(item.get("visual_footprint_height", 0.0))) for item in members]
+            visual_widths = [max(1.0, float(item.get("visual_extent_width", 0.0))) for item in members]
+            visual_heights = [max(1.0, float(item.get("visual_extent_height", 0.0))) for item in members]
             visual_areas = [width * height for width, height in zip(visual_widths, visual_heights)]
             base_width, base_height, base_area = median(visual_widths), median(visual_heights), median(visual_areas)
             expansion_widths = []
             expansion_heights = []
             for item in members:
                 metrics = semantic_metrics(item)
-                expansion_widths.append(float(item.get("visual_footprint_width", 0.0)) / max(metrics[0], 1e-6) if metrics else 1.0)
-                expansion_heights.append(float(item.get("visual_footprint_height", 0.0)) / max(metrics[1], 1e-6) if metrics else 1.0)
+                expansion_widths.append(float(item.get("visual_extent_width", 0.0)) / max(metrics[0], 1e-6) if metrics else 1.0)
+                expansion_heights.append(float(item.get("visual_extent_height", 0.0)) / max(metrics[1], 1e-6) if metrics else 1.0)
             median_expansion_width = median(expansion_widths)
             median_expansion_height = median(expansion_heights)
             for item, width, height, area, expansion_width, expansion_height in zip(members, visual_widths, visual_heights, visual_areas, expansion_widths, expansion_heights):
@@ -765,6 +868,8 @@ class FocusResolver:
                 balance_gate = cls.ENLARGEMENT_BALANCE_FLOOR + (1.0 - cls.ENLARGEMENT_BALANCE_FLOOR) * scale_balance
                 two_axis_support = cls._clamp01(uniform_growth / max(cls.ENLARGEMENT_MIN_MEANINGFUL_GROWTH, 1e-6))
                 footprint_gate = 0.5 + 0.5 * footprint_consistency
+                extent_symmetry = float(item.get("extent_symmetry", 0.0))
+                extent_symmetry_gate = cls.ENLARGEMENT_SYMMETRY_FLOOR + (1.0 - cls.ENLARGEMENT_SYMMETRY_FLOOR) * extent_symmetry
                 item.update({
                     "relative_visual_width": relative_visual_width,
                     "relative_visual_height": relative_visual_height,
@@ -777,13 +882,26 @@ class FocusResolver:
                     "visual_scale_balance": scale_balance,
                     "visual_scale_balance_gate": balance_gate,
                     "visual_two_axis_support": two_axis_support,
+                    "extent_to_semantic_width_ratio": expansion_width,
+                    "extent_to_semantic_height_ratio": expansion_height,
+                    "extent_to_semantic_area_ratio": float(item.get("visual_extent_area", 0.0)) / max(metrics[0] * metrics[1], 1e-6) if metrics else 1.0,
+                    "relative_extent_expansion_width": relative_visual_width,
+                    "relative_extent_expansion_height": relative_visual_height,
+                    "extent_uniform_scale": uniform_scale,
+                    "extent_scale_growth": scale_growth,
+                    "extent_scale_balance": scale_balance,
+                    "extent_scale_balance_gate": balance_gate,
+                    "extent_two_axis_support": two_axis_support,
+                    "extent_symmetry_gate": extent_symmetry_gate,
                     "sibling_median_footprint_width_ratio": median_expansion_width,
                     "sibling_median_footprint_height_ratio": median_expansion_height,
+                    "sibling_median_extent_width_ratio": median_expansion_width,
+                    "sibling_median_extent_height_ratio": median_expansion_height,
                     "footprint_to_semantic_width_ratio": expansion_width,
                     "footprint_to_semantic_height_ratio": expansion_height,
                     "footprint_consistency_score": footprint_consistency,
                     "footprint_valid": footprint_valid,
-                    "enlargement_score": 0.0 if not footprint_valid else cls._clamp01(base_score * balance_gate * two_axis_support * footprint_gate),
+                    "enlargement_score": 0.0 if not footprint_valid else cls._clamp01(base_score * balance_gate * two_axis_support * extent_symmetry_gate),
                     "base_enlargement_score": base_score,
                     "scale_evidence": cls._clamp01(base_score * balance_gate * two_axis_support),
                 })
