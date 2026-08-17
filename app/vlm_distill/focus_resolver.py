@@ -103,6 +103,9 @@ class FocusResolver:
     OUTLINE_V5_MIN_MARGIN = 0.15
     ENLARGEMENT_V5_MIN_SCORE = 0.50
     ENLARGEMENT_V5_MIN_MARGIN = 0.15
+    ENLARGEMENT_FULL_SCALE_GROWTH = 0.25
+    ENLARGEMENT_BALANCE_FLOOR = 0.5
+    ENLARGEMENT_MIN_MEANINGFUL_GROWTH = 0.10
     HIGHLIGHT_V5_MIN_SCORE = 0.60
     HIGHLIGHT_V5_MIN_MARGIN = 0.18
     CONTAINER_PROPOSAL_EXPANSIONS = (0.0, 0.05, 0.10, 0.20)
@@ -458,7 +461,21 @@ class FocusResolver:
                 uniqueness = exclusivity(relative_area, [areas[index] / max(base_area, 1e-6) for index in range(len(areas)) if index != position])
                 consistency = float(item.get("peer_size_consistency", 1.0))
                 protrusion = float(item.get("peer_protrusion_score", 0.0))
-                scale_evidence = cls._clamp01(min(1.0, uniform_growth) * scale_balance)
+                uniform_scale = math.sqrt(max(relative_width * relative_height, 0.0))
+                scale_growth = max(0.0, uniform_scale - 1.0)
+                base_enlargement_score = cls._clamp01(
+                    scale_growth / max(cls.ENLARGEMENT_FULL_SCALE_GROWTH, 1e-6)
+                )
+                scale_balance_gate = (
+                    cls.ENLARGEMENT_BALANCE_FLOOR
+                    + (1.0 - cls.ENLARGEMENT_BALANCE_FLOOR) * scale_balance
+                )
+                two_axis_support = cls._clamp01(
+                    uniform_growth / max(cls.ENLARGEMENT_MIN_MEANINGFUL_GROWTH, 1e-6)
+                )
+                scale_evidence = cls._clamp01(
+                    base_enlargement_score * scale_balance_gate * two_axis_support
+                )
                 item.update({
                     "relative_width": relative_width,
                     "relative_height": relative_height,
@@ -467,9 +484,14 @@ class FocusResolver:
                     "height_growth": height_growth,
                     "uniform_growth": uniform_growth,
                     "scale_balance": scale_balance,
+                    "uniform_scale": uniform_scale,
+                    "scale_growth": scale_growth,
+                    "scale_balance_gate": scale_balance_gate,
+                    "two_axis_support": two_axis_support,
+                    "base_enlargement_score": base_enlargement_score,
                     "scale_evidence": scale_evidence,
                     "enlargement_uniqueness": uniqueness,
-                    "enlargement_score": cls._clamp01(scale_evidence * uniqueness * consistency * max(protrusion, 0.25)),
+                    "enlargement_score": scale_evidence,
                 })
 
     @classmethod
