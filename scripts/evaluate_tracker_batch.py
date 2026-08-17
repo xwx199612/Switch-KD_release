@@ -514,7 +514,22 @@ def main() -> int:
                                 f"[WARN] could not save focus image for {image_path.name}: {exc}",
                                 file=sys.stderr,
                             )
-                    result = extract_result(response, image_path)
+            if args.debug_dir is not None:
+                args.debug_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    save_peer_debug_image(
+                        response,
+                        str(image_path),
+                        str(args.debug_dir),
+                        args.docker_container,
+                    )
+                except (OSError, RequestFailure, subprocess.SubprocessError) as exc:
+                    print(
+                        f"[WARN] could not save CV debug artifacts for {image_path.name}: {exc}",
+                        file=sys.stderr,
+                    )
+
+            result = extract_result(response, image_path)
                     started_tracker = True
                     results.append(result)
                     print_result(position, len(images), result)
