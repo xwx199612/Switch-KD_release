@@ -159,7 +159,26 @@ def discover_images(image_dir: Path) -> list[Path]:
     )
 
 
-def _extract_v5_debug_fields(response: dict[str, Any], element_texts: list[str]) -> dict[str, Any]:
+def _build_element_text_by_index(response: dict[str, Any], fallback_result: dict[str, Any] | None = None) -> dict[int, str]:
+    tracker_debug = response.get("tracker_debug") or {}
+    elements = tracker_debug.get("parsed_elements") or response.get("parsed_elements")
+    if not isinstance(elements, list) and fallback_result:
+        elements = fallback_result.get("elements") or fallback_result.get("parsed_elements")
+    if not isinstance(elements, list):
+        elements = []
+
+    mapping: dict[int, str] = {}
+    for position, element in enumerate(elements):
+        if isinstance(element, dict):
+            raw_index = element.get("index")
+            element_index = raw_index if isinstance(raw_index, int) and not isinstance(raw_index, bool) else position
+            mapping[element_index] = str(element.get("text") or "")
+        else:
+            mapping[position] = ""
+    return mapping
+
+
+def _extract_v5_debug_fields(response: dict[str, Any], element_text_by_index: dict[int, str]) -> dict[str, Any]:
     """Extract FocusResolver V5 diagnostics without recomputing decisions."""
     tracker_debug = response.get("tracker_debug") or {}
     focus_debug = tracker_debug.get("focus_resolver_debug") or {}
@@ -177,7 +196,10 @@ def _extract_v5_debug_fields(response: dict[str, Any], element_texts: list[str])
         return focus_debug.get(key) if available else None
 
     index = get("focus_visual_v5_candidate_index")
-    text = element_texts[index] if isinstance(index, int) and 0 <= index < len(element_texts) else None
+    text = None
+    if isinstance(index, int):
+        mapped_text = element_text_by_index.get(index)
+        text = mapped_text if mapped_text else f"<unknown #{index}>"
     hierarchy = None if not available else {
         "matched": get("focus_visual_v5_matched"),
         "stage": get("focus_visual_v5_stage"),
@@ -188,11 +210,23 @@ def _extract_v5_debug_fields(response: dict[str, Any], element_texts: list[str])
         "peer_group_id": get("focus_visual_v5_peer_group_id"),
         "reason": get("focus_visual_v5_reason"),
     }
+    def normalize_stage(value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        best_index = normalized.get("candidate_index", normalized.get("best_index"))
+        normalized["best_index"] = best_index
+        normalized["best_text"] = (
+            element_text_by_index.get(best_index) or f"<unknown #{best_index}>"
+            if isinstance(best_index, int) else None
+        )
+        return normalized
+
     stages = None if not available else {
-        "outline": get("outline_decision"),
-        "enlargement": get("enlargement_decision"),
-        "highlight": get("highlight_decision"),
-        "isolated": get("isolated_decision"),
+        "outline": normalize_stage(get("outline_decision")),
+        "enlargement": normalize_stage(get("enlargement_decision")),
+        "highlight": normalize_stage(get("highlight_decision")),
+        "isolated": normalize_stage(get("isolated_decision")),
     }
     return {
         "v5_debug_available": available,
@@ -206,15 +240,16 @@ def _extract_v5_debug_fields(response: dict[str, Any], element_texts: list[str])
         "isolated_indices": get("focus_isolated_indices"),
         "peer_debug_image_path": response.get("_peer_debug_host_path") or get("focus_peer_debug_image_path"),
         "v5_visual_focus_candidate": index,
+        "v5_visual_focus_text": text,
         "v5_visual_focus_stage": get("focus_visual_v5_stage"),
         "v5_visual_focus_matched": get("focus_visual_v5_matched"),
         "v5_visual_focus_score": get("focus_visual_v5_score"),
         "v5_visual_focus_margin": get("focus_visual_v5_margin"),
         "v5_visual_focus_peer_group_id": get("focus_visual_v5_peer_group_id"),
-        "outline_decision": get("outline_decision"),
-        "enlargement_decision": get("enlargement_decision"),
-        "highlight_decision": get("highlight_decision"),
-        "isolated_decision": get("isolated_decision"),
+        "outline_decision": stages.get("outline") if stages else None,
+        "enlargement_decision": stages.get("enlargement") if stages else None,
+        "highlight_decision": stages.get("highlight") if stages else None,
+        "isolated_decision": stages.get("isolated") if stages else None,
     }
 
 
@@ -560,10 +595,20 @@ def print_result(*args: object, **kwargs: object) -> None:
 
 def extract_result(response: dict, image_path: Path) -> dict:
     result = _extract_result_base(response, image_path)
-    element_texts = result.get("elements") or result.get("parsed_elements") or []
-    if not isinstance(element_texts, list):
-        element_texts = []
-    result.update(_extract_v5_debug_fields(response, element_texts))
+    element_text_by_index = _build_element_text_by_index(response, result)
+    result["element_text_by_index"] = element_text_by_index
+    raw_elements = result.get("elements") or result.get("parsed_elements") or []
+    if isinstance(raw_elements, list):
+        result["element_texts"] = [
+            str(element.get("text") or "") if isinstance(element, dict) else ""
+            for element in raw_elements
+        ]
+    else:
+        result["element_texts"] = [element_text_by_index[index] for index in sorted(element_text_by_index)]
+    focused_index = result.get("focused_index")
+    if isinstance(focused_index, int):
+        result["focused_text"] = element_text_by_index.get(focused_index) or f"<unknown #{focused_index}>"
+    result.update(_extract_v5_debug_fields(response, element_text_by_index))
     return result
 
 

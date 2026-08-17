@@ -106,6 +106,8 @@ class FocusResolver:
     ENLARGEMENT_FULL_SCALE_GROWTH = 0.25
     ENLARGEMENT_BALANCE_FLOOR = 0.5
     ENLARGEMENT_MIN_MEANINGFUL_GROWTH = 0.10
+    VISUAL_FOOTPRINT_EXPANSIONS = (0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30)
+    VISUAL_FOOTPRINT_SCORE_TOLERANCE = 0.05
     HIGHLIGHT_V5_MIN_SCORE = 0.60
     HIGHLIGHT_V5_MIN_MARGIN = 0.18
     CONTAINER_PROPOSAL_EXPANSIONS = (0.0, 0.05, 0.10, 0.20)
@@ -169,7 +171,11 @@ class FocusResolver:
             comparison_groups=peer_analysis["peer_sets"],
             peer_group_by_index=peer_analysis["peer_group_by_index"],
         )
-        self._apply_v5_peer_evidence(visual_evidence, peer_analysis["peer_sets"])
+        self._apply_v5_peer_evidence(
+            visual_evidence,
+            peer_analysis["peer_sets"],
+            unannotated_image,
+        )
         v5_cascade = self._run_visual_focus_cascade(
             visual_evidence,
             peer_analysis["peer_sets"],
@@ -398,6 +404,7 @@ class FocusResolver:
         cls,
         evidence: list[dict[str, Any]],
         peer_sets: list[list[int]],
+        image: Image.Image,
     ) -> None:
         """Rebase diagnostic channel comparisons on V5 comparable peers."""
         by_index = {int(item["index"]): item for item in evidence}
@@ -429,6 +436,127 @@ class FocusResolver:
             baseline = median(peers)
             return cls._clamp01((score - baseline) / max(0.15, 1.0 - baseline))
 
+        pixels = image.convert("RGB")
+        pixel_data = pixels.load()
+        image_width, image_height = pixels.size
+
+        def clipped_box(box: Any) -> tuple[float, float, float, float] | None:
+            if not isinstance(box, (list, tuple)) or len(box) < 4:
+                return None
+            try:
+                left, top, right, bottom = [float(box[index]) for index in range(4)]
+            except (TypeError, ValueError):
+                return None
+            left = max(0.0, min(left, float(image_width)))
+            top = max(0.0, min(top, float(image_height)))
+            right = max(0.0, min(right, float(image_width)))
+            bottom = max(0.0, min(bottom, float(image_height)))
+            return (left, top, right, bottom) if right > left and bottom > top else None
+
+        def color_distance(first: tuple[int, int, int], second: tuple[int, int, int]) -> float:
+            return min(1.0, sum(abs(first[channel] - second[channel]) for channel in range(3)) / 765.0)
+
+        def footprint_score(box: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+            left, top, right, bottom = box
+            width = max(2.0, right - left)
+            height = max(2.0, bottom - top)
+            radius_x = max(1, min(8, int(round(width * 0.015))))
+            radius_y = max(1, min(8, int(round(height * 0.015))))
+            side_values: list[float] = []
+            continuity_values: list[float] = []
+            for side in ("top", "bottom", "left", "right"):
+                samples = max(5, min(32, int(round((width if side in ("top", "bottom") else height) / 18.0))))
+                contrasts: list[float] = []
+                for sample_index in range(samples):
+                    fraction = (sample_index + 0.5) / samples
+                    if side in ("top", "bottom"):
+                        x = int(max(0, min(image_width - 1, round(left + fraction * width))))
+                        boundary = int(round(top if side == "top" else bottom))
+                        inside_y = max(0, min(image_height - 1, boundary + (radius_y if side == "top" else -radius_y)))
+                        outside_y = max(0, min(image_height - 1, boundary - radius_y if side == "top" else boundary + radius_y))
+                        contrasts.append(color_distance(pixel_data[x, inside_y], pixel_data[x, outside_y]))
+                    else:
+                        y = int(max(0, min(image_height - 1, round(top + fraction * height))))
+                        boundary = int(round(left if side == "left" else right))
+                        inside_x = max(0, min(image_width - 1, boundary + (radius_x if side == "left" else -radius_x)))
+                        outside_x = max(0, min(image_width - 1, boundary - radius_x if side == "left" else boundary + radius_x))
+                        contrasts.append(color_distance(pixel_data[inside_x, y], pixel_data[outside_x, y]))
+                side_values.append(sum(contrasts) / max(len(contrasts), 1))
+                continuity_values.append(sum(1.0 for value in contrasts if value >= 0.045) / max(len(contrasts), 1))
+            boundary_contrast = sum(side_values) / 4.0
+            boundary_coherence = sum(1.0 for value in side_values if value >= 0.035) / 4.0
+            edge_continuity = sum(continuity_values) / 4.0
+
+            inner_samples: list[float] = []
+            for row in range(4):
+                for column in range(4):
+                    x = int(max(0, min(image_width - 1, round(left + (column + 0.5) * width / 4.0))))
+                    y = int(max(0, min(image_height - 1, round(top + (row + 0.5) * height / 4.0))))
+                    color = pixel_data[x, y]
+                    inner_samples.append(sum(color) / 765.0)
+            interior_mean = sum(inner_samples) / max(len(inner_samples), 1)
+            interior_variance = sum((value - interior_mean) ** 2 for value in inner_samples) / max(len(inner_samples), 1)
+            interior_coherence = cls._clamp01(1.0 - math.sqrt(interior_variance) * 4.0)
+            score = cls._clamp01(
+                0.45 * boundary_coherence
+                + 0.30 * boundary_contrast
+                + 0.15 * edge_continuity
+                + 0.10 * interior_coherence
+            )
+            return score, boundary_coherence, boundary_contrast, edge_continuity
+
+        def detect_visual_footprint(item: dict[str, Any]) -> None:
+            semantic = clipped_box(item.get("prepared_bbox"))
+            cell = clipped_box(item.get("visual_cell_bbox")) or semantic
+            if semantic is None or cell is None:
+                return
+            left, top, right, bottom = semantic
+            width = right - left
+            height = bottom - top
+            proposals: list[dict[str, Any]] = []
+            for expansion in cls.VISUAL_FOOTPRINT_EXPANSIONS:
+                proposal = clipped_box((
+                    max(cell[0], left - width * expansion),
+                    max(cell[1], top - height * expansion),
+                    min(cell[2], right + width * expansion),
+                    min(cell[3], bottom + height * expansion),
+                ))
+                if proposal is None:
+                    continue
+                score, boundary, contrast, continuity = footprint_score(proposal)
+                proposals.append({
+                    "bbox": [round(value, 2) for value in proposal],
+                    "expansion_ratio": expansion,
+                    "score": score,
+                    "boundary": boundary,
+                    "contrast": contrast,
+                    "continuity": continuity,
+                })
+            if not proposals:
+                selected = semantic
+                selected_score = 0.0
+                source = "semantic_bbox_fallback"
+                selected_expansion = 0.0
+            else:
+                best_score = max(proposal["score"] for proposal in proposals)
+                eligible = [proposal for proposal in proposals if proposal["score"] >= best_score - cls.VISUAL_FOOTPRINT_SCORE_TOLERANCE]
+                selected_proposal = min(eligible, key=lambda proposal: proposal["expansion_ratio"])
+                selected = tuple(float(value) for value in selected_proposal["bbox"])
+                selected_score = selected_proposal["score"]
+                source = "visual_container"
+                selected_expansion = selected_proposal["expansion_ratio"]
+            item["visual_footprint_bbox"] = [round(value, 2) for value in selected]
+            item["visual_footprint_width"] = max(0.0, selected[2] - selected[0])
+            item["visual_footprint_height"] = max(0.0, selected[3] - selected[1])
+            item["visual_footprint_area"] = item["visual_footprint_width"] * item["visual_footprint_height"]
+            item["visual_footprint_expansion_ratio"] = selected_expansion
+            item["visual_footprint_score"] = selected_score
+            item["visual_footprint_source"] = source
+            item["visual_footprint_proposals"] = proposals[:3]
+
+        for item in evidence:
+            detect_visual_footprint(item)
+
         for peer_set in peer_sets:
             available = [by_index[index] for index in peer_set if index in by_index]
             for item in available:
@@ -442,17 +570,33 @@ class FocusResolver:
                 item["outline_exclusivity_gate"] = cls.OUTLINE_EXCLUSIVITY_FLOOR + (1.0 - cls.OUTLINE_EXCLUSIVITY_FLOOR) * outline_excl
                 item["outline_score"] = cls._clamp01(absolute * item["outline_exclusivity_gate"])
 
-            boxes = [candidate.get("prepared_bbox") for candidate in available]
+            boxes = [candidate.get("visual_footprint_bbox") for candidate in available]
             if not all(isinstance(box, (list, tuple)) and len(box) >= 4 for box in boxes):
                 continue
             widths = [max(1.0, float(box[2]) - float(box[0])) for box in boxes]
             heights = [max(1.0, float(box[3]) - float(box[1])) for box in boxes]
             areas = [width * height for width, height in zip(widths, heights)]
             base_width, base_height, base_area = median(widths), median(heights), median(areas)
+            semantic_boxes = [candidate.get("prepared_bbox") for candidate in available]
+            semantic_widths = [max(1.0, float(box[2]) - float(box[0])) if isinstance(box, (list, tuple)) and len(box) >= 4 else 1.0 for box in semantic_boxes]
+            semantic_heights = [max(1.0, float(box[3]) - float(box[1])) if isinstance(box, (list, tuple)) and len(box) >= 4 else 1.0 for box in semantic_boxes]
+            semantic_areas = [width * height for width, height in zip(semantic_widths, semantic_heights)]
+            semantic_base_width = median(semantic_widths)
+            semantic_base_height = median(semantic_heights)
+            semantic_base_area = median(semantic_areas)
             for position, (item, width, height, area) in enumerate(zip(available, widths, heights, areas)):
-                relative_width = width / max(base_width, 1e-6)
-                relative_height = height / max(base_height, 1e-6)
-                relative_area = area / max(base_area, 1e-6)
+                semantic_width = semantic_widths[position]
+                semantic_height = semantic_heights[position]
+                semantic_area = semantic_areas[position]
+                item["relative_width"] = semantic_width / max(semantic_base_width, 1e-6)
+                item["relative_height"] = semantic_height / max(semantic_base_height, 1e-6)
+                item["relative_area"] = semantic_area / max(semantic_base_area, 1e-6)
+                relative_visual_width = width / max(base_width, 1e-6)
+                relative_visual_height = height / max(base_height, 1e-6)
+                relative_visual_area = area / max(base_area, 1e-6)
+                relative_width = relative_visual_width
+                relative_height = relative_visual_height
+                relative_area = relative_visual_area
                 width_growth = max(0.0, relative_width - 1.0)
                 height_growth = max(0.0, relative_height - 1.0)
                 uniform_growth = min(width_growth, height_growth)
@@ -477,9 +621,9 @@ class FocusResolver:
                     base_enlargement_score * scale_balance_gate * two_axis_support
                 )
                 item.update({
-                    "relative_width": relative_width,
-                    "relative_height": relative_height,
-                    "relative_area": relative_area,
+                    "relative_visual_width": relative_visual_width,
+                    "relative_visual_height": relative_visual_height,
+                    "relative_visual_area": relative_visual_area,
                     "width_growth": width_growth,
                     "height_growth": height_growth,
                     "uniform_growth": uniform_growth,
