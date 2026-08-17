@@ -127,6 +127,10 @@ class FocusResolver:
     ENLARGEMENT_BOUNDARY_MIN_SAMPLE_SUPPORT = 0.60
     ENLARGEMENT_COMPLETION_MIN_RETAINED_RATIO = 0.70
     ENLARGEMENT_MIRRORED_CONFIDENCE_FACTOR = 0.75
+    ENLARGEMENT_CARD_CELL_OUTER_X = 0.30
+    ENLARGEMENT_CARD_CELL_OUTER_Y = 0.30
+    ENLARGEMENT_CARD_OBS_MARGIN_X = 0.20
+    ENLARGEMENT_CARD_OBS_MARGIN_Y = 0.25
     HIGHLIGHT_V5_MIN_SCORE = 0.60
     HIGHLIGHT_V5_MIN_MARGIN = 0.18
     CONTAINER_PROPOSAL_EXPANSIONS = (0.0, 0.05, 0.10, 0.20)
@@ -610,7 +614,10 @@ class FocusResolver:
             item["visual_footprint_source"] = source
             item["visual_footprint_proposals"] = proposals[:3]
 
-        def measure_direct_extent(item: dict[str, Any]) -> None:
+        def measure_direct_extent(
+            item: dict[str, Any],
+            observation_override: tuple[float, float, float, float] | None = None,
+        ) -> None:
             semantic = clipped_box(item.get("prepared_bbox"))
             cell = clipped_box(item.get("visual_cell_bbox"))
             if semantic is None or cell is None:
@@ -620,12 +627,23 @@ class FocusResolver:
             left, top, right, bottom = semantic
             width = right - left
             height = bottom - top
-            observation = clipped_box((
+            legacy_observation = clipped_box((
                 max(cell[0], left - width * cls.ENLARGEMENT_LOCAL_MARGIN_X),
                 max(cell[1], top - height * cls.ENLARGEMENT_LOCAL_MARGIN_Y),
                 min(cell[2], right + width * cls.ENLARGEMENT_LOCAL_MARGIN_X),
                 min(cell[3], bottom + height * cls.ENLARGEMENT_LOCAL_MARGIN_Y),
             )) or semantic
+            item["enlargement_local_observation_bbox"] = [
+                round(value, 2) for value in legacy_observation
+            ]
+            observation = clipped_box(observation_override) if observation_override is not None else legacy_observation
+            if observation is None or not (
+                observation[0] <= left and observation[1] <= top
+                and observation[2] >= right and observation[3] >= bottom
+            ):
+                item["enlargement_extent_reason"] = "invalid_geometry"
+                item["extent_reliable"] = False
+                return
 
             def luminance(color: tuple[int, int, int]) -> float:
                 return (0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]) / 255.0
@@ -823,7 +841,6 @@ class FocusResolver:
             horizontal_balance = min(reconstructed_growth["left"], reconstructed_growth["right"]) / max(reconstructed_growth["left"], reconstructed_growth["right"], 1.0)
             vertical_balance = min(reconstructed_growth["top"], reconstructed_growth["bottom"]) / max(reconstructed_growth["top"], reconstructed_growth["bottom"], 1.0)
             item.update({
-                "enlargement_local_observation_bbox": [round(value, 2) for value in observation],
                 "visual_extent_bbox": [round(value, 2) for value in extent],
                 "visual_extent_width": max(0.0, extent[2] - extent[0]),
                 "visual_extent_height": max(0.0, extent[3] - extent[1]),
@@ -908,7 +925,6 @@ class FocusResolver:
 
         for item in evidence:
             detect_visual_footprint(item)
-            measure_direct_extent(item)
 
         for peer_set in peer_sets:
             available = [by_index[index] for index in peer_set if index in by_index]
@@ -1074,6 +1090,127 @@ class FocusResolver:
                     sibling_sets.append(indices)
                     for index in indices:
                         sibling_group_by_index[index] = len(sibling_sets) - 1
+
+        def build_enlargement_card_observation(
+            item: dict[str, Any],
+            siblings: list[dict[str, Any]],
+        ) -> tuple[tuple[float, float, float, float] | None, bool]:
+            semantic = clipped_box(item.get("prepared_bbox"))
+            visual_cell = clipped_box(item.get("visual_cell_bbox"))
+            if semantic is None or visual_cell is None:
+                item.update({
+                    "enlargement_card_layout": "sibling_midpoint_v5_3",
+                    "enlargement_card_observation_valid": False,
+                    "enlargement_extent_observation_source": "pure_card_v5_3",
+                })
+                return None, False
+            left, top, right, bottom = semantic
+            width, height = right - left, bottom - top
+            legacy_observation = clipped_box((
+                max(visual_cell[0], left - width * cls.ENLARGEMENT_LOCAL_MARGIN_X),
+                max(visual_cell[1], top - height * cls.ENLARGEMENT_LOCAL_MARGIN_Y),
+                min(visual_cell[2], right + width * cls.ENLARGEMENT_LOCAL_MARGIN_X),
+                min(visual_cell[3], bottom + height * cls.ENLARGEMENT_LOCAL_MARGIN_Y),
+            ))
+            item["enlargement_local_observation_bbox"] = [
+                round(value, 2) for value in legacy_observation
+            ] if legacy_observation else None
+            center_x, center_y = (left + right) / 2.0, (top + bottom) / 2.0
+            centers: list[tuple[int, float, float]] = []
+            for sibling in siblings:
+                if sibling is item:
+                    continue
+                sibling_box = clipped_box(sibling.get("prepared_bbox"))
+                if sibling_box is not None:
+                    centers.append((
+                        int(sibling["index"]),
+                        (sibling_box[0] + sibling_box[2]) / 2.0,
+                        (sibling_box[1] + sibling_box[3]) / 2.0,
+                    ))
+
+            def nearest(predicate: Any, distance: Any) -> tuple[int | None, float | None]:
+                values = [(index, distance(x, y)) for index, x, y in centers if predicate(x, y)]
+                return min(values, key=lambda value: value[1]) if values else (None, None)
+
+            left_index, left_distance = nearest(lambda x, y: x < center_x, lambda x, y: center_x - x)
+            right_index, right_distance = nearest(lambda x, y: x > center_x, lambda x, y: x - center_x)
+            top_index, top_distance = nearest(lambda x, y: y < center_y, lambda x, y: center_y - y)
+            bottom_index, bottom_distance = nearest(lambda x, y: y > center_y, lambda x, y: y - center_y)
+            center_lookup = {index: (x, y) for index, x, y in centers}
+            cell_left = (center_x + center_lookup[left_index][0]) / 2.0 if left_index is not None else left - width * cls.ENLARGEMENT_CARD_CELL_OUTER_X
+            cell_right = (center_x + center_lookup[right_index][0]) / 2.0 if right_index is not None else right + width * cls.ENLARGEMENT_CARD_CELL_OUTER_X
+            cell_top = (center_y + center_lookup[top_index][1]) / 2.0 if top_index is not None else top - height * cls.ENLARGEMENT_CARD_CELL_OUTER_Y
+            cell_bottom = (center_y + center_lookup[bottom_index][1]) / 2.0 if bottom_index is not None else bottom + height * cls.ENLARGEMENT_CARD_CELL_OUTER_Y
+            card_cell = clipped_box((
+                max(visual_cell[0], cell_left),
+                max(visual_cell[1], cell_top),
+                min(visual_cell[2], cell_right),
+                min(visual_cell[3], cell_bottom),
+            ))
+            desired_observation = (
+                left - width * cls.ENLARGEMENT_CARD_OBS_MARGIN_X,
+                top - height * cls.ENLARGEMENT_CARD_OBS_MARGIN_Y,
+                right + width * cls.ENLARGEMENT_CARD_OBS_MARGIN_X,
+                bottom + height * cls.ENLARGEMENT_CARD_OBS_MARGIN_Y,
+            )
+            observation = clipped_box((
+                max(desired_observation[0], card_cell[0]) if card_cell else left,
+                max(desired_observation[1], card_cell[1]) if card_cell else top,
+                min(desired_observation[2], card_cell[2]) if card_cell else right,
+                min(desired_observation[3], card_cell[3]) if card_cell else bottom,
+            ))
+            contains_semantic = bool(
+                card_cell is not None
+                and card_cell[0] <= left and card_cell[1] <= top
+                and card_cell[2] >= right and card_cell[3] >= bottom
+            )
+            contains_observation = bool(
+                observation is not None
+                and observation[0] <= left and observation[1] <= top
+                and observation[2] >= right and observation[3] >= bottom
+            )
+            contains_other_center = bool(
+                observation is not None
+                and any(
+                    observation[0] <= sibling_x <= observation[2]
+                    and observation[1] <= sibling_y <= observation[3]
+                    for _, sibling_x, sibling_y in centers
+                )
+            )
+            valid = contains_semantic and contains_observation and not contains_other_center
+            item.update({
+                "enlargement_card_layout": "sibling_midpoint_v5_3",
+                "enlargement_card_cell_bbox": [round(value, 2) for value in card_cell] if card_cell else None,
+                "enlargement_card_observation_bbox": [round(value, 2) for value in observation] if observation else None,
+                "enlargement_card_left_neighbor_index": left_index,
+                "enlargement_card_right_neighbor_index": right_index,
+                "enlargement_card_top_neighbor_index": top_index,
+                "enlargement_card_bottom_neighbor_index": bottom_index,
+                "enlargement_card_left_boundary_source": "midpoint" if left_index is not None else "semantic_outer",
+                "enlargement_card_right_boundary_source": "midpoint" if right_index is not None else "semantic_outer",
+                "enlargement_card_top_boundary_source": "midpoint" if top_index is not None else "semantic_outer",
+                "enlargement_card_bottom_boundary_source": "midpoint" if bottom_index is not None else "semantic_outer",
+                "enlargement_card_observation_width": (observation[2] - observation[0]) if observation else 0.0,
+                "enlargement_card_observation_height": (observation[3] - observation[1]) if observation else 0.0,
+                "enlargement_card_observation_to_semantic_width_ratio": ((observation[2] - observation[0]) / max(width, 1e-6)) if observation else 0.0,
+                "enlargement_card_observation_to_semantic_height_ratio": ((observation[3] - observation[1]) / max(height, 1e-6)) if observation else 0.0,
+                "enlargement_card_cell_contains_semantic": contains_semantic,
+                "enlargement_card_observation_contains_semantic": contains_observation,
+                "enlargement_card_observation_contains_other_sibling_center": contains_other_center,
+                "enlargement_card_observation_valid": valid,
+                "enlargement_extent_observation_source": "pure_card_v5_3",
+            })
+            return observation, valid
+
+        for sibling_set in sibling_sets:
+            members = [by_index[index] for index in sibling_set if index in by_index]
+            for item in members:
+                card_observation, valid = build_enlargement_card_observation(item, members)
+                if valid and card_observation is not None:
+                    measure_direct_extent(item, card_observation)
+                else:
+                    item["extent_reliable"] = False
+                    item["enlargement_extent_reason"] = "invalid_geometry"
 
         for sibling_set in sibling_sets:
             members = [by_index[index] for index in sibling_set if index in by_index]
@@ -1271,7 +1408,7 @@ class FocusResolver:
             draw.text((8, 24), f"ROI: {roi_bbox}  INPUT: {raw.width}x{raw.height}", fill=(255, 255, 255))
         else:
             draw.text((8, 24), "FULL IMAGE", fill=(255, 255, 255))
-        draw.text((8, 42), "BOX=semantic  CELL=ownership  OBS=extent window  EXT=visual extent", fill=(255, 255, 255))
+        draw.text((8, 42), "BOX=semantic CELL=ownership CARD=card cell OBS=card window EXT=visual extent", fill=(255, 255, 255))
 
         montage_tile_bboxes = []
         if focus_image_mode == "group_montage" and isinstance(montage_tile_sizes, list):
@@ -1291,7 +1428,8 @@ class FocusResolver:
             sibling_id = sibling_by_index.get(int(index), -1)
             draw_box(bbox, (255, 255, 0), 2)
             draw_box(item.get("visual_cell_bbox"), (0, 180, 255), 2)
-            draw_box(item.get("enlargement_local_observation_bbox"), (255, 140, 0), 2)
+            draw_box(item.get("enlargement_card_cell_bbox"), (255, 0, 255), 2)
+            draw_box(item.get("enlargement_card_observation_bbox"), (255, 140, 0), 2)
             draw_box(item.get("visual_extent_bbox"), (80, 255, 100), 3)
             mirrored_extent = any(
                 str(item.get(field, "")).startswith("mirrored_")
@@ -1338,6 +1476,10 @@ class FocusResolver:
                 "prepared_bbox": bbox,
                 "visual_cell_bbox": item.get("visual_cell_bbox"),
                 "enlargement_local_observation_bbox": item.get("enlargement_local_observation_bbox"),
+                "enlargement_card_cell_bbox": item.get("enlargement_card_cell_bbox"),
+                "enlargement_card_observation_bbox": item.get("enlargement_card_observation_bbox"),
+                "enlargement_card_observation_valid": item.get("enlargement_card_observation_valid"),
+                "enlargement_extent_observation_source": item.get("enlargement_extent_observation_source"),
                 "visual_extent_bbox": item.get("visual_extent_bbox"),
                 "enlargement_extent_reason": item.get("enlargement_extent_reason"),
                 "extent_reliable": item.get("extent_reliable"),
