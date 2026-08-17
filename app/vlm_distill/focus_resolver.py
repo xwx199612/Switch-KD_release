@@ -707,8 +707,6 @@ class FocusResolver:
                 relative_visual_width = width / max(base_width, 1e-6)
                 relative_visual_height = height / max(base_height, 1e-6)
                 relative_visual_area = area / max(base_area, 1e-6)
-                relative_extent_expansion_width = expansion_width / max(median_expansion_width, 1e-6)
-                relative_extent_expansion_height = expansion_height / max(median_expansion_height, 1e-6)
                 relative_width = relative_visual_width
                 relative_height = relative_visual_height
                 relative_area = relative_visual_area
@@ -852,6 +850,12 @@ class FocusResolver:
             median_expansion_width = median(expansion_widths)
             median_expansion_height = median(expansion_heights)
             for item, width, height, area, expansion_width, expansion_height in zip(members, visual_widths, visual_heights, visual_areas, expansion_widths, expansion_heights):
+                relative_extent_expansion_width = (
+                    expansion_width / max(median_expansion_width, 1e-6)
+                )
+                relative_extent_expansion_height = (
+                    expansion_height / max(median_expansion_height, 1e-6)
+                )
                 relative_visual_width = width / max(base_width, 1e-6)
                 relative_visual_height = height / max(base_height, 1e-6)
                 relative_visual_area = area / max(base_area, 1e-6)
