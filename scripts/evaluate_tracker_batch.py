@@ -184,7 +184,7 @@ def _extract_v5_debug_fields(response: dict[str, Any], element_text_by_index: di
     focus_debug = tracker_debug.get("focus_resolver_debug") or {}
     v5_keys = {
         "focus_peer_groups", "focus_isolated_indices", "focus_peer_debug",
-        "focus_peer_debug_image_path", "focus_enlargement_sibling_groups", "focus_visual_v5_stage",
+        "focus_peer_debug_image_path", "focus_cv_prepared_image_path", "focus_cv_prepared_debug_image_path", "focus_cv_prepared_metadata_path", "focus_enlargement_sibling_groups", "focus_visual_v5_stage",
         "focus_visual_v5_matched", "focus_visual_v5_candidate_index",
         "focus_visual_v5_score", "focus_visual_v5_margin",
         "focus_visual_v5_peer_group_id", "outline_decision",
@@ -234,6 +234,9 @@ def _extract_v5_debug_fields(response: dict[str, Any], element_text_by_index: di
         "v5_isolated_indices": get("focus_isolated_indices"),
         "v5_peer_debug": get("focus_peer_debug"),
         "v5_peer_debug_image_path": response.get("_peer_debug_host_path") or get("focus_peer_debug_image_path"),
+        "cv_prepared_image_path": response.get("_focus_cv_prepared_image_path_host") or get("focus_cv_prepared_image_path"),
+        "cv_prepared_debug_image_path": response.get("_focus_cv_prepared_debug_image_path_host") or get("focus_cv_prepared_debug_image_path"),
+        "cv_prepared_metadata_path": response.get("_focus_cv_prepared_metadata_path_host") or get("focus_cv_prepared_metadata_path"),
         "v5_enlargement_sibling_groups": get("focus_enlargement_sibling_groups"),
         "v5_hierarchy": hierarchy,
         "v5_stages": stages,
@@ -333,6 +336,27 @@ def save_peer_debug_image(response: dict[str, Any], image_path: str, output_dir:
     else:
         shutil.copyfile(source, destination)
     response["_peer_debug_host_path"] = destination
+    debug_sources = (
+        ("focus_cv_prepared_image_path", "_cv_prepared.jpg"),
+        ("focus_cv_prepared_debug_image_path", "_cv_prepared_debug.jpg"),
+        ("focus_cv_prepared_metadata_path", "_cv_prepared.json"),
+    )
+    for field, suffix in debug_sources:
+        source = focus_debug.get(field)
+        if not source:
+            continue
+        artifact_destination = os.path.join(output_dir, f"{Path(image_path).stem}{suffix}")
+        if docker_container:
+            completed = subprocess.run(
+                ["docker", "exec", docker_container, "cat", source],
+                check=True,
+                stdout=subprocess.PIPE,
+            )
+            with open(artifact_destination, "wb") as handle:
+                handle.write(completed.stdout)
+        else:
+            shutil.copyfile(source, artifact_destination)
+        response[f"_{field}_host_path"] = artifact_destination
     return destination
 
 
@@ -431,6 +455,7 @@ def main() -> int:
     parser.add_argument("--start-from")
     parser.add_argument("--review-file", type=Path)
     parser.add_argument("--save-focus-images", type=Path)
+    parser.add_argument("--debug-dir", type=Path, help="Host directory for prepared CV debug artifacts")
     args = parser.parse_args()
 
     images = discover_images(args.image_dir)

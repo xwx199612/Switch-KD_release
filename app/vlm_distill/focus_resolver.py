@@ -86,6 +86,9 @@ class FocusResolver:
     DEBUG_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_input.png"
     DEBUG_UNANNOTATED_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_unannotated_input.png"
     DEBUG_PEER_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_peers.jpg"
+    DEBUG_CV_PREPARED_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_cv_prepared.jpg"
+    DEBUG_CV_PREPARED_DEBUG_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_cv_prepared_debug.jpg"
+    DEBUG_CV_PREPARED_METADATA_PATH = f"{tempfile.gettempdir()}/focus_resolver_cv_prepared.json"
     VISUAL_RING_CONTINUITY_WEIGHT = 0.55
     VISUAL_RING_CONTRAST_WEIGHT = 0.30
     VISUAL_BACKGROUND_WEIGHT = 0.15
@@ -173,6 +176,15 @@ class FocusResolver:
         peer_analysis = self._build_peer_analysis(
             candidate_groups, prepared_candidate_bboxes
         )
+        try:
+            unannotated_image.convert("RGB").save(
+                self.DEBUG_CV_PREPARED_IMAGE_PATH,
+                format="JPEG",
+                quality=95,
+            )
+        except (OSError, ValueError):
+            pass
+
         visual_evidence = self._visual_focus_evidence(
             unannotated_image,
             candidates,
@@ -186,6 +198,30 @@ class FocusResolver:
             peer_analysis["peer_sets"],
             unannotated_image,
         )
+        cv_debug_paths: dict[str, str | None] = {
+            "focus_cv_prepared_image_path": self.DEBUG_CV_PREPARED_IMAGE_PATH,
+            "focus_cv_prepared_debug_image_path": None,
+            "focus_cv_prepared_metadata_path": None,
+        }
+        try:
+            self._save_cv_prepared_debug_artifacts(
+                unannotated_image,
+                candidates,
+                prepared_candidate_bboxes,
+                candidate_groups,
+                peer_analysis,
+                enlargement_sibling_analysis,
+                visual_evidence,
+                focus_image_mode,
+                montage_grid,
+                montage_size,
+                montage_tile_sizes,
+                roi_bbox,
+            )
+            cv_debug_paths["focus_cv_prepared_debug_image_path"] = self.DEBUG_CV_PREPARED_DEBUG_IMAGE_PATH
+            cv_debug_paths["focus_cv_prepared_metadata_path"] = self.DEBUG_CV_PREPARED_METADATA_PATH
+        except (OSError, ValueError, TypeError):
+            pass
         v5_cascade = self._run_visual_focus_cascade(
             visual_evidence,
             peer_analysis["peer_sets"],
@@ -263,6 +299,7 @@ class FocusResolver:
             "focus_debug_unannotated_image_path": focus_debug_unannotated_image_path,
             "focus_visual_evidence_space": "prepared",
             "focus_peer_debug_image_path": focus_peer_debug_image_path,
+            **cv_debug_paths,
             "focus_peer_groups": peer_analysis["peer_sets"],
             "focus_isolated_indices": peer_analysis["isolated_indices"],
             "focus_peer_debug": peer_analysis["debug"],
@@ -993,6 +1030,108 @@ class FocusResolver:
             "focus_visual_v5_peer_group_id": final.get("peer_group_id"),
             "focus_visual_v5_reason": final.get("reason"),
         }
+
+    @classmethod
+    def _save_cv_prepared_debug_artifacts(
+        cls,
+        image: Image.Image,
+        candidates: list[dict[str, Any]],
+        prepared_candidate_bboxes: dict[int, list[int]],
+        candidate_groups: list[list[int]],
+        peer_analysis: dict[str, Any],
+        sibling_analysis: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        focus_image_mode: str,
+        montage_grid: Any,
+        montage_size: Any,
+        montage_tile_sizes: Any,
+        roi_bbox: Any,
+    ) -> None:
+        """Save a raw prepared CV image and a non-invasive geometry overlay."""
+        raw = image.convert("RGB").copy()
+        debug_image = raw.copy()
+        draw = ImageDraw.Draw(debug_image)
+        evidence_by_index = {int(item["index"]): item for item in evidence if isinstance(item, dict) and "index" in item}
+        peer_by_index = peer_analysis.get("peer_group_by_index", {})
+        sibling_by_index = sibling_analysis.get("sibling_group_by_index", {})
+
+        def draw_box(box: Any, color: tuple[int, int, int], width: int = 2) -> None:
+            if isinstance(box, (list, tuple)) and len(box) >= 4:
+                draw.rectangle(tuple(int(round(float(value))) for value in box[:4]), outline=color, width=width)
+
+        draw.rectangle((0, 0, min(raw.width, 620), 58), fill=(0, 0, 0))
+        mode_line = f"MODE: {focus_image_mode}  PREPARED: {raw.width}x{raw.height}"
+        draw.text((8, 6), mode_line, fill=(255, 255, 255))
+        if focus_image_mode == "group_montage":
+            draw.text((8, 24), f"GRID: {montage_grid}  TILE: group boundaries", fill=(255, 255, 255))
+        elif focus_image_mode == "roi":
+            draw.text((8, 24), f"ROI: {roi_bbox}  INPUT: {raw.width}x{raw.height}", fill=(255, 255, 255))
+        else:
+            draw.text((8, 24), "FULL IMAGE", fill=(255, 255, 255))
+        draw.text((8, 42), "BOX=semantic  CELL=ownership  OBS=extent window  EXT=visual extent", fill=(255, 255, 255))
+
+        montage_tile_bboxes = []
+        if focus_image_mode == "group_montage" and isinstance(montage_tile_sizes, list):
+            montage_tile_bboxes = [
+                tile for tile in montage_tile_sizes
+                if isinstance(tile, dict) and isinstance(tile.get("bbox"), (list, tuple))
+            ]
+            for tile in montage_tile_bboxes:
+                draw_box(tile.get("bbox"), (255, 0, 255), 3)
+                bbox = tile.get("bbox")
+                if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
+                    draw.text((int(bbox[0]) + 4, int(bbox[1]) + 4), f"TILE {tile.get('tile_index', '?')} / G{tile.get('group_id', '?')}", fill=(255, 0, 255))
+
+        for index, bbox in sorted(prepared_candidate_bboxes.items()):
+            item = evidence_by_index.get(int(index), {})
+            peer_id = peer_by_index.get(int(index), -1)
+            sibling_id = sibling_by_index.get(int(index), -1)
+            draw_box(bbox, (255, 255, 0), 2)
+            draw_box(item.get("visual_cell_bbox"), (0, 180, 255), 2)
+            draw_box(item.get("enlargement_local_observation_bbox"), (255, 140, 0), 2)
+            draw_box(item.get("visual_extent_bbox"), (80, 255, 100), 3)
+            label = f"#{index} P{peer_id}/S{sibling_id if sibling_id >= 0 else '-'}"
+            try:
+                left = int(round(float(bbox[0])))
+                top = max(62, int(round(float(bbox[1]))) - 16)
+                draw.rectangle((left, top, left + max(90, len(label) * 7), top + 15), fill=(0, 0, 0))
+                draw.text((left + 2, top + 1), label, fill=(255, 255, 255))
+            except (TypeError, ValueError):
+                pass
+
+        raw.save(cls.DEBUG_CV_PREPARED_IMAGE_PATH, format="JPEG", quality=95)
+        debug_image.save(cls.DEBUG_CV_PREPARED_DEBUG_IMAGE_PATH, format="JPEG", quality=95)
+
+        candidate_metadata = []
+        text_by_index = {index: str(candidate.get("text") or "") for index, candidate in enumerate(candidates) if isinstance(candidate, dict)}
+        for index, bbox in sorted(prepared_candidate_bboxes.items()):
+            item = evidence_by_index.get(int(index), {})
+            candidate_metadata.append({
+                "index": int(index),
+                "text": text_by_index.get(int(index), ""),
+                "prepared_bbox": bbox,
+                "visual_cell_bbox": item.get("visual_cell_bbox"),
+                "enlargement_local_observation_bbox": item.get("enlargement_local_observation_bbox"),
+                "visual_extent_bbox": item.get("visual_extent_bbox"),
+                "enlargement_extent_reason": item.get("enlargement_extent_reason"),
+            })
+        metadata = {
+            "image_name": None,
+            "focus_image_mode": focus_image_mode,
+            "prepared_size": [raw.width, raw.height],
+            "roi_bbox_pixels": roi_bbox,
+            "montage_grid": montage_grid,
+            "montage_size": montage_size,
+            "montage_tile_sizes": montage_tile_sizes,
+            "montage_tile_bboxes": montage_tile_bboxes,
+            "prepared_candidate_bboxes": {str(index): bbox for index, bbox in prepared_candidate_bboxes.items()},
+            "peer_groups": peer_analysis.get("peer_sets", []),
+            "isolated_indices": peer_analysis.get("isolated_indices", []),
+            "enlargement_sibling_groups": sibling_analysis.get("sibling_sets", []),
+            "candidates": candidate_metadata,
+        }
+        with open(cls.DEBUG_CV_PREPARED_METADATA_PATH, "w", encoding="utf-8") as handle:
+            json.dump(metadata, handle, ensure_ascii=False, indent=2, default=str)
 
     @classmethod
     def _save_peer_debug_image(
