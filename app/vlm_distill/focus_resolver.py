@@ -131,6 +131,8 @@ class FocusResolver:
     ENLARGEMENT_CARD_CELL_OUTER_Y = 0.30
     ENLARGEMENT_CARD_OBS_MARGIN_X = 0.20
     ENLARGEMENT_CARD_OBS_MARGIN_Y = 0.25
+    ENLARGEMENT_SIBLING_PROTECTED_CORE_X = 0.60
+    ENLARGEMENT_SIBLING_PROTECTED_CORE_Y = 0.60
     HIGHLIGHT_V5_MIN_SCORE = 0.60
     HIGHLIGHT_V5_MIN_MARGIN = 0.18
     CONTAINER_PROPOSAL_EXPANSIONS = (0.0, 0.05, 0.10, 0.20)
@@ -1099,7 +1101,7 @@ class FocusResolver:
             visual_cell = clipped_box(item.get("visual_cell_bbox"))
             if semantic is None or visual_cell is None:
                 item.update({
-                    "enlargement_card_layout": "sibling_edge_bounded_v5_3_1",
+                    "enlargement_card_layout": "sibling_protected_core_v5_3_2",
                     "enlargement_card_observation_valid": False,
                     "enlargement_extent_observation_source": "pure_card_v5_3",
                 })
@@ -1130,6 +1132,34 @@ class FocusResolver:
                         (sibling_box[1] + sibling_box[3]) / 2.0,
                     ))
 
+            def sibling_protected_core(
+                sibling_box: tuple[float, float, float, float],
+            ) -> tuple[float, float, float, float]:
+                sibling_left, sibling_top, sibling_right, sibling_bottom = sibling_box
+                sibling_width = sibling_right - sibling_left
+                sibling_height = sibling_bottom - sibling_top
+                horizontal_inset = (
+                    0.5
+                    * (1.0 - cls.ENLARGEMENT_SIBLING_PROTECTED_CORE_X)
+                    * sibling_width
+                )
+                vertical_inset = (
+                    0.5
+                    * (1.0 - cls.ENLARGEMENT_SIBLING_PROTECTED_CORE_Y)
+                    * sibling_height
+                )
+                return (
+                    sibling_left + horizontal_inset,
+                    sibling_top + vertical_inset,
+                    sibling_right - horizontal_inset,
+                    sibling_bottom - vertical_inset,
+                )
+
+            protected_cores = {
+                index: sibling_protected_core(sibling_box)
+                for index, sibling_box in sibling_boxes.items()
+            }
+
             def nearest(predicate: Any, distance: Any) -> tuple[int | None, float | None]:
                 values = [(index, distance(x, y)) for index, x, y in centers if predicate(x, y)]
                 return min(values, key=lambda value: value[1]) if values else (None, None)
@@ -1138,25 +1168,29 @@ class FocusResolver:
             right_index, right_distance = nearest(lambda x, y: x > center_x, lambda x, y: x - center_x)
             top_index, top_distance = nearest(lambda x, y: y < center_y, lambda x, y: center_y - y)
             bottom_index, bottom_distance = nearest(lambda x, y: y > center_y, lambda x, y: y - center_y)
+            left_core = protected_cores.get(left_index) if left_index is not None else None
+            right_core = protected_cores.get(right_index) if right_index is not None else None
+            top_core = protected_cores.get(top_index) if top_index is not None else None
+            bottom_core = protected_cores.get(bottom_index) if bottom_index is not None else None
             desired_cell_left = left - width * cls.ENLARGEMENT_CARD_CELL_OUTER_X
             desired_cell_right = right + width * cls.ENLARGEMENT_CARD_CELL_OUTER_X
             desired_cell_top = top - height * cls.ENLARGEMENT_CARD_CELL_OUTER_Y
             desired_cell_bottom = bottom + height * cls.ENLARGEMENT_CARD_CELL_OUTER_Y
             cell_left = (
-                min(left, max(desired_cell_left, sibling_boxes[left_index][2]))
-                if left_index is not None else desired_cell_left
+                min(left, max(desired_cell_left, left_core[2]))
+                if left_core is not None else desired_cell_left
             )
             cell_right = (
-                max(right, min(desired_cell_right, sibling_boxes[right_index][0]))
-                if right_index is not None else desired_cell_right
+                max(right, min(desired_cell_right, right_core[0]))
+                if right_core is not None else desired_cell_right
             )
             cell_top = (
-                min(top, max(desired_cell_top, sibling_boxes[top_index][3]))
-                if top_index is not None else desired_cell_top
+                min(top, max(desired_cell_top, top_core[3]))
+                if top_core is not None else desired_cell_top
             )
             cell_bottom = (
-                max(bottom, min(desired_cell_bottom, sibling_boxes[bottom_index][1]))
-                if bottom_index is not None else desired_cell_bottom
+                max(bottom, min(desired_cell_bottom, bottom_core[1]))
+                if bottom_core is not None else desired_cell_bottom
             )
             card_cell = clipped_box((
                 max(visual_cell[0], cell_left),
@@ -1194,23 +1228,64 @@ class FocusResolver:
                     for _, sibling_x, sibling_y in centers
                 )
             )
-            valid = contains_semantic and contains_observation and not contains_other_center
+            def positive_intersection(
+                first: tuple[float, float, float, float],
+                second: tuple[float, float, float, float],
+            ) -> bool:
+                return (
+                    min(first[2], second[2]) > max(first[0], second[0])
+                    and min(first[3], second[3]) > max(first[1], second[1])
+                )
+
+            intersects_other_sibling_core = bool(
+                observation is not None
+                and any(
+                    positive_intersection(observation, protected_core)
+                    for protected_core in protected_cores.values()
+                )
+            )
+            left_semantic_gap = max(0.0, left - sibling_boxes[left_index][2]) if left_index is not None else None
+            right_semantic_gap = max(0.0, sibling_boxes[right_index][0] - right) if right_index is not None else None
+            top_semantic_gap = max(0.0, top - sibling_boxes[top_index][3]) if top_index is not None else None
+            bottom_semantic_gap = max(0.0, sibling_boxes[bottom_index][1] - bottom) if bottom_index is not None else None
+            left_protected_gap = left - left_core[2] if left_core is not None else None
+            right_protected_gap = right_core[0] - right if right_core is not None else None
+            top_protected_gap = top - top_core[3] if top_core is not None else None
+            bottom_protected_gap = bottom_core[1] - bottom if bottom_core is not None else None
+            valid = (
+                contains_semantic
+                and contains_observation
+                and not contains_other_center
+                and not intersects_other_sibling_core
+            )
             item.update({
-                "enlargement_card_layout": "sibling_edge_bounded_v5_3_1",
+                "enlargement_card_layout": "sibling_protected_core_v5_3_2",
                 "enlargement_card_cell_bbox": [round(value, 2) for value in card_cell] if card_cell else None,
                 "enlargement_card_observation_bbox": [round(value, 2) for value in observation] if observation else None,
                 "enlargement_card_left_neighbor_index": left_index,
                 "enlargement_card_right_neighbor_index": right_index,
                 "enlargement_card_top_neighbor_index": top_index,
                 "enlargement_card_bottom_neighbor_index": bottom_index,
-                "enlargement_card_left_boundary_source": "sibling_semantic_edge" if left_index is not None else "semantic_outer",
-                "enlargement_card_right_boundary_source": "sibling_semantic_edge" if right_index is not None else "semantic_outer",
-                "enlargement_card_top_boundary_source": "sibling_semantic_edge" if top_index is not None else "semantic_outer",
-                "enlargement_card_bottom_boundary_source": "sibling_semantic_edge" if bottom_index is not None else "semantic_outer",
-                "enlargement_card_left_sibling_gap": max(0.0, left - sibling_boxes[left_index][2]) if left_index is not None else None,
-                "enlargement_card_right_sibling_gap": max(0.0, sibling_boxes[right_index][0] - right) if right_index is not None else None,
-                "enlargement_card_top_sibling_gap": max(0.0, top - sibling_boxes[top_index][3]) if top_index is not None else None,
-                "enlargement_card_bottom_sibling_gap": max(0.0, sibling_boxes[bottom_index][1] - bottom) if bottom_index is not None else None,
+                "enlargement_card_left_neighbor_protected_core_bbox": [round(value, 2) for value in left_core] if left_core else None,
+                "enlargement_card_right_neighbor_protected_core_bbox": [round(value, 2) for value in right_core] if right_core else None,
+                "enlargement_card_top_neighbor_protected_core_bbox": [round(value, 2) for value in top_core] if top_core else None,
+                "enlargement_card_bottom_neighbor_protected_core_bbox": [round(value, 2) for value in bottom_core] if bottom_core else None,
+                "enlargement_card_left_boundary_source": "sibling_protected_core" if left_core is not None else "semantic_outer",
+                "enlargement_card_right_boundary_source": "sibling_protected_core" if right_core is not None else "semantic_outer",
+                "enlargement_card_top_boundary_source": "sibling_protected_core" if top_core is not None else "semantic_outer",
+                "enlargement_card_bottom_boundary_source": "sibling_protected_core" if bottom_core is not None else "semantic_outer",
+                "enlargement_card_left_sibling_gap": left_semantic_gap,
+                "enlargement_card_right_sibling_gap": right_semantic_gap,
+                "enlargement_card_top_sibling_gap": top_semantic_gap,
+                "enlargement_card_bottom_sibling_gap": bottom_semantic_gap,
+                "enlargement_card_left_protected_gap": left_protected_gap,
+                "enlargement_card_right_protected_gap": right_protected_gap,
+                "enlargement_card_top_protected_gap": top_protected_gap,
+                "enlargement_card_bottom_protected_gap": bottom_protected_gap,
+                "enlargement_card_left_peripheral_allowance": (left_protected_gap - left_semantic_gap) if left_protected_gap is not None and left_semantic_gap is not None else None,
+                "enlargement_card_right_peripheral_allowance": (right_protected_gap - right_semantic_gap) if right_protected_gap is not None and right_semantic_gap is not None else None,
+                "enlargement_card_top_peripheral_allowance": (top_protected_gap - top_semantic_gap) if top_protected_gap is not None and top_semantic_gap is not None else None,
+                "enlargement_card_bottom_peripheral_allowance": (bottom_protected_gap - bottom_semantic_gap) if bottom_protected_gap is not None and bottom_semantic_gap is not None else None,
                 "enlargement_card_left_margin": (left - card_cell[0]) if card_cell else 0.0,
                 "enlargement_card_right_margin": (card_cell[2] - right) if card_cell else 0.0,
                 "enlargement_card_top_margin": (top - card_cell[1]) if card_cell else 0.0,
@@ -1226,6 +1301,7 @@ class FocusResolver:
                 "enlargement_card_cell_contains_semantic": contains_semantic,
                 "enlargement_card_observation_contains_semantic": contains_observation,
                 "enlargement_card_observation_contains_other_sibling_center": contains_other_center,
+                "enlargement_card_observation_intersects_other_sibling_core": intersects_other_sibling_core,
                 "enlargement_card_observation_valid": valid,
                 "enlargement_extent_observation_source": "pure_card_v5_3",
             })
