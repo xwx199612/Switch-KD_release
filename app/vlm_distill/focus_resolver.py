@@ -707,6 +707,8 @@ class FocusResolver:
                 relative_visual_width = width / max(base_width, 1e-6)
                 relative_visual_height = height / max(base_height, 1e-6)
                 relative_visual_area = area / max(base_area, 1e-6)
+                relative_extent_expansion_width = expansion_width / max(median_expansion_width, 1e-6)
+                relative_extent_expansion_height = expansion_height / max(median_expansion_height, 1e-6)
                 relative_width = relative_visual_width
                 relative_height = relative_visual_height
                 relative_area = relative_visual_area
@@ -858,18 +860,23 @@ class FocusResolver:
                 aspect_consistency = math.exp(-abs(math.log(max(relative_visual_width / max(relative_visual_height, 1e-6), 1e-6))) / cls.SCALE_BALANCE_SIGMA)
                 footprint_consistency = cls._clamp01((width_consistency * height_consistency * aspect_consistency) ** (1.0 / 3.0))
                 footprint_valid = footprint_consistency >= 0.20
-                uniform_scale = math.sqrt(max(relative_visual_width * relative_visual_height, 0.0))
+                uniform_scale = math.sqrt(max(relative_extent_expansion_width * relative_extent_expansion_height, 0.0))
                 scale_growth = max(0.0, uniform_scale - 1.0)
-                width_growth = max(0.0, relative_visual_width - 1.0)
-                height_growth = max(0.0, relative_visual_height - 1.0)
+                width_growth = max(0.0, relative_extent_expansion_width - 1.0)
+                height_growth = max(0.0, relative_extent_expansion_height - 1.0)
                 uniform_growth = min(width_growth, height_growth)
-                scale_balance = math.exp(-abs(math.log(max(relative_visual_width / max(relative_visual_height, 1e-6), 1e-6))) / cls.SCALE_BALANCE_SIGMA)
+                scale_balance = math.exp(-abs(math.log(max(relative_extent_expansion_width / max(relative_extent_expansion_height, 1e-6), 1e-6))) / cls.SCALE_BALANCE_SIGMA)
                 base_score = cls._clamp01(scale_growth / max(cls.ENLARGEMENT_FULL_SCALE_GROWTH, 1e-6))
                 balance_gate = cls.ENLARGEMENT_BALANCE_FLOOR + (1.0 - cls.ENLARGEMENT_BALANCE_FLOOR) * scale_balance
                 two_axis_support = cls._clamp01(uniform_growth / max(cls.ENLARGEMENT_MIN_MEANINGFUL_GROWTH, 1e-6))
                 footprint_gate = 0.5 + 0.5 * footprint_consistency
                 extent_symmetry = float(item.get("extent_symmetry", 0.0))
                 extent_symmetry_gate = cls.ENLARGEMENT_SYMMETRY_FLOOR + (1.0 - cls.ENLARGEMENT_SYMMETRY_FLOOR) * extent_symmetry
+                extent_valid = (
+                    item.get("enlargement_extent_reason") == "direct_visual_extent"
+                    and float(item.get("visual_extent_width", 0.0)) > 0.0
+                    and float(item.get("visual_extent_height", 0.0)) > 0.0
+                )
                 item.update({
                     "relative_visual_width": relative_visual_width,
                     "relative_visual_height": relative_visual_height,
@@ -885,8 +892,8 @@ class FocusResolver:
                     "extent_to_semantic_width_ratio": expansion_width,
                     "extent_to_semantic_height_ratio": expansion_height,
                     "extent_to_semantic_area_ratio": float(item.get("visual_extent_area", 0.0)) / max(metrics[0] * metrics[1], 1e-6) if metrics else 1.0,
-                    "relative_extent_expansion_width": relative_visual_width,
-                    "relative_extent_expansion_height": relative_visual_height,
+                    "relative_extent_expansion_width": relative_extent_expansion_width,
+                    "relative_extent_expansion_height": relative_extent_expansion_height,
                     "extent_uniform_scale": uniform_scale,
                     "extent_scale_growth": scale_growth,
                     "extent_scale_balance": scale_balance,
@@ -901,7 +908,7 @@ class FocusResolver:
                     "footprint_to_semantic_height_ratio": expansion_height,
                     "footprint_consistency_score": footprint_consistency,
                     "footprint_valid": footprint_valid,
-                    "enlargement_score": 0.0 if not footprint_valid else cls._clamp01(base_score * balance_gate * two_axis_support * extent_symmetry_gate),
+                    "enlargement_score": 0.0 if not extent_valid else cls._clamp01(base_score * balance_gate * two_axis_support * extent_symmetry_gate),
                     "base_enlargement_score": base_score,
                     "scale_evidence": cls._clamp01(base_score * balance_gate * two_axis_support),
                 })
