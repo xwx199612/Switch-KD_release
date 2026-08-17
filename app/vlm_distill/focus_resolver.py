@@ -1099,7 +1099,7 @@ class FocusResolver:
             visual_cell = clipped_box(item.get("visual_cell_bbox"))
             if semantic is None or visual_cell is None:
                 item.update({
-                    "enlargement_card_layout": "sibling_midpoint_v5_3",
+                    "enlargement_card_layout": "sibling_edge_bounded_v5_3_1",
                     "enlargement_card_observation_valid": False,
                     "enlargement_extent_observation_source": "pure_card_v5_3",
                 })
@@ -1117,11 +1117,13 @@ class FocusResolver:
             ] if legacy_observation else None
             center_x, center_y = (left + right) / 2.0, (top + bottom) / 2.0
             centers: list[tuple[int, float, float]] = []
+            sibling_boxes: dict[int, tuple[float, float, float, float]] = {}
             for sibling in siblings:
                 if sibling is item:
                     continue
                 sibling_box = clipped_box(sibling.get("prepared_bbox"))
                 if sibling_box is not None:
+                    sibling_boxes[int(sibling["index"])] = sibling_box
                     centers.append((
                         int(sibling["index"]),
                         (sibling_box[0] + sibling_box[2]) / 2.0,
@@ -1136,11 +1138,26 @@ class FocusResolver:
             right_index, right_distance = nearest(lambda x, y: x > center_x, lambda x, y: x - center_x)
             top_index, top_distance = nearest(lambda x, y: y < center_y, lambda x, y: center_y - y)
             bottom_index, bottom_distance = nearest(lambda x, y: y > center_y, lambda x, y: y - center_y)
-            center_lookup = {index: (x, y) for index, x, y in centers}
-            cell_left = (center_x + center_lookup[left_index][0]) / 2.0 if left_index is not None else left - width * cls.ENLARGEMENT_CARD_CELL_OUTER_X
-            cell_right = (center_x + center_lookup[right_index][0]) / 2.0 if right_index is not None else right + width * cls.ENLARGEMENT_CARD_CELL_OUTER_X
-            cell_top = (center_y + center_lookup[top_index][1]) / 2.0 if top_index is not None else top - height * cls.ENLARGEMENT_CARD_CELL_OUTER_Y
-            cell_bottom = (center_y + center_lookup[bottom_index][1]) / 2.0 if bottom_index is not None else bottom + height * cls.ENLARGEMENT_CARD_CELL_OUTER_Y
+            desired_cell_left = left - width * cls.ENLARGEMENT_CARD_CELL_OUTER_X
+            desired_cell_right = right + width * cls.ENLARGEMENT_CARD_CELL_OUTER_X
+            desired_cell_top = top - height * cls.ENLARGEMENT_CARD_CELL_OUTER_Y
+            desired_cell_bottom = bottom + height * cls.ENLARGEMENT_CARD_CELL_OUTER_Y
+            cell_left = (
+                min(left, max(desired_cell_left, sibling_boxes[left_index][2]))
+                if left_index is not None else desired_cell_left
+            )
+            cell_right = (
+                max(right, min(desired_cell_right, sibling_boxes[right_index][0]))
+                if right_index is not None else desired_cell_right
+            )
+            cell_top = (
+                min(top, max(desired_cell_top, sibling_boxes[top_index][3]))
+                if top_index is not None else desired_cell_top
+            )
+            cell_bottom = (
+                max(bottom, min(desired_cell_bottom, sibling_boxes[bottom_index][1]))
+                if bottom_index is not None else desired_cell_bottom
+            )
             card_cell = clipped_box((
                 max(visual_cell[0], cell_left),
                 max(visual_cell[1], cell_top),
@@ -1179,17 +1196,29 @@ class FocusResolver:
             )
             valid = contains_semantic and contains_observation and not contains_other_center
             item.update({
-                "enlargement_card_layout": "sibling_midpoint_v5_3",
+                "enlargement_card_layout": "sibling_edge_bounded_v5_3_1",
                 "enlargement_card_cell_bbox": [round(value, 2) for value in card_cell] if card_cell else None,
                 "enlargement_card_observation_bbox": [round(value, 2) for value in observation] if observation else None,
                 "enlargement_card_left_neighbor_index": left_index,
                 "enlargement_card_right_neighbor_index": right_index,
                 "enlargement_card_top_neighbor_index": top_index,
                 "enlargement_card_bottom_neighbor_index": bottom_index,
-                "enlargement_card_left_boundary_source": "midpoint" if left_index is not None else "semantic_outer",
-                "enlargement_card_right_boundary_source": "midpoint" if right_index is not None else "semantic_outer",
-                "enlargement_card_top_boundary_source": "midpoint" if top_index is not None else "semantic_outer",
-                "enlargement_card_bottom_boundary_source": "midpoint" if bottom_index is not None else "semantic_outer",
+                "enlargement_card_left_boundary_source": "sibling_semantic_edge" if left_index is not None else "semantic_outer",
+                "enlargement_card_right_boundary_source": "sibling_semantic_edge" if right_index is not None else "semantic_outer",
+                "enlargement_card_top_boundary_source": "sibling_semantic_edge" if top_index is not None else "semantic_outer",
+                "enlargement_card_bottom_boundary_source": "sibling_semantic_edge" if bottom_index is not None else "semantic_outer",
+                "enlargement_card_left_sibling_gap": max(0.0, left - sibling_boxes[left_index][2]) if left_index is not None else None,
+                "enlargement_card_right_sibling_gap": max(0.0, sibling_boxes[right_index][0] - right) if right_index is not None else None,
+                "enlargement_card_top_sibling_gap": max(0.0, top - sibling_boxes[top_index][3]) if top_index is not None else None,
+                "enlargement_card_bottom_sibling_gap": max(0.0, sibling_boxes[bottom_index][1] - bottom) if bottom_index is not None else None,
+                "enlargement_card_left_margin": (left - card_cell[0]) if card_cell else 0.0,
+                "enlargement_card_right_margin": (card_cell[2] - right) if card_cell else 0.0,
+                "enlargement_card_top_margin": (top - card_cell[1]) if card_cell else 0.0,
+                "enlargement_card_bottom_margin": (card_cell[3] - bottom) if card_cell else 0.0,
+                "enlargement_card_obs_left_margin": (left - observation[0]) if observation else 0.0,
+                "enlargement_card_obs_right_margin": (observation[2] - right) if observation else 0.0,
+                "enlargement_card_obs_top_margin": (top - observation[1]) if observation else 0.0,
+                "enlargement_card_obs_bottom_margin": (observation[3] - bottom) if observation else 0.0,
                 "enlargement_card_observation_width": (observation[2] - observation[0]) if observation else 0.0,
                 "enlargement_card_observation_height": (observation[3] - observation[1]) if observation else 0.0,
                 "enlargement_card_observation_to_semantic_width_ratio": ((observation[2] - observation[0]) / max(width, 1e-6)) if observation else 0.0,
