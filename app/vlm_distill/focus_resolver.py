@@ -155,6 +155,12 @@ class FocusResolver:
     NATURAL_CONTAINER_LOCAL_RIDGE_RADIUS_STEPS = 1
     NATURAL_CONTAINER_DENSE_SCAN_RADIUS_PX = 8
     NATURAL_CONTAINER_LOCAL_RIDGE_TOLERANCE = 0.03
+    NATURAL_CONTAINER_ENCLOSING_NEAR_DEPTH_PX = 3
+    NATURAL_CONTAINER_ENCLOSING_FAR_DEPTH_PX = 8
+    NATURAL_CONTAINER_ENCLOSING_SAMPLE_COUNT = 5
+    NATURAL_CONTAINER_MIN_INTERIOR_PERSISTENCE = 0.55
+    NATURAL_CONTAINER_MIN_EXTERIOR_SEPARATION = 0.20
+    NATURAL_CONTAINER_MIN_ENCLOSING_SCORE = 0.55
     ENLARGEMENT_COMPLETION_MIN_RETAINED_RATIO = 0.70
     ENLARGEMENT_MIRRORED_CONFIDENCE_FACTOR = 0.75
     ENLARGEMENT_CARD_CELL_OUTER_X = 0.30
@@ -2038,6 +2044,27 @@ class FocusResolver:
                             "span_support",
                             "mean_oriented_strength",
                             "inside_outside_contrast",
+                            "interior_persistence",
+                            "exterior_separation",
+                            "enclosing_score",
+                        )
+                    },
+                    **{
+                        f"natural_container_{side}_{metric}": 0
+                        for side in ("left", "right", "top", "bottom")
+                        for metric in (
+                            "edge_candidate_count",
+                            "enclosing_rejection_count",
+                        )
+                    },
+                    **{
+                        f"natural_container_{side}_last_rejected_{metric}": None
+                        for side in ("left", "right", "top", "bottom")
+                        for metric in (
+                            "distance",
+                            "edge_score",
+                            "enclosing_score",
+                            "reason",
                         )
                     },
                     "natural_container_dense_boundary_side_count": 0,
@@ -2169,6 +2196,136 @@ class FocusResolver:
                     "orientation": sum(orientations) / max(len(orientations), 1),
                 }
 
+            def validate_enclosing_container_boundary(
+                side: str,
+                distance: int,
+            ) -> dict[str, Any]:
+                interior_similarities: list[float] = []
+                exterior_separations: list[float] = []
+                inset = cls.ENLARGEMENT_EDGE_SAMPLE_INSET
+                near_depth = cls.NATURAL_CONTAINER_ENCLOSING_NEAR_DEPTH_PX
+                far_depth = cls.NATURAL_CONTAINER_ENCLOSING_FAR_DEPTH_PX
+
+                def offset(
+                    x: int,
+                    y: int,
+                    depth: int,
+                    inward: bool,
+                ) -> tuple[int, int]:
+                    direction = 1 if inward else -1
+                    if side == "left":
+                        return x + direction * depth, y
+                    if side == "right":
+                        return x - direction * depth, y
+                    if side == "top":
+                        return x, y + direction * depth
+                    return x, y - direction * depth
+
+                def within_search(x: int, y: int) -> bool:
+                    return (
+                        int(search[0]) <= x < int(search[2])
+                        and int(search[1]) <= y < int(search[3])
+                    )
+
+                def color_distance(
+                    first: tuple[int, int, int],
+                    second: tuple[int, int, int],
+                ) -> float:
+                    return math.sqrt(sum(
+                        ((first[channel] - second[channel]) / 255.0) ** 2
+                        for channel in range(3)
+                    ) / 3.0)
+
+                for sample_index in range(
+                    cls.NATURAL_CONTAINER_ENCLOSING_SAMPLE_COUNT
+                ):
+                    fraction = inset + (1.0 - 2.0 * inset) * (
+                        (sample_index + 0.5)
+                        / cls.NATURAL_CONTAINER_ENCLOSING_SAMPLE_COUNT
+                    )
+                    x, y = point(side, distance, fraction)
+                    interior_near = offset(x, y, near_depth, inward=True)
+                    interior_far = offset(x, y, far_depth, inward=True)
+                    exterior_near = offset(x, y, near_depth, inward=False)
+                    exterior_far = offset(x, y, far_depth, inward=False)
+                    if not all(
+                        within_search(sample_x, sample_y)
+                        for sample_x, sample_y in (
+                            interior_near,
+                            interior_far,
+                            exterior_near,
+                            exterior_far,
+                        )
+                    ):
+                        continue
+                    interior_near_color = pixel_at(*interior_near)
+                    interior_far_color = pixel_at(*interior_far)
+                    exterior_near_color = pixel_at(*exterior_near)
+                    exterior_far_color = pixel_at(*exterior_far)
+                    luma_distance = abs(
+                        luminance(interior_near_color)
+                        - luminance(interior_far_color)
+                    )
+                    rgb_distance = color_distance(
+                        interior_near_color,
+                        interior_far_color,
+                    )
+                    interior_similarities.append(cls._clamp01(
+                        1.0 - 0.5 * cls._clamp01(
+                            luma_distance
+                            / cls.ENLARGEMENT_EDGE_COHERENCE_LUMINANCE_NORMALIZER
+                        ) - 0.5 * cls._clamp01(
+                            rgb_distance
+                            / cls.ENLARGEMENT_EDGE_COHERENCE_COLOR_NORMALIZER
+                        )
+                    ))
+                    exterior_separations.append((
+                        oriented_strength(
+                            interior_near_color,
+                            exterior_near_color,
+                        )
+                        + oriented_strength(
+                            interior_far_color,
+                            exterior_far_color,
+                        )
+                    ) / 2.0)
+
+                interior_persistence = sum(interior_similarities) / max(
+                    len(interior_similarities),
+                    1,
+                )
+                exterior_separation = sum(exterior_separations) / max(
+                    len(exterior_separations),
+                    1,
+                )
+                enclosing_score = cls._clamp01(
+                    0.45 * interior_persistence
+                    + 0.55 * exterior_separation
+                )
+                if not interior_similarities:
+                    reason = "insufficient_enclosing_samples"
+                elif (
+                    interior_persistence
+                    < cls.NATURAL_CONTAINER_MIN_INTERIOR_PERSISTENCE
+                ):
+                    reason = "insufficient_interior_persistence"
+                elif (
+                    exterior_separation
+                    < cls.NATURAL_CONTAINER_MIN_EXTERIOR_SEPARATION
+                ):
+                    reason = "insufficient_exterior_separation"
+                elif enclosing_score < cls.NATURAL_CONTAINER_MIN_ENCLOSING_SCORE:
+                    reason = "insufficient_enclosing_score"
+                else:
+                    reason = "enclosing_container_boundary"
+                return {
+                    "valid": reason == "enclosing_container_boundary",
+                    "reason": reason,
+                    "interior_persistence": interior_persistence,
+                    "exterior_separation": exterior_separation,
+                    "enclosing_score": enclosing_score,
+                }
+
             sibling_centers = [
                 (
                     (box[0] + box[2]) / 2.0,
@@ -2231,6 +2388,15 @@ class FocusResolver:
                         "scan_mode": "unresolved", "selected_scan_step": None,
                         "span_support": 0.0, "mean_strength": 0.0,
                         "inside_outside_contrast": 0.0,
+                        "interior_persistence": 0.0,
+                        "exterior_separation": 0.0,
+                        "enclosing_score": 0.0,
+                        "edge_candidate_count": 0,
+                        "enclosing_rejection_count": 0,
+                        "last_rejected_distance": None,
+                        "last_rejected_edge_score": None,
+                        "last_rejected_enclosing_score": None,
+                        "last_rejected_reason": None,
                     }
                     continue
                 dense_limit = min(
@@ -2256,7 +2422,16 @@ class FocusResolver:
                         profiles[distance] = profile(side, distance)
                     return profiles[distance]
 
-                selected: tuple[int, dict[str, float]] | None = None
+                selected: tuple[int, dict[str, float], dict[str, Any]] | None = None
+                edge_candidate_count = 0
+                enclosing_rejection_count = 0
+                last_rejected: dict[str, Any] = {
+                    "distance": None,
+                    "edge_score": None,
+                    "enclosing_score": None,
+                    "reason": None,
+                }
+                last_geometry_rejection: str | None = None
                 for position, distance in enumerate(distances):
                     current = at(distance)
                     adjacent = [
@@ -2273,80 +2448,118 @@ class FocusResolver:
                         and current["score"] + cls.NATURAL_CONTAINER_LOCAL_RIDGE_TOLERANCE
                         >= max(adjacent)
                     ):
-                        selected = (distance, current)
+                        edge_candidate_count += 1
+                        enclosing = validate_enclosing_container_boundary(
+                            side,
+                            distance,
+                        )
+                        if not enclosing["valid"]:
+                            enclosing_rejection_count += 1
+                            last_rejected = {
+                                "distance": float(distance),
+                                "edge_score": current["score"],
+                                "enclosing_score": enclosing["enclosing_score"],
+                                "reason": enclosing["reason"],
+                            }
+                            continue
+                        coordinate = (
+                            semantic_edge - distance
+                            if side in ("left", "top")
+                            else semantic_edge + distance
+                        )
+                        core_overlap = any(
+                            core[0] < coordinate < core[2]
+                            if side in ("left", "right") else core[1] < coordinate < core[3]
+                            for core in protected_cores
+                        )
+                        beyond_sibling_center = any(
+                            center[0] < center_x and coordinate <= center[0]
+                            if side == "left"
+                            else center[0] > center_x and coordinate >= center[0]
+                            if side == "right"
+                            else center[1] < center_y and coordinate <= center[1]
+                            if side == "top"
+                            else center[1] > center_y and coordinate >= center[1]
+                            for center in sibling_centers
+                        )
+                        candidate_dimension = (
+                            width if side in ("left", "right") else height
+                        )
+                        tolerance = max(
+                            cls.ENLARGEMENT_DEVICE_BOUNDARY_TOLERANCE_PX,
+                            cls.ENLARGEMENT_DEVICE_BOUNDARY_TOLERANCE_RATIO
+                            * candidate_dimension,
+                        )
+                        device_contaminated = bool(
+                            device_valid[side]
+                            and isinstance(device_edge, (int, float))
+                            and isinstance(device_confidence[side], (int, float))
+                            and float(device_confidence[side])
+                            >= cls.DEVICE_BOUNDARY_MIN_SCORE
+                            and abs(coordinate - float(device_edge)) <= tolerance
+                        )
+                        if device_contaminated:
+                            last_geometry_rejection = "device_boundary_contamination"
+                            continue
+                        if core_overlap or beyond_sibling_center:
+                            last_geometry_rejection = "sibling_ownership_rejected"
+                            continue
+                        selected = (distance, current, enclosing)
                         break
                 if selected is None:
+                    if last_geometry_rejection is not None:
+                        reason = last_geometry_rejection
+                    elif edge_candidate_count:
+                        reason = "no_enclosing_container_boundary"
+                    else:
+                        reason = "no_qualifying_container_boundary"
                     side_results[side] = {
-                        "state": "unresolved", "reason": "no_qualifying_container_boundary",
+                        "state": "unresolved", "reason": reason,
                         "score": 0.0, "distance": None, "coordinate": None,
                         "scan_mode": "unresolved", "selected_scan_step": None,
                         "span_support": 0.0, "mean_strength": 0.0,
                         "inside_outside_contrast": 0.0,
+                        "interior_persistence": 0.0,
+                        "exterior_separation": 0.0,
+                        "enclosing_score": 0.0,
+                        "edge_candidate_count": edge_candidate_count,
+                        "enclosing_rejection_count": enclosing_rejection_count,
+                        "last_rejected_distance": last_rejected["distance"],
+                        "last_rejected_edge_score": last_rejected["edge_score"],
+                        "last_rejected_enclosing_score": last_rejected["enclosing_score"],
+                        "last_rejected_reason": last_rejected["reason"],
                     }
                     continue
-                distance, selected_profile = selected
+                distance, selected_profile, enclosing = selected
                 coordinate = semantic_edge - distance if side in ("left", "top") else semantic_edge + distance
-                core_overlap = any(
-                    core[0] < coordinate < core[2]
-                    if side in ("left", "right") else core[1] < coordinate < core[3]
-                    for core in protected_cores
-                )
-                beyond_sibling_center = any(
-                    center[0] < center_x and coordinate <= center[0]
-                    if side == "left"
-                    else center[0] > center_x and coordinate >= center[0]
-                    if side == "right"
-                    else center[1] < center_y and coordinate <= center[1]
-                    if side == "top"
-                    else center[1] > center_y and coordinate >= center[1]
-                    for center in sibling_centers
-                )
-                candidate_dimension = width if side in ("left", "right") else height
-                tolerance = max(
-                    cls.ENLARGEMENT_DEVICE_BOUNDARY_TOLERANCE_PX,
-                    cls.ENLARGEMENT_DEVICE_BOUNDARY_TOLERANCE_RATIO * candidate_dimension,
-                )
-                device_contaminated = bool(
-                    device_valid[side]
-                    and isinstance(device_edge, (int, float))
-                    and isinstance(device_confidence[side], (int, float))
-                    and float(device_confidence[side]) >= cls.DEVICE_BOUNDARY_MIN_SCORE
-                    and abs(coordinate - float(device_edge)) <= tolerance
-                )
-                if device_contaminated:
-                    reason = "device_boundary_contamination"
-                elif core_overlap or beyond_sibling_center:
-                    reason = "sibling_ownership_rejected"
-                else:
-                    side_results[side] = {
-                        "state": "container_boundary",
-                        "reason": "nearest_qualifying_container_boundary",
-                        "score": selected_profile["score"],
-                        "distance": float(distance),
-                        "coordinate": float(coordinate),
-                        "scan_mode": (
-                            "dense"
-                            if distance <= cls.NATURAL_CONTAINER_DENSE_SCAN_RADIUS_PX
-                            else "coarse"
-                        ),
-                        "selected_scan_step": (
-                            1
-                            if distance <= cls.NATURAL_CONTAINER_DENSE_SCAN_RADIUS_PX
-                            else coarse_step
-                        ),
-                        "span_support": selected_profile["span_support"],
-                        "mean_strength": selected_profile["mean_strength"],
-                        "inside_outside_contrast": selected_profile["inside_outside_contrast"],
-                    }
-                    continue
                 side_results[side] = {
-                    "state": "unresolved", "reason": reason,
-                    "score": selected_profile["score"], "distance": None,
+                    "state": "container_boundary",
+                    "reason": "first_enclosing_container_boundary",
+                    "score": selected_profile["score"],
+                    "distance": float(distance),
                     "coordinate": float(coordinate),
-                    "scan_mode": "unresolved", "selected_scan_step": None,
+                    "scan_mode": (
+                        "dense"
+                        if distance <= cls.NATURAL_CONTAINER_DENSE_SCAN_RADIUS_PX
+                        else "coarse"
+                    ),
+                    "selected_scan_step": (
+                        1
+                        if distance <= cls.NATURAL_CONTAINER_DENSE_SCAN_RADIUS_PX
+                        else coarse_step
+                    ),
                     "span_support": selected_profile["span_support"],
                     "mean_strength": selected_profile["mean_strength"],
                     "inside_outside_contrast": selected_profile["inside_outside_contrast"],
+                    "interior_persistence": enclosing["interior_persistence"],
+                    "exterior_separation": enclosing["exterior_separation"],
+                    "enclosing_score": enclosing["enclosing_score"],
+                    "edge_candidate_count": edge_candidate_count,
+                    "enclosing_rejection_count": enclosing_rejection_count,
+                    "last_rejected_distance": last_rejected["distance"],
+                    "last_rejected_edge_score": last_rejected["edge_score"],
+                    "last_rejected_enclosing_score": last_rejected["enclosing_score"],
+                    "last_rejected_reason": last_rejected["reason"],
                 }
 
             valid = all(
@@ -2371,7 +2584,7 @@ class FocusResolver:
                 "recovered_current_container_area": recovered_width * recovered_height if recovered_width is not None and recovered_height is not None else None,
                 "recovered_current_container_valid": valid,
                 "recovered_current_container_confidence": confidence,
-                "recovered_current_container_source": "independent_pixel_boundary_v5_5_1" if valid else "unavailable",
+                "recovered_current_container_source": "independent_enclosing_pixel_boundary_v5_5_3" if valid else "unavailable",
                 "recovered_container_left": recovered[0] if recovered else None,
                 "recovered_container_right": recovered[2] if recovered else None,
                 "recovered_container_top": recovered[1] if recovered else None,
@@ -2417,6 +2630,36 @@ class FocusResolver:
                 **{
                     f"natural_container_{side}_inside_outside_contrast": side_results[side]["inside_outside_contrast"]
                     for side in side_results
+                },
+                **{
+                    f"natural_container_{side}_interior_persistence": side_results[side]["interior_persistence"]
+                    for side in side_results
+                },
+                **{
+                    f"natural_container_{side}_exterior_separation": side_results[side]["exterior_separation"]
+                    for side in side_results
+                },
+                **{
+                    f"natural_container_{side}_enclosing_score": side_results[side]["enclosing_score"]
+                    for side in side_results
+                },
+                **{
+                    f"natural_container_{side}_edge_candidate_count": side_results[side]["edge_candidate_count"]
+                    for side in side_results
+                },
+                **{
+                    f"natural_container_{side}_enclosing_rejection_count": side_results[side]["enclosing_rejection_count"]
+                    for side in side_results
+                },
+                **{
+                    f"natural_container_{side}_last_rejected_{metric}": side_results[side][f"last_rejected_{metric}"]
+                    for side in side_results
+                    for metric in (
+                        "distance",
+                        "edge_score",
+                        "enclosing_score",
+                        "reason",
+                    )
                 },
                 "natural_container_dense_boundary_side_count": sum(
                     side_results[side]["state"] == "container_boundary"
@@ -3125,6 +3368,42 @@ class FocusResolver:
                 "natural_container_right_inside_outside_contrast": item.get("natural_container_right_inside_outside_contrast"),
                 "natural_container_top_inside_outside_contrast": item.get("natural_container_top_inside_outside_contrast"),
                 "natural_container_bottom_inside_outside_contrast": item.get("natural_container_bottom_inside_outside_contrast"),
+                "natural_container_left_interior_persistence": item.get("natural_container_left_interior_persistence"),
+                "natural_container_right_interior_persistence": item.get("natural_container_right_interior_persistence"),
+                "natural_container_top_interior_persistence": item.get("natural_container_top_interior_persistence"),
+                "natural_container_bottom_interior_persistence": item.get("natural_container_bottom_interior_persistence"),
+                "natural_container_left_exterior_separation": item.get("natural_container_left_exterior_separation"),
+                "natural_container_right_exterior_separation": item.get("natural_container_right_exterior_separation"),
+                "natural_container_top_exterior_separation": item.get("natural_container_top_exterior_separation"),
+                "natural_container_bottom_exterior_separation": item.get("natural_container_bottom_exterior_separation"),
+                "natural_container_left_enclosing_score": item.get("natural_container_left_enclosing_score"),
+                "natural_container_right_enclosing_score": item.get("natural_container_right_enclosing_score"),
+                "natural_container_top_enclosing_score": item.get("natural_container_top_enclosing_score"),
+                "natural_container_bottom_enclosing_score": item.get("natural_container_bottom_enclosing_score"),
+                "natural_container_left_edge_candidate_count": item.get("natural_container_left_edge_candidate_count"),
+                "natural_container_right_edge_candidate_count": item.get("natural_container_right_edge_candidate_count"),
+                "natural_container_top_edge_candidate_count": item.get("natural_container_top_edge_candidate_count"),
+                "natural_container_bottom_edge_candidate_count": item.get("natural_container_bottom_edge_candidate_count"),
+                "natural_container_left_enclosing_rejection_count": item.get("natural_container_left_enclosing_rejection_count"),
+                "natural_container_right_enclosing_rejection_count": item.get("natural_container_right_enclosing_rejection_count"),
+                "natural_container_top_enclosing_rejection_count": item.get("natural_container_top_enclosing_rejection_count"),
+                "natural_container_bottom_enclosing_rejection_count": item.get("natural_container_bottom_enclosing_rejection_count"),
+                "natural_container_left_last_rejected_distance": item.get("natural_container_left_last_rejected_distance"),
+                "natural_container_right_last_rejected_distance": item.get("natural_container_right_last_rejected_distance"),
+                "natural_container_top_last_rejected_distance": item.get("natural_container_top_last_rejected_distance"),
+                "natural_container_bottom_last_rejected_distance": item.get("natural_container_bottom_last_rejected_distance"),
+                "natural_container_left_last_rejected_edge_score": item.get("natural_container_left_last_rejected_edge_score"),
+                "natural_container_right_last_rejected_edge_score": item.get("natural_container_right_last_rejected_edge_score"),
+                "natural_container_top_last_rejected_edge_score": item.get("natural_container_top_last_rejected_edge_score"),
+                "natural_container_bottom_last_rejected_edge_score": item.get("natural_container_bottom_last_rejected_edge_score"),
+                "natural_container_left_last_rejected_enclosing_score": item.get("natural_container_left_last_rejected_enclosing_score"),
+                "natural_container_right_last_rejected_enclosing_score": item.get("natural_container_right_last_rejected_enclosing_score"),
+                "natural_container_top_last_rejected_enclosing_score": item.get("natural_container_top_last_rejected_enclosing_score"),
+                "natural_container_bottom_last_rejected_enclosing_score": item.get("natural_container_bottom_last_rejected_enclosing_score"),
+                "natural_container_left_last_rejected_reason": item.get("natural_container_left_last_rejected_reason"),
+                "natural_container_right_last_rejected_reason": item.get("natural_container_right_last_rejected_reason"),
+                "natural_container_top_last_rejected_reason": item.get("natural_container_top_last_rejected_reason"),
+                "natural_container_bottom_last_rejected_reason": item.get("natural_container_bottom_last_rejected_reason"),
                 "natural_container_dense_boundary_side_count": item.get("natural_container_dense_boundary_side_count"),
                 "recovered_container_left_padding_ratio": item.get("recovered_container_left_padding_ratio"),
                 "recovered_container_right_padding_ratio": item.get("recovered_container_right_padding_ratio"),
