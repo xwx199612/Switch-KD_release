@@ -89,6 +89,7 @@ class FocusResolver:
     DEBUG_CV_PREPARED_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_cv_prepared.jpg"
     DEBUG_CV_PREPARED_DEBUG_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_cv_prepared_debug.jpg"
     DEBUG_CV_PREPARED_METADATA_PATH = f"{tempfile.gettempdir()}/focus_resolver_cv_prepared.json"
+    DEBUG_CV_FINAL_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_cv_final.jpg"
     VISUAL_RING_CONTINUITY_WEIGHT = 0.55
     VISUAL_RING_CONTRAST_WEIGHT = 0.30
     VISUAL_BACKGROUND_WEIGHT = 0.15
@@ -259,6 +260,7 @@ class FocusResolver:
             "focus_cv_prepared_image_path": self.DEBUG_CV_PREPARED_IMAGE_PATH,
             "focus_cv_prepared_debug_image_path": None,
             "focus_cv_prepared_metadata_path": None,
+            "focus_cv_final_image_path": None,
         }
         try:
             self._save_cv_prepared_debug_artifacts(
@@ -287,6 +289,17 @@ class FocusResolver:
             peer_analysis["isolated_indices"],
             enlargement_peer_sets=enlargement_sibling_analysis["sibling_sets"],
         )
+        try:
+            self._save_cv_final_debug_image(
+                unannotated_image,
+                candidates,
+                prepared_candidate_bboxes,
+                visual_evidence,
+                v5_cascade,
+            )
+            cv_debug_paths["focus_cv_final_image_path"] = self.DEBUG_CV_FINAL_IMAGE_PATH
+        except (OSError, ValueError, TypeError):
+            pass
         focus_debug_image_path: str | None = None
         try:
             annotated_image.save(self.DEBUG_IMAGE_PATH, format="PNG")
@@ -2628,6 +2641,142 @@ class FocusResolver:
         }
         with open(cls.DEBUG_CV_PREPARED_METADATA_PATH, "w", encoding="utf-8") as handle:
             json.dump(metadata, handle, ensure_ascii=False, indent=2, default=str)
+
+    @classmethod
+    def _save_cv_final_debug_image(
+        cls,
+        image: Image.Image,
+        candidates: list[dict[str, Any]],
+        prepared_candidate_bboxes: dict[int, list[int]],
+        evidence: list[dict[str, Any]],
+        v5_cascade: dict[str, Any],
+    ) -> None:
+        """Render final CV diagnostics without deriving any new evidence."""
+        debug_image = image.convert("RGB").copy()
+        draw = ImageDraw.Draw(debug_image)
+        evidence_by_index = {
+            int(item["index"]): item
+            for item in evidence
+            if isinstance(item, dict) and isinstance(item.get("index"), int)
+        }
+        text_by_index = {
+            index: str(candidate.get("text") or "")
+            for index, candidate in enumerate(candidates)
+            if isinstance(candidate, dict)
+        }
+
+        def draw_box(box: Any, color: tuple[int, int, int], width: int) -> None:
+            if not isinstance(box, (list, tuple)) or len(box) < 4:
+                return
+            try:
+                draw.rectangle(
+                    tuple(int(round(float(value))) for value in box[:4]),
+                    outline=color,
+                    width=width,
+                )
+            except (TypeError, ValueError):
+                return
+
+        def stage_status(decision: Any) -> str:
+            if not isinstance(decision, dict):
+                return "ABSTAIN"
+            if not bool(decision.get("executed", True)):
+                return "SKIPPED"
+            if bool(decision.get("matched")):
+                return "MATCH"
+            return "ABSTAIN" if decision.get("candidate_index") is None else "NO_HIT"
+
+        def score_text(item: dict[str, Any], field: str) -> str:
+            try:
+                return f"{float(item.get(field, 0.0)):.2f}"
+            except (TypeError, ValueError):
+                return "n/a"
+
+        stage_lines = [
+            f"OUTLINE: {stage_status(v5_cascade.get('outline_decision'))}",
+            f"ENLARGEMENT: {stage_status(v5_cascade.get('enlargement_decision'))}",
+            f"HIGHLIGHT: {stage_status(v5_cascade.get('highlight_decision'))}",
+        ]
+        header_height = 14 * (len(stage_lines) + 1) + 8
+        draw.rectangle((0, 0, min(debug_image.width, 420), header_height), fill=(0, 0, 0))
+        draw.text((8, 5), "CV FINAL  BOX=semantic NAT=natural EXT=final extent", fill=(255, 255, 255))
+        for line_index, line in enumerate(stage_lines, start=1):
+            draw.text((8, 5 + 14 * line_index), line, fill=(255, 255, 255))
+
+        device_edges: dict[str, set[float]] = {
+            "left": set(), "right": set(), "top": set(), "bottom": set(),
+        }
+        for item in evidence_by_index.values():
+            for side in device_edges:
+                value = item.get(f"prepared_device_{side}")
+                if isinstance(value, (int, float)):
+                    device_edges[side].add(float(value))
+        for side, values in device_edges.items():
+            for value in values:
+                if side in ("left", "right"):
+                    coordinate = int(round(value))
+                    draw.line(
+                        (coordinate, 0, coordinate, debug_image.height - 1),
+                        fill=(255, 80, 80),
+                        width=1,
+                    )
+                    draw.text((coordinate + 2, header_height + 2), f"DEVICE {side[0].upper()}", fill=(255, 80, 80))
+                else:
+                    coordinate = int(round(value))
+                    draw.line(
+                        (0, coordinate, debug_image.width - 1, coordinate),
+                        fill=(255, 80, 80),
+                        width=1,
+                    )
+                    draw.text((8, coordinate + 2), f"DEVICE {side[0].upper()}", fill=(255, 80, 80))
+
+        for index, bbox in sorted(prepared_candidate_bboxes.items()):
+            item = evidence_by_index.get(int(index), {})
+            draw_box(bbox, (255, 255, 0), 2)
+            if bool(item.get("natural_container_baseline_valid")):
+                draw_box(item.get("natural_container_bbox"), (190, 120, 255), 2)
+            if bool(item.get("extent_valid")) and bool(item.get("extent_reliable")):
+                draw_box(item.get("visual_extent_bbox"), (80, 255, 100), 3)
+            device_markers = " ".join(
+                marker
+                for marker, field in (
+                    ("LD", "extent_left_device_boundary_contaminated"),
+                    ("RD", "extent_right_device_boundary_contaminated"),
+                    ("TD", "extent_top_device_boundary_contaminated"),
+                    ("BD", "extent_bottom_device_boundary_contaminated"),
+                )
+                if bool(item.get(field))
+            )
+            text = text_by_index.get(int(index), "")
+            if len(text) > 28:
+                text = f"{text[:25]}..."
+            label = (
+                f"#{index} {text}\n"
+                f"O:{score_text(item, 'outline_score')} "
+                f"E:{score_text(item, 'enlargement_score')} "
+                f"H:{score_text(item, 'highlight_score')}"
+            )
+            if device_markers:
+                label = f"{label}\n{device_markers}"
+            try:
+                left = int(round(float(bbox[0])))
+                top = max(header_height + 3, int(round(float(bbox[1]))) - 34)
+            except (TypeError, ValueError):
+                continue
+            lines = label.splitlines()
+            label_width = max(
+                (draw.textbbox((0, 0), line)[2] for line in lines),
+                default=0,
+            )
+            label_height = 13 * len(lines) + 4
+            draw.rectangle(
+                (left, top, left + label_width + 6, top + label_height),
+                fill=(0, 0, 0),
+            )
+            for line_index, line in enumerate(lines):
+                draw.text((left + 3, top + 2 + 13 * line_index), line, fill=(255, 255, 255))
+
+        debug_image.save(cls.DEBUG_CV_FINAL_IMAGE_PATH, format="JPEG", quality=95)
 
     @classmethod
     def _save_peer_debug_image(
