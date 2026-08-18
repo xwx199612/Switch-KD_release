@@ -185,7 +185,7 @@ def _extract_v5_debug_fields(response: dict[str, Any], element_text_by_index: di
     focus_debug = tracker_debug.get("focus_resolver_debug") or {}
     v5_keys = {
         "focus_peer_groups", "focus_isolated_indices", "focus_peer_debug",
-        "focus_peer_debug_image_path", "focus_cv_prepared_image_path", "focus_cv_prepared_debug_image_path", "focus_cv_prepared_metadata_path", "focus_enlargement_sibling_groups", "focus_visual_v5_stage",
+        "focus_peer_debug_image_path", "focus_cv_prepared_image_path", "focus_cv_prepared_debug_image_path", "focus_cv_prepared_metadata_path", "focus_cv_final_image_path", "focus_enlargement_sibling_groups", "focus_visual_v5_stage",
         "focus_visual_v5_matched", "focus_visual_v5_candidate_index",
         "focus_visual_v5_score", "focus_visual_v5_margin",
         "focus_visual_v5_peer_group_id", "outline_decision",
@@ -238,6 +238,7 @@ def _extract_v5_debug_fields(response: dict[str, Any], element_text_by_index: di
         "cv_prepared_image_path": response.get("_focus_cv_prepared_image_path_host") or get("focus_cv_prepared_image_path"),
         "cv_prepared_debug_image_path": response.get("_focus_cv_prepared_debug_image_path_host") or get("focus_cv_prepared_debug_image_path"),
         "cv_prepared_metadata_path": response.get("_focus_cv_prepared_metadata_path_host") or get("focus_cv_prepared_metadata_path"),
+        "cv_final_image_path": response.get("_focus_cv_final_image_path_host") or get("focus_cv_final_image_path"),
         "v5_enlargement_sibling_groups": get("focus_enlargement_sibling_groups"),
         "v5_hierarchy": hierarchy,
         "v5_stages": stages,
@@ -341,6 +342,7 @@ def save_peer_debug_image(response: dict[str, Any], image_path: str, output_dir:
         ("focus_cv_prepared_image_path", "_cv_prepared.jpg"),
         ("focus_cv_prepared_debug_image_path", "_cv_prepared_debug.jpg"),
         ("focus_cv_prepared_metadata_path", "_cv_prepared.json"),
+        ("focus_cv_final_image_path", "_cv_final.jpg"),
     )
     for field, suffix in debug_sources:
         source = focus_debug.get(field)
