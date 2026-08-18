@@ -125,6 +125,14 @@ class FocusResolver:
     ENLARGEMENT_EDGE_SAMPLE_INSET = 0.15
     ENLARGEMENT_BOUNDARY_MIN_SCORE = 0.55
     ENLARGEMENT_BOUNDARY_MIN_SAMPLE_SUPPORT = 0.60
+    ENLARGEMENT_CONTINUATION_MIN_SCORE = 0.55
+    ENLARGEMENT_CONTINUATION_MIN_TAIL_STEPS = 2
+    ENLARGEMENT_CONTINUATION_MIN_PATH_SUPPORT = 0.60
+    ENLARGEMENT_CONTINUATION_MIN_SAMPLE_SUPPORT = 0.60
+    ENLARGEMENT_CONTINUATION_MAX_UNSUPPORTED_RUN = 2
+    ENLARGEMENT_CONTINUATION_COLOR_TOLERANCE = 0.35
+    ENLARGEMENT_CONTINUATION_LUMINANCE_TOLERANCE = 0.18
+    ENLARGEMENT_CENSORED_CONFIDENCE_FACTOR = 0.70
     ENLARGEMENT_COMPLETION_MIN_RETAINED_RATIO = 0.70
     ENLARGEMENT_MIRRORED_CONFIDENCE_FACTOR = 0.75
     ENLARGEMENT_CARD_CELL_OUTER_X = 0.30
@@ -691,18 +699,33 @@ class FocusResolver:
                     boundary_debug[side] = {
                         "found": False, "growth": 0, "score": 0.0,
                         "confidence": 0.0, "reason": "insufficient_scan_space",
-                        "obs_hit": False,
+                        "obs_hit": False, "state": "unresolved",
+                        "continuation_score": 0.0,
+                        "continuation_confidence": 0.0,
+                        "continuation_path_support": 0.0,
+                        "continuation_tail_support": 0.0,
+                        "censored": False,
+                        "sample_count": 0,
+                        "boundary_sample_count": 0,
+                        "continuation_sample_count": 0,
+                        "unresolved_sample_count": 0,
                     }
                     continue
                 positions: list[tuple[int, float]] = []
                 scores: list[float] = []
+                continuation_samples: list[tuple[float, float, float]] = []
                 inset = cls.ENLARGEMENT_EDGE_SAMPLE_INSET
                 for sample_index in range(sample_count):
                     fraction = inset + (1.0 - 2.0 * inset) * (sample_index + 0.5) / sample_count
-                    inner = luminance(pixel_data[inner_coordinate(side, fraction)])
+                    inner_color = pixel_data[inner_coordinate(side, fraction)]
+                    inner = luminance(inner_color)
                     found_position: tuple[int, float] | None = None
+                    continuation_scores: list[float] = []
+                    previous_color = inner_color
+                    previous_luminance = inner
                     for distance in range(step, maximum + 1, step):
-                        current = luminance(pixel_data[coordinate(side, distance, fraction)])
+                        current_color = pixel_data[coordinate(side, distance, fraction)]
+                        current = luminance(current_color)
                         farther = luminance(pixel_data[coordinate(side, distance, fraction, step)])
                         farther_next = luminance(pixel_data[coordinate(side, distance, fraction, 2 * step)])
                         inner_support = cls._clamp01(1.0 - abs(current - inner) / 0.18)
@@ -722,9 +745,99 @@ class FocusResolver:
                         ):
                             found_position = (distance, score)
                             break
+                        color_distance_value = math.sqrt(sum(
+                            ((current_color[channel] - inner_color[channel]) / 255.0) ** 2
+                            for channel in range(3)
+                        ) / 3.0)
+                        color_similarity = cls._clamp01(
+                            1.0 - color_distance_value
+                            / cls.ENLARGEMENT_CONTINUATION_COLOR_TOLERANCE
+                        )
+                        luminance_similarity = cls._clamp01(
+                            1.0 - abs(current - inner)
+                            / cls.ENLARGEMENT_CONTINUATION_LUMINANCE_TOLERANCE
+                        )
+                        previous_color_distance = math.sqrt(sum(
+                            ((current_color[channel] - previous_color[channel]) / 255.0) ** 2
+                            for channel in range(3)
+                        ) / 3.0)
+                        previous_color_similarity = cls._clamp01(
+                            1.0 - previous_color_distance
+                            / cls.ENLARGEMENT_CONTINUATION_COLOR_TOLERANCE
+                        )
+                        previous_luminance_similarity = cls._clamp01(
+                            1.0 - abs(current - previous_luminance)
+                            / cls.ENLARGEMENT_CONTINUATION_LUMINANCE_TOLERANCE
+                        )
+                        object_similarity = (
+                            0.40 * luminance_similarity
+                            + 0.60 * color_similarity
+                        )
+                        local_consistency = (
+                            0.40 * previous_luminance_similarity
+                            + 0.60 * previous_color_similarity
+                        )
+                        transition_absence = 1.0 - outward_change
+                        continuation_scores.append(cls._clamp01(
+                            0.55 * object_similarity
+                            + 0.30 * local_consistency
+                            + 0.15 * transition_absence
+                        ))
+                        previous_color = current_color
+                        previous_luminance = current
                     if found_position is not None:
                         positions.append(found_position)
                         scores.append(found_position[1])
+                    elif continuation_scores:
+                        supported = [
+                            value for value in continuation_scores
+                            if value >= cls.ENLARGEMENT_CONTINUATION_MIN_SCORE
+                        ]
+                        path_support = len(supported) / len(continuation_scores)
+                        tail_steps = min(
+                            cls.ENLARGEMENT_CONTINUATION_MIN_TAIL_STEPS,
+                            len(continuation_scores),
+                        )
+                        tail_support = (
+                            sum(continuation_scores[-tail_steps:]) / tail_steps
+                            if tail_steps else 0.0
+                        )
+                        unsupported_run = 0
+                        max_unsupported_run = 0
+                        for value in continuation_scores:
+                            if value < cls.ENLARGEMENT_CONTINUATION_MIN_SCORE:
+                                unsupported_run += 1
+                                max_unsupported_run = max(
+                                    max_unsupported_run,
+                                    unsupported_run,
+                                )
+                            else:
+                                unsupported_run = 0
+                        continuation_allowed = (
+                            observation_override is not None
+                            and item.get("enlargement_extent_observation_source")
+                            == "pure_card_v5_3"
+                            and bool(item.get("enlargement_card_observation_valid"))
+                            and not bool(item.get(
+                                "enlargement_card_observation_intersects_other_sibling_core"
+                            ))
+                        )
+                        if (
+                            continuation_allowed
+                            and len(continuation_scores)
+                            >= cls.ENLARGEMENT_CONTINUATION_MIN_TAIL_STEPS
+                            and tail_support
+                            >= cls.ENLARGEMENT_CONTINUATION_MIN_SCORE
+                            and path_support
+                            >= cls.ENLARGEMENT_CONTINUATION_MIN_PATH_SUPPORT
+                            and max_unsupported_run
+                            <= cls.ENLARGEMENT_CONTINUATION_MAX_UNSUPPORTED_RUN
+                        ):
+                            continuation_samples.append((
+                                tail_support,
+                                path_support,
+                                tail_support * path_support,
+                            ))
                 required = max(1, math.ceil(sample_count * cls.ENLARGEMENT_BOUNDARY_MIN_SAMPLE_SUPPORT))
                 if len(positions) >= required:
                     ordered_positions = sorted(position for position, _ in positions)
@@ -736,6 +849,51 @@ class FocusResolver:
                         "confidence": len(positions) / sample_count,
                         "reason": "stable_transition",
                         "obs_hit": False,
+                        "state": "boundary",
+                        "continuation_score": 0.0,
+                        "continuation_confidence": 0.0,
+                        "continuation_path_support": 0.0,
+                        "continuation_tail_support": 0.0,
+                        "censored": False,
+                        "sample_count": sample_count,
+                        "boundary_sample_count": len(positions),
+                        "continuation_sample_count": len(continuation_samples),
+                        "unresolved_sample_count": sample_count - len(positions) - len(continuation_samples),
+                    }
+                elif len(continuation_samples) >= max(
+                    1,
+                    math.ceil(
+                        sample_count
+                        * cls.ENLARGEMENT_CONTINUATION_MIN_SAMPLE_SUPPORT
+                    ),
+                ):
+                    growth[side] = maximum
+                    continuation_score = sum(
+                        value[0] for value in continuation_samples
+                    ) / len(continuation_samples)
+                    continuation_path_support = sum(
+                        value[1] for value in continuation_samples
+                    ) / len(continuation_samples)
+                    continuation_confidence = sum(
+                        value[2] for value in continuation_samples
+                    ) / len(continuation_samples)
+                    boundary_debug[side] = {
+                        "found": False,
+                        "growth": maximum,
+                        "score": max(scores, default=0.0),
+                        "confidence": continuation_confidence,
+                        "reason": "object_continuation_to_observation_limit",
+                        "obs_hit": True,
+                        "state": "continuation_to_limit",
+                        "continuation_score": continuation_score,
+                        "continuation_confidence": continuation_confidence,
+                        "continuation_path_support": continuation_path_support,
+                        "continuation_tail_support": continuation_score,
+                        "censored": True,
+                        "sample_count": sample_count,
+                        "boundary_sample_count": len(positions),
+                        "continuation_sample_count": len(continuation_samples),
+                        "unresolved_sample_count": sample_count - len(positions) - len(continuation_samples),
                     }
                 else:
                     growth[side] = maximum
@@ -744,8 +902,18 @@ class FocusResolver:
                         "growth": maximum,
                         "score": max(scores, default=0.0),
                         "confidence": len(positions) / sample_count,
-                        "reason": "observation_boundary_reached",
+                        "reason": "no_stable_boundary_or_continuation",
                         "obs_hit": True,
+                        "state": "unresolved",
+                        "continuation_score": 0.0,
+                        "continuation_confidence": 0.0,
+                        "continuation_path_support": 0.0,
+                        "continuation_tail_support": 0.0,
+                        "censored": False,
+                        "sample_count": sample_count,
+                        "boundary_sample_count": len(positions),
+                        "continuation_sample_count": len(continuation_samples),
+                        "unresolved_sample_count": sample_count - len(positions) - len(continuation_samples),
                     }
 
             raw_growth = dict(growth)
@@ -764,8 +932,18 @@ class FocusResolver:
             }
             for side, hit in obs_hits.items():
                 boundary_debug[side]["obs_hit"] = hit
-            horizontal_truncated = obs_hits["left"] and obs_hits["right"]
-            vertical_truncated = obs_hits["top"] and obs_hits["bottom"]
+            horizontal_truncated = (
+                boundary_debug["left"]["state"] == "unresolved"
+                and boundary_debug["right"]["state"] == "unresolved"
+                and obs_hits["left"]
+                and obs_hits["right"]
+            )
+            vertical_truncated = (
+                boundary_debug["top"]["state"] == "unresolved"
+                and boundary_debug["bottom"]["state"] == "unresolved"
+                and obs_hits["top"]
+                and obs_hits["bottom"]
+            )
             extent_truncated = horizontal_truncated or vertical_truncated
 
             available_space = {
@@ -782,51 +960,97 @@ class FocusResolver:
             def reconstruct_axis(
                 first: str,
                 second: str,
-                truncated: bool,
-            ) -> tuple[bool, float]:
-                first_found = bool(boundary_debug[first]["found"])
-                second_found = bool(boundary_debug[second]["found"])
-                if first_found and second_found:
+            ) -> tuple[bool, float, str]:
+                first_state = str(boundary_debug[first]["state"])
+                second_state = str(boundary_debug[second]["state"])
+                if first_state == "boundary" and second_state == "boundary":
                     reconstructed_growth[first] = raw_growth[first]
                     reconstructed_growth[second] = raw_growth[second]
                     reconstructed_confidence[first] = boundary_debug[first]["confidence"]
                     reconstructed_confidence[second] = boundary_debug[second]["confidence"]
                     reconstructed_source[first] = "measured"
                     reconstructed_source[second] = "measured"
-                    return (not truncated, (reconstructed_confidence[first] + reconstructed_confidence[second]) / 2.0)
-                if not first_found and not second_found:
-                    return False, 0.0
-
-                measured, missing = (first, second) if first_found else (second, first)
-                requested = float(raw_growth[measured])
-                completed = min(requested, available_space[missing])
-                retained = completed / max(requested, 1e-6)
-                completion_clipped[missing] = completed + 1e-6 < requested
-                reconstructed_growth[measured] = requested
-                reconstructed_growth[missing] = completed
-                reconstructed_confidence[measured] = boundary_debug[measured]["confidence"]
-                reconstructed_confidence[missing] = (
-                    boundary_debug[measured]["confidence"]
-                    * cls.ENLARGEMENT_MIRRORED_CONFIDENCE_FACTOR
-                )
-                reconstructed_source[measured] = "measured"
-                reconstructed_source[missing] = f"mirrored_from_{measured}"
-                axis_reliable = (
-                    not truncated
-                    and retained >= cls.ENLARGEMENT_COMPLETION_MIN_RETAINED_RATIO
-                )
-                return (
-                    axis_reliable,
-                    (reconstructed_confidence[first] + reconstructed_confidence[second]) / 2.0,
-                )
+                    return (
+                        True,
+                        (reconstructed_confidence[first] + reconstructed_confidence[second]) / 2.0,
+                        "measured",
+                    )
+                if {first_state, second_state} == {"boundary", "unresolved"}:
+                    measured, missing = (
+                        (first, second)
+                        if first_state == "boundary" else (second, first)
+                    )
+                    requested = float(raw_growth[measured])
+                    completed = min(requested, available_space[missing])
+                    retained = completed / max(requested, 1e-6)
+                    completion_clipped[missing] = completed + 1e-6 < requested
+                    reconstructed_growth[measured] = requested
+                    reconstructed_growth[missing] = completed
+                    reconstructed_confidence[measured] = boundary_debug[measured]["confidence"]
+                    reconstructed_confidence[missing] = (
+                        boundary_debug[measured]["confidence"]
+                        * cls.ENLARGEMENT_MIRRORED_CONFIDENCE_FACTOR
+                    )
+                    reconstructed_source[measured] = "measured"
+                    reconstructed_source[missing] = f"mirrored_from_{measured}"
+                    return (
+                        retained >= cls.ENLARGEMENT_COMPLETION_MIN_RETAINED_RATIO,
+                        (reconstructed_confidence[first] + reconstructed_confidence[second]) / 2.0,
+                        "reconstructed",
+                    )
+                if {first_state, second_state} == {"boundary", "continuation_to_limit"}:
+                    for side, state in ((first, first_state), (second, second_state)):
+                        reconstructed_growth[side] = raw_growth[side]
+                        reconstructed_source[side] = (
+                            "measured"
+                            if state == "boundary"
+                            else "continuation_to_limit"
+                        )
+                        reconstructed_confidence[side] = (
+                            boundary_debug[side]["confidence"]
+                            if state == "boundary"
+                            else boundary_debug[side]["continuation_confidence"]
+                            * cls.ENLARGEMENT_CENSORED_CONFIDENCE_FACTOR
+                        )
+                    return (
+                        True,
+                        (reconstructed_confidence[first] + reconstructed_confidence[second]) / 2.0,
+                        "partially_censored",
+                    )
+                if first_state == "continuation_to_limit" and second_state == "continuation_to_limit":
+                    for side in (first, second):
+                        reconstructed_growth[side] = raw_growth[side]
+                        reconstructed_source[side] = "continuation_to_limit"
+                        reconstructed_confidence[side] = (
+                            boundary_debug[side]["continuation_confidence"]
+                            * cls.ENLARGEMENT_CENSORED_CONFIDENCE_FACTOR
+                        )
+                    return (
+                        True,
+                        (reconstructed_confidence[first] + reconstructed_confidence[second]) / 2.0,
+                        "fully_censored",
+                    )
+                if {first_state, second_state} == {"continuation_to_limit", "unresolved"}:
+                    continuation = (
+                        first
+                        if first_state == "continuation_to_limit" else second
+                    )
+                    reconstructed_growth[continuation] = raw_growth[continuation]
+                    reconstructed_source[continuation] = "continuation_to_limit"
+                    reconstructed_confidence[continuation] = (
+                        boundary_debug[continuation]["continuation_confidence"]
+                        * cls.ENLARGEMENT_CENSORED_CONFIDENCE_FACTOR
+                    )
+                    return False, 0.0, "unresolved"
+                return False, 0.0, "unresolved"
 
             horizontal_count = int(boundary_debug["left"]["found"]) + int(boundary_debug["right"]["found"])
             vertical_count = int(boundary_debug["top"]["found"]) + int(boundary_debug["bottom"]["found"])
-            horizontal_reliable, horizontal_confidence = reconstruct_axis(
-                "left", "right", horizontal_truncated
+            horizontal_reliable, horizontal_confidence, horizontal_state = reconstruct_axis(
+                "left", "right"
             )
-            vertical_reliable, vertical_confidence = reconstruct_axis(
-                "top", "bottom", vertical_truncated
+            vertical_reliable, vertical_confidence, vertical_state = reconstruct_axis(
+                "top", "bottom"
             )
             extent_reliable = horizontal_reliable and vertical_reliable
             reliability = (
@@ -834,6 +1058,24 @@ class FocusResolver:
                 if extent_reliable else 0.0
             )
             used_mirror = any(source.startswith("mirrored_") for source in reconstructed_source.values())
+            has_censored_measurement = any(
+                entry["state"] == "continuation_to_limit"
+                for entry in boundary_debug.values()
+            )
+            horizontal_censored = any(
+                boundary_debug[side]["state"] == "continuation_to_limit"
+                for side in ("left", "right")
+            )
+            vertical_censored = any(
+                boundary_debug[side]["state"] == "continuation_to_limit"
+                for side in ("top", "bottom")
+            )
+            fully_measured = (
+                horizontal_state == "measured"
+                and vertical_state == "measured"
+                and not used_mirror
+                and not has_censored_measurement
+            )
             extent = clipped_box((
                 left - reconstructed_growth["left"],
                 top - reconstructed_growth["top"],
@@ -866,7 +1108,7 @@ class FocusResolver:
                 "extent_horizontal_balance": horizontal_balance,
                 "extent_vertical_balance": vertical_balance,
                 "extent_symmetry": math.sqrt(max(0.0, horizontal_balance * vertical_balance)),
-                "extent_boundary_method": "stable_transition_v5_2",
+                "extent_boundary_method": "boundary_or_continuation_v5_4",
                 "extent_boundary_left_found": boundary_debug["left"]["found"],
                 "extent_boundary_right_found": boundary_debug["right"]["found"],
                 "extent_boundary_top_found": boundary_debug["top"]["found"],
@@ -883,6 +1125,25 @@ class FocusResolver:
                 "extent_boundary_right_reason": boundary_debug["right"]["reason"],
                 "extent_boundary_top_reason": boundary_debug["top"]["reason"],
                 "extent_boundary_bottom_reason": boundary_debug["bottom"]["reason"],
+                "extent_left_state": boundary_debug["left"]["state"],
+                "extent_right_state": boundary_debug["right"]["state"],
+                "extent_top_state": boundary_debug["top"]["state"],
+                "extent_bottom_state": boundary_debug["bottom"]["state"],
+                "extent_left_continuation_score": boundary_debug["left"]["continuation_score"],
+                "extent_right_continuation_score": boundary_debug["right"]["continuation_score"],
+                "extent_top_continuation_score": boundary_debug["top"]["continuation_score"],
+                "extent_bottom_continuation_score": boundary_debug["bottom"]["continuation_score"],
+                "extent_left_continuation_confidence": boundary_debug["left"]["continuation_confidence"],
+                "extent_right_continuation_confidence": boundary_debug["right"]["continuation_confidence"],
+                "extent_top_continuation_confidence": boundary_debug["top"]["continuation_confidence"],
+                "extent_bottom_continuation_confidence": boundary_debug["bottom"]["continuation_confidence"],
+                "extent_left_censored": boundary_debug["left"]["censored"],
+                "extent_right_censored": boundary_debug["right"]["censored"],
+                "extent_top_censored": boundary_debug["top"]["censored"],
+                "extent_bottom_censored": boundary_debug["bottom"]["censored"],
+                "extent_censored_side_count": sum(
+                    entry["censored"] for entry in boundary_debug.values()
+                ),
                 "extent_obs_hit_left": obs_hits["left"],
                 "extent_obs_hit_right": obs_hits["right"],
                 "extent_obs_hit_top": obs_hits["top"],
@@ -892,6 +1153,10 @@ class FocusResolver:
                 "extent_vertical_boundary_count": vertical_count,
                 "extent_horizontal_reliable": horizontal_reliable,
                 "extent_vertical_reliable": vertical_reliable,
+                "extent_horizontal_censored": horizontal_censored,
+                "extent_vertical_censored": vertical_censored,
+                "extent_horizontal_state": horizontal_state,
+                "extent_vertical_state": vertical_state,
                 "extent_left_source": reconstructed_source["left"],
                 "extent_right_source": reconstructed_source["right"],
                 "extent_top_source": reconstructed_source["top"],
@@ -910,10 +1175,17 @@ class FocusResolver:
                 "extent_horizontal_truncated": horizontal_truncated,
                 "extent_vertical_truncated": vertical_truncated,
                 "extent_truncated": extent_truncated,
+                "extent_observation_censored": has_censored_measurement,
+                "extent_has_censored_measurement": has_censored_measurement,
+                "extent_fully_measured": fully_measured,
+                "extent_width_is_lower_bound": horizontal_censored,
+                "extent_height_is_lower_bound": vertical_censored,
+                "extent_area_is_lower_bound": horizontal_censored or vertical_censored,
                 "extent_boundary_reliability": reliability,
                 "extent_reliable": extent_reliable,
                 "enlargement_extent_reason": (
                     "observation_boundary_truncated" if extent_truncated
+                    else "censored_continuation_extent" if extent_reliable and has_censored_measurement
                     else "partial_boundary_reconstructed" if extent_reliable and used_mirror
                     else "stable_boundary_extent" if extent_reliable
                     else "insufficient_axis_boundary"
@@ -1546,18 +1818,26 @@ class FocusResolver:
                 )
             )
             extent_state = (
-                "R" if item.get("extent_reliable") and not mirrored_extent
+                "C" if item.get("extent_reliable") and item.get("extent_has_censored_measurement")
+                else "R" if item.get("extent_reliable") and not mirrored_extent
                 else "M" if item.get("extent_reliable") and mirrored_extent
                 else "T" if item.get("extent_truncated")
                 else "-"
             )
             hit_sides = "".join(
-                marker for marker, field in (
-                    ("L!", "extent_obs_hit_left"),
-                    ("R!", "extent_obs_hit_right"),
-                    ("T!", "extent_obs_hit_top"),
-                    ("B!", "extent_obs_hit_bottom"),
-                ) if item.get(field)
+                marker
+                for side_marker, hit_field, state_field in (
+                    ("L", "extent_obs_hit_left", "extent_left_state"),
+                    ("R", "extent_obs_hit_right", "extent_right_state"),
+                    ("T", "extent_obs_hit_top", "extent_top_state"),
+                    ("B", "extent_obs_hit_bottom", "extent_bottom_state"),
+                )
+                if item.get(hit_field)
+                for marker in (
+                    f"{side_marker}~"
+                    if item.get(state_field) == "continuation_to_limit"
+                    else f"{side_marker}!"
+                )
             )
             label = f"#{index} P{peer_id}/S{sibling_id if sibling_id >= 0 else '-'} EXT:{extent_state} {hit_sides}".rstrip()
             try:

@@ -1,0 +1,1366 @@
+{
+  "image_name": null,
+  "focus_image_mode": "group_montage",
+  "prepared_size": [
+    2045,
+    548
+  ],
+  "roi_bbox_pixels": null,
+  "montage_grid": [
+    3,
+    2
+  ],
+  "montage_size": [
+    2045,
+    548
+  ],
+  "montage_tile_sizes": [
+    [
+      254,
+      66
+    ],
+    [
+      1743,
+      279
+    ],
+    [
+      388,
+      142
+    ],
+    [
+      555,
+      52
+    ],
+    [
+      1183,
+      55
+    ],
+    [
+      94,
+      48
+    ]
+  ],
+  "montage_tile_bboxes": [],
+  "prepared_candidate_bboxes": {
+    "18": [
+      34,
+      25,
+      244,
+      65
+    ],
+    "0": [
+      435,
+      52,
+      601,
+      124
+    ],
+    "1": [
+      610,
+      52,
+      929,
+      124
+    ],
+    "2": [
+      938,
+      52,
+      1252,
+      124
+    ],
+    "3": [
+      1259,
+      52,
+      1567,
+      124
+    ],
+    "4": [
+      1576,
+      52,
+      1888,
+      124
+    ],
+    "5": [
+      452,
+      150,
+      556,
+      251
+    ],
+    "6": [
+      563,
+      150,
+      667,
+      251
+    ],
+    "7": [
+      675,
+      150,
+      778,
+      251
+    ],
+    "8": [
+      44,
+      335,
+      147,
+      437
+    ],
+    "9": [
+      153,
+      335,
+      256,
+      437
+    ],
+    "10": [
+      265,
+      335,
+      368,
+      437
+    ],
+    "11": [
+      470,
+      328,
+      590,
+      354
+    ],
+    "12": [
+      774,
+      328,
+      933,
+      354
+    ],
+    "13": [
+      111,
+      494,
+      265,
+      523
+    ],
+    "14": [
+      409,
+      494,
+      479,
+      523
+    ],
+    "15": [
+      694,
+      494,
+      815,
+      523
+    ],
+    "16": [
+      981,
+      494,
+      1096,
+      523
+    ],
+    "17": [
+      1232,
+      494,
+      1300,
+      516
+    ]
+  },
+  "peer_groups": [
+    [
+      1,
+      2,
+      3,
+      4
+    ],
+    [
+      5,
+      6,
+      7
+    ],
+    [
+      8,
+      9,
+      10
+    ],
+    [
+      11,
+      12
+    ],
+    [
+      13,
+      14,
+      15,
+      16
+    ]
+  ],
+  "isolated_indices": [
+    0,
+    17,
+    18
+  ],
+  "enlargement_sibling_groups": [
+    [
+      1,
+      2,
+      3,
+      4
+    ],
+    [
+      5,
+      6,
+      7
+    ],
+    [
+      8,
+      9,
+      10
+    ],
+    [
+      15,
+      16
+    ]
+  ],
+  "candidates": [
+    {
+      "index": 0,
+      "text": "Hub",
+      "prepared_bbox": [
+        435,
+        52,
+        601,
+        124
+      ],
+      "visual_cell_bbox": [
+        352,
+        16,
+        770,
+        200
+      ],
+      "enlargement_local_observation_bbox": null,
+      "enlargement_card_cell_bbox": null,
+      "enlargement_card_observation_bbox": null,
+      "enlargement_card_observation_valid": null,
+      "enlargement_extent_observation_source": null,
+      "visual_extent_bbox": null,
+      "enlargement_extent_reason": null,
+      "extent_reliable": null,
+      "extent_truncated": null,
+      "extent_obs_boundary_hit_count": null,
+      "extent_boundary_debug": null
+    },
+    {
+      "index": 1,
+      "text": "Home Office",
+      "prepared_bbox": [
+        610,
+        52,
+        929,
+        124
+      ],
+      "visual_cell_bbox": [
+        518,
+        16,
+        1095,
+        200
+      ],
+      "enlargement_local_observation_bbox": [
+        518.0,
+        16.0,
+        1088.5,
+        160.0
+      ],
+      "enlargement_card_cell_bbox": [
+        518.0,
+        30.4,
+        932.25,
+        145.6
+      ],
+      "enlargement_card_observation_bbox": [
+        546.2,
+        34.0,
+        932.25,
+        142.0
+      ],
+      "enlargement_card_observation_valid": true,
+      "enlargement_extent_observation_source": "pure_card_v5_3",
+      "visual_extent_bbox": [
+        610.0,
+        52.0,
+        929.0,
+        124.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 4,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 64,
+          "score": 0.5932039215686276,
+          "confidence": 0.06666666666666667,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": false,
+          "growth": 3,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 18,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 18,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 2,
+      "text": "Accessibility",
+      "prepared_bbox": [
+        938,
+        52,
+        1252,
+        124
+      ],
+      "visual_cell_bbox": [
+        770,
+        16,
+        1413,
+        160
+      ],
+      "enlargement_local_observation_bbox": [
+        781.0,
+        16.0,
+        1409.0,
+        160.0
+      ],
+      "enlargement_card_cell_bbox": [
+        932.25,
+        30.4,
+        1254.0,
+        145.6
+      ],
+      "enlargement_card_observation_bbox": [
+        932.25,
+        34.0,
+        1254.0,
+        142.0
+      ],
+      "enlargement_card_observation_valid": true,
+      "enlargement_extent_observation_source": "pure_card_v5_3",
+      "visual_extent_bbox": [
+        938.0,
+        52.0,
+        1252.0,
+        124.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 4,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 6,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": false,
+          "growth": 2,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 18,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 18,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 3,
+      "text": "Sports",
+      "prepared_bbox": [
+        1259,
+        52,
+        1567,
+        124
+      ],
+      "visual_cell_bbox": [
+        1095,
+        16,
+        1732,
+        160
+      ],
+      "enlargement_local_observation_bbox": [
+        1105.0,
+        16.0,
+        1721.0,
+        160.0
+      ],
+      "enlargement_card_cell_bbox": [
+        1254.0,
+        30.4,
+        1572.5,
+        145.6
+      ],
+      "enlargement_card_observation_bbox": [
+        1254.0,
+        34.0,
+        1572.5,
+        142.0
+      ],
+      "enlargement_card_observation_valid": true,
+      "enlargement_extent_observation_source": "pure_card_v5_3",
+      "visual_extent_bbox": [
+        1255.0,
+        52.0,
+        1571.0,
+        124.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 4,
+      "extent_boundary_debug": {
+        "left": {
+          "found": true,
+          "growth": 4,
+          "score": 0.6651530392156862,
+          "confidence": 0.6666666666666666,
+          "reason": "stable_transition",
+          "obs_hit": true
+        },
+        "right": {
+          "found": false,
+          "growth": 6,
+          "score": 0.9567980392156861,
+          "confidence": 0.06666666666666667,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 18,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 18,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 4,
+      "text": "Edit",
+      "prepared_bbox": [
+        1576,
+        52,
+        1888,
+        124
+      ],
+      "visual_cell_bbox": [
+        1413,
+        16,
+        2044,
+        160
+      ],
+      "enlargement_local_observation_bbox": [
+        1420.0,
+        16.0,
+        2044.0,
+        160.0
+      ],
+      "enlargement_card_cell_bbox": [
+        1572.5,
+        30.4,
+        1981.6,
+        145.6
+      ],
+      "enlargement_card_observation_bbox": [
+        1572.5,
+        34.0,
+        1950.4,
+        142.0
+      ],
+      "enlargement_card_observation_valid": true,
+      "enlargement_extent_observation_source": "pure_card_v5_3",
+      "visual_extent_bbox": [
+        1576.0,
+        52.0,
+        1888.0,
+        124.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 4,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 4,
+          "score": 0.5643392156862745,
+          "confidence": 0.06666666666666667,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": false,
+          "growth": 62,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 18,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 18,
+          "score": 0.9963359477124182,
+          "confidence": 0.5333333333333333,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 5,
+      "text": "APPS",
+      "prepared_bbox": [
+        452,
+        150,
+        556,
+        251
+      ],
+      "visual_cell_bbox": [
+        400,
+        88,
+        615,
+        301
+      ],
+      "enlargement_local_observation_bbox": [
+        400.0,
+        99.5,
+        608.0,
+        301.0
+      ],
+      "enlargement_card_cell_bbox": [
+        420.8,
+        119.7,
+        559.5,
+        281.3
+      ],
+      "enlargement_card_observation_bbox": [
+        431.2,
+        124.75,
+        559.5,
+        276.25
+      ],
+      "enlargement_card_observation_valid": true,
+      "enlargement_extent_observation_source": "pure_card_v5_3",
+      "visual_extent_bbox": [
+        452.0,
+        150.0,
+        556.0,
+        251.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 4,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 21,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": false,
+          "growth": 4,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 25,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 25,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 6,
+      "text": "YouTube",
+      "prepared_bbox": [
+        563,
+        150,
+        667,
+        251
+      ],
+      "visual_cell_bbox": [
+        504,
+        88,
+        726,
+        301
+      ],
+      "enlargement_local_observation_bbox": [
+        511.0,
+        99.5,
+        719.0,
+        301.0
+      ],
+      "enlargement_card_cell_bbox": [
+        559.5,
+        119.7,
+        670.75,
+        281.3
+      ],
+      "enlargement_card_observation_bbox": [
+        559.5,
+        124.75,
+        670.75,
+        276.25
+      ],
+      "enlargement_card_observation_valid": true,
+      "enlargement_extent_observation_source": "pure_card_v5_3",
+      "visual_extent_bbox": [
+        563.0,
+        150.0,
+        667.0,
+        251.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 4,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 4,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": false,
+          "growth": 4,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 25,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 25,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 7,
+      "text": "prime video",
+      "prepared_bbox": [
+        675,
+        150,
+        778,
+        251
+      ],
+      "visual_cell_bbox": [
+        615,
+        88,
+        830,
+        301
+      ],
+      "enlargement_local_observation_bbox": [
+        623.5,
+        99.5,
+        829.5,
+        301.0
+      ],
+      "enlargement_card_cell_bbox": [
+        670.75,
+        119.7,
+        808.9,
+        281.3
+      ],
+      "enlargement_card_observation_bbox": [
+        670.75,
+        124.75,
+        798.6,
+        276.25
+      ],
+      "enlargement_card_observation_valid": true,
+      "enlargement_extent_observation_source": "pure_card_v5_3",
+      "visual_extent_bbox": [
+        675.0,
+        150.0,
+        778.0,
+        251.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 4,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 4,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": false,
+          "growth": 21,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 25,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 25,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 8,
+      "text": "Gaming Portal",
+      "prepared_bbox": [
+        44,
+        335,
+        147,
+        437
+      ],
+      "visual_cell_bbox": [
+        0,
+        284,
+        204,
+        488
+      ],
+      "enlargement_local_observation_bbox": [
+        0.0,
+        284.0,
+        198.5,
+        488.0
+      ],
+      "enlargement_card_cell_bbox": [
+        13.1,
+        304.4,
+        150.0,
+        467.6
+      ],
+      "enlargement_card_observation_bbox": [
+        23.4,
+        309.5,
+        150.0,
+        462.5
+      ],
+      "enlargement_card_observation_valid": true,
+      "enlargement_extent_observation_source": "pure_card_v5_3",
+      "visual_extent_bbox": [
+        35.0,
+        317.0,
+        150.0,
+        455.0
+      ],
+      "enlargement_extent_reason": "insufficient_axis_boundary",
+      "extent_reliable": false,
+      "extent_truncated": false,
+      "extent_obs_boundary_hit_count": 2,
+      "extent_boundary_debug": {
+        "left": {
+          "found": true,
+          "growth": 9,
+          "score": 0.7139259259259262,
+          "confidence": 0.6,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "right": {
+          "found": false,
+          "growth": 3,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": true,
+          "growth": 18,
+          "score": 0.618481111111111,
+          "confidence": 1.0,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "bottom": {
+          "found": false,
+          "growth": 26,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 9,
+      "text": "NETFLIX",
+      "prepared_bbox": [
+        153,
+        335,
+        256,
+        437
+      ],
+      "visual_cell_bbox": [
+        96,
+        284,
+        316,
+        488
+      ],
+      "enlargement_local_observation_bbox": [
+        101.5,
+        284.0,
+        307.5,
+        488.0
+      ],
+      "enlargement_card_cell_bbox": [
+        150.0,
+        304.4,
+        260.5,
+        467.6
+      ],
+      "enlargement_card_observation_bbox": [
+        150.0,
+        309.5,
+        260.5,
+        462.5
+      ],
+      "enlargement_card_observation_valid": true,
+      "enlargement_extent_observation_source": "pure_card_v5_3",
+      "visual_extent_bbox": [
+        153.0,
+        317.0,
+        256.0,
+        455.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 3,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 3,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": false,
+          "growth": 4,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": true,
+          "growth": 18,
+          "score": 0.7698172549019607,
+          "confidence": 1.0,
+          "reason": "stable_transition",
+          "obs_hit": false
+        },
+        "bottom": {
+          "found": false,
+          "growth": 26,
+          "score": 0.9422875816993462,
+          "confidence": 0.4,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 10,
+      "text": "Edit App List",
+      "prepared_bbox": [
+        265,
+        335,
+        368,
+        437
+      ],
+      "visual_cell_bbox": [
+        204,
+        284,
+        420,
+        488
+      ],
+      "enlargement_local_observation_bbox": [
+        213.5,
+        284.0,
+        419.5,
+        488.0
+      ],
+      "enlargement_card_cell_bbox": [
+        260.5,
+        304.4,
+        398.9,
+        467.6
+      ],
+      "enlargement_card_observation_bbox": [
+        260.5,
+        309.5,
+        388.6,
+        462.5
+      ],
+      "enlargement_card_observation_valid": true,
+      "enlargement_extent_observation_source": "pure_card_v5_3",
+      "visual_extent_bbox": [
+        265.0,
+        335.0,
+        368.0,
+        437.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 4,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 4,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": false,
+          "growth": 21,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 26,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 26,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 11,
+      "text": "Recent Input",
+      "prepared_bbox": [
+        470,
+        328,
+        590,
+        354
+      ],
+      "visual_cell_bbox": [
+        410,
+        315,
+        854,
+        367
+      ],
+      "enlargement_local_observation_bbox": null,
+      "enlargement_card_cell_bbox": null,
+      "enlargement_card_observation_bbox": null,
+      "enlargement_card_observation_valid": null,
+      "enlargement_extent_observation_source": null,
+      "visual_extent_bbox": null,
+      "enlargement_extent_reason": null,
+      "extent_reliable": null,
+      "extent_truncated": null,
+      "extent_obs_boundary_hit_count": null,
+      "extent_boundary_debug": null
+    },
+    {
+      "index": 12,
+      "text": "Device Functions",
+      "prepared_bbox": [
+        774,
+        328,
+        933,
+        354
+      ],
+      "visual_cell_bbox": [
+        530,
+        315,
+        1013,
+        367
+      ],
+      "enlargement_local_observation_bbox": null,
+      "enlargement_card_cell_bbox": null,
+      "enlargement_card_observation_bbox": null,
+      "enlargement_card_observation_valid": null,
+      "enlargement_extent_observation_source": null,
+      "visual_extent_bbox": null,
+      "enlargement_extent_reason": null,
+      "extent_reliable": null,
+      "extent_truncated": null,
+      "extent_obs_boundary_hit_count": null,
+      "extent_boundary_debug": null
+    },
+    {
+      "index": 13,
+      "text": "Edit App List",
+      "prepared_bbox": [
+        111,
+        494,
+        265,
+        523
+      ],
+      "visual_cell_bbox": [
+        34,
+        480,
+        444,
+        537
+      ],
+      "enlargement_local_observation_bbox": null,
+      "enlargement_card_cell_bbox": null,
+      "enlargement_card_observation_bbox": null,
+      "enlargement_card_observation_valid": null,
+      "enlargement_extent_observation_source": null,
+      "visual_extent_bbox": null,
+      "enlargement_extent_reason": null,
+      "extent_reliable": null,
+      "extent_truncated": null,
+      "extent_obs_boundary_hit_count": null,
+      "extent_boundary_debug": null
+    },
+    {
+      "index": 14,
+      "text": "Guide",
+      "prepared_bbox": [
+        409,
+        494,
+        479,
+        523
+      ],
+      "visual_cell_bbox": [
+        188,
+        480,
+        754,
+        537
+      ],
+      "enlargement_local_observation_bbox": null,
+      "enlargement_card_cell_bbox": null,
+      "enlargement_card_observation_bbox": null,
+      "enlargement_card_observation_valid": null,
+      "enlargement_extent_observation_source": null,
+      "visual_extent_bbox": null,
+      "enlargement_extent_reason": null,
+      "extent_reliable": null,
+      "extent_truncated": null,
+      "extent_obs_boundary_hit_count": null,
+      "extent_boundary_debug": null
+    },
+    {
+      "index": 15,
+      "text": "User Guide",
+      "prepared_bbox": [
+        694,
+        494,
+        815,
+        523
+      ],
+      "visual_cell_bbox": [
+        444,
+        480,
+        1038,
+        537
+      ],
+      "enlargement_local_observation_bbox": [
+        633.5,
+        480.0,
+        875.5,
+        537.0
+      ],
+      "enlargement_card_cell_bbox": [
+        657.7,
+        485.3,
+        896.5,
+        531.7
+      ],
+      "enlargement_card_observation_bbox": [
+        669.8,
+        486.75,
+        839.2,
+        530.25
+      ],
+      "enlargement_card_observation_valid": true,
+      "enlargement_extent_observation_source": "pure_card_v5_3",
+      "visual_extent_bbox": [
+        694.0,
+        494.0,
+        815.0,
+        523.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 4,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 24,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": false,
+          "growth": 24,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 7,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 7,
+          "score": 0.6010673202614383,
+          "confidence": 0.16666666666666666,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 16,
+      "text": "Home Hub",
+      "prepared_bbox": [
+        981,
+        494,
+        1096,
+        523
+      ],
+      "visual_cell_bbox": [
+        754,
+        480,
+        1154,
+        537
+      ],
+      "enlargement_local_observation_bbox": [
+        923.5,
+        480.0,
+        1153.5,
+        537.0
+      ],
+      "enlargement_card_cell_bbox": [
+        896.5,
+        485.3,
+        1130.5,
+        531.7
+      ],
+      "enlargement_card_observation_bbox": [
+        958.0,
+        486.75,
+        1119.0,
+        530.25
+      ],
+      "enlargement_card_observation_valid": true,
+      "enlargement_extent_observation_source": "pure_card_v5_3",
+      "visual_extent_bbox": [
+        981.0,
+        494.0,
+        1096.0,
+        523.0
+      ],
+      "enlargement_extent_reason": "observation_boundary_truncated",
+      "extent_reliable": false,
+      "extent_truncated": true,
+      "extent_obs_boundary_hit_count": 4,
+      "extent_boundary_debug": {
+        "left": {
+          "found": false,
+          "growth": 23,
+          "score": 0.8639078431372548,
+          "confidence": 0.5,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "right": {
+          "found": false,
+          "growth": 23,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "top": {
+          "found": false,
+          "growth": 7,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        },
+        "bottom": {
+          "found": false,
+          "growth": 7,
+          "score": 0.0,
+          "confidence": 0.0,
+          "reason": "observation_boundary_reached",
+          "obs_hit": true
+        }
+      }
+    },
+    {
+      "index": 17,
+      "text": "HDMI 1",
+      "prepared_bbox": [
+        1232,
+        494,
+        1300,
+        516
+      ],
+      "visual_cell_bbox": [
+        1198,
+        483,
+        1334,
+        527
+      ],
+      "enlargement_local_observation_bbox": null,
+      "enlargement_card_cell_bbox": null,
+      "enlargement_card_observation_bbox": null,
+      "enlargement_card_observation_valid": null,
+      "enlargement_extent_observation_source": null,
+      "visual_extent_bbox": null,
+      "enlargement_extent_reason": null,
+      "extent_reliable": null,
+      "extent_truncated": null,
+      "extent_obs_boundary_hit_count": null,
+      "extent_boundary_debug": null
+    },
+    {
+      "index": 18,
+      "text": "Network Settings",
+      "prepared_bbox": [
+        34,
+        25,
+        244,
+        65
+      ],
+      "visual_cell_bbox": [
+        0,
+        5,
+        349,
+        85
+      ],
+      "enlargement_local_observation_bbox": null,
+      "enlargement_card_cell_bbox": null,
+      "enlargement_card_observation_bbox": null,
+      "enlargement_card_observation_valid": null,
+      "enlargement_extent_observation_source": null,
+      "visual_extent_bbox": null,
+      "enlargement_extent_reason": null,
+      "extent_reliable": null,
+      "extent_truncated": null,
+      "extent_obs_boundary_hit_count": null,
+      "extent_boundary_debug": null
+    }
+  ]
+}
