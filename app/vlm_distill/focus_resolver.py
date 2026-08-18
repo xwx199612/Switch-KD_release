@@ -145,6 +145,9 @@ class FocusResolver:
     DEVICE_BOUNDARY_MIN_SAMPLE_STRENGTH = 0.35
     ENLARGEMENT_DEVICE_BOUNDARY_TOLERANCE_PX = 4.0
     ENLARGEMENT_DEVICE_BOUNDARY_TOLERANCE_RATIO = 0.01
+    NATURAL_BASELINE_MIN_PEERS = 1
+    NATURAL_BASELINE_MAX_PADDING_RATIO_X = 0.30
+    NATURAL_BASELINE_MAX_PADDING_RATIO_Y = 0.30
     ENLARGEMENT_COMPLETION_MIN_RETAINED_RATIO = 0.70
     ENLARGEMENT_MIRRORED_CONFIDENCE_FACTOR = 0.75
     ENLARGEMENT_CARD_CELL_OUTER_X = 0.30
@@ -206,6 +209,14 @@ class FocusResolver:
             use_montage=len(candidate_groups) >= 2,
         )
         source_device_geometry = self._estimate_source_device_viewport(image)
+        prepared_montage_tiles_by_index = {
+            int(index): list(tile["bbox"])
+            for tile in montage_tile_sizes
+            if isinstance(tile, dict)
+            and isinstance(tile.get("bbox"), (list, tuple))
+            for index in tile.get("candidate_indices", [])
+            if isinstance(index, int)
+        }
         prepared_device_geometry_by_index = (
             self._map_source_device_viewport_to_prepared(
                 source_device_geometry,
@@ -242,6 +253,7 @@ class FocusResolver:
             unannotated_image,
             source_device_geometry,
             prepared_device_geometry_by_index,
+            prepared_montage_tiles_by_index,
         )
         cv_debug_paths: dict[str, str | None] = {
             "focus_cv_prepared_image_path": self.DEBUG_CV_PREPARED_IMAGE_PATH,
@@ -506,6 +518,7 @@ class FocusResolver:
         image: Image.Image,
         source_device_geometry: dict[str, Any] | None = None,
         prepared_device_geometry_by_index: dict[int, dict[str, Any]] | None = None,
+        prepared_montage_tiles_by_index: dict[int, list[int]] | None = None,
     ) -> dict[str, Any]:
         """Rebase diagnostic channel comparisons on V5 comparable peers."""
         by_index = {int(item["index"]): item for item in evidence}
@@ -533,6 +546,9 @@ class FocusResolver:
             )
             if prepared_device_geometry:
                 item.update(prepared_device_geometry)
+            prepared_tile = (prepared_montage_tiles_by_index or {}).get(index)
+            if prepared_tile is not None:
+                item["prepared_montage_tile_bbox"] = prepared_tile
 
         def median(values: list[float]) -> float:
             ordered = sorted(values)
@@ -1395,6 +1411,11 @@ class FocusResolver:
                 "visual_extent_width": max(0.0, extent[2] - extent[0]),
                 "visual_extent_height": max(0.0, extent[3] - extent[1]),
                 "visual_extent_area": max(0.0, extent[2] - extent[0]) * max(0.0, extent[3] - extent[1]),
+                "extent_valid": bool(
+                    extent_reliable
+                    and extent[2] > extent[0]
+                    and extent[3] > extent[1]
+                ),
                 "visual_extent_left_growth_raw": raw_growth["left"],
                 "visual_extent_right_growth_raw": raw_growth["right"],
                 "visual_extent_top_growth_raw": raw_growth["top"],
@@ -1950,6 +1971,208 @@ class FocusResolver:
                     item["extent_reliable"] = False
                     item["enlargement_extent_reason"] = "invalid_geometry"
 
+        def natural_baseline_sample(
+            item: dict[str, Any],
+        ) -> tuple[dict[str, float], str] | None:
+            """Return a reliable peer's semantic-to-container padding sample."""
+            if (
+                not bool(item.get("extent_reliable"))
+                or not bool(item.get("extent_valid"))
+                or bool(item.get("extent_has_censored_measurement"))
+                or int(item.get("extent_device_boundary_contaminated_side_count", 0)) > 0
+            ):
+                return None
+            semantic = clipped_box(item.get("prepared_bbox"))
+            extent = clipped_box(item.get("visual_extent_bbox"))
+            if semantic is None or extent is None:
+                return None
+            left, top, right, bottom = semantic
+            width = max(right - left, 1e-6)
+            height = max(bottom - top, 1e-6)
+            source = (
+                "fully_measured"
+                if bool(item.get("extent_fully_measured"))
+                else "reconstructed"
+                if any(
+                    str(item.get(field, "")).startswith("mirrored_")
+                    for field in (
+                        "extent_left_source",
+                        "extent_right_source",
+                        "extent_top_source",
+                        "extent_bottom_source",
+                    )
+                )
+                else ""
+            )
+            if not source:
+                return None
+            return ({
+                "left": cls._clamp01(max(0.0, (left - extent[0]) / width) /
+                    max(cls.NATURAL_BASELINE_MAX_PADDING_RATIO_X, 1e-6))
+                * cls.NATURAL_BASELINE_MAX_PADDING_RATIO_X,
+                "right": cls._clamp01(max(0.0, (extent[2] - right) / width) /
+                    max(cls.NATURAL_BASELINE_MAX_PADDING_RATIO_X, 1e-6))
+                * cls.NATURAL_BASELINE_MAX_PADDING_RATIO_X,
+                "top": cls._clamp01(max(0.0, (top - extent[1]) / height) /
+                    max(cls.NATURAL_BASELINE_MAX_PADDING_RATIO_Y, 1e-6))
+                * cls.NATURAL_BASELINE_MAX_PADDING_RATIO_Y,
+                "bottom": cls._clamp01(max(0.0, (extent[3] - bottom) / height) /
+                    max(cls.NATURAL_BASELINE_MAX_PADDING_RATIO_Y, 1e-6))
+                * cls.NATURAL_BASELINE_MAX_PADDING_RATIO_Y,
+            }, source)
+
+        def clip_natural_container(
+            box: tuple[float, float, float, float],
+            item: dict[str, Any],
+        ) -> tuple[float, float, float, float] | None:
+            left, top, right, bottom = box
+            visual_cell = clipped_box(item.get("visual_cell_bbox"))
+            tile = clipped_box(item.get("prepared_montage_tile_bbox"))
+            for boundary in (visual_cell, tile):
+                if boundary is not None:
+                    left = max(left, boundary[0])
+                    top = max(top, boundary[1])
+                    right = min(right, boundary[2])
+                    bottom = min(bottom, boundary[3])
+            for side, value in (
+                ("left", item.get("prepared_device_left")),
+                ("top", item.get("prepared_device_top")),
+                ("right", item.get("prepared_device_right")),
+                ("bottom", item.get("prepared_device_bottom")),
+            ):
+                if not isinstance(value, (int, float)):
+                    continue
+                if side == "left":
+                    left = max(left, float(value))
+                elif side == "top":
+                    top = max(top, float(value))
+                elif side == "right":
+                    right = min(right, float(value))
+                else:
+                    bottom = min(bottom, float(value))
+            return clipped_box((left, top, right, bottom))
+
+        for sibling_set in sibling_sets:
+            members = [by_index[index] for index in sibling_set if index in by_index]
+            for item in members:
+                semantic = clipped_box(item.get("prepared_bbox"))
+                extent = clipped_box(item.get("visual_extent_bbox"))
+                observed_padding: dict[str, float | None] = {
+                    "left": None, "right": None, "top": None, "bottom": None,
+                }
+                if semantic is not None and extent is not None:
+                    left, top, right, bottom = semantic
+                    width = max(right - left, 1e-6)
+                    height = max(bottom - top, 1e-6)
+                    observed_padding = {
+                        "left": (left - extent[0]) / width,
+                        "right": (extent[2] - right) / width,
+                        "top": (top - extent[1]) / height,
+                        "bottom": (extent[3] - bottom) / height,
+                    }
+                samples: list[tuple[int, dict[str, float], str]] = []
+                for sibling in members:
+                    if sibling is item:
+                        continue
+                    sample = natural_baseline_sample(sibling)
+                    if sample is not None:
+                        samples.append((int(sibling["index"]), sample[0], sample[1]))
+                fully_measured_samples = [sample for sample in samples if sample[2] == "fully_measured"]
+                reconstructed_samples = [sample for sample in samples if sample[2] == "reconstructed"]
+                selected_samples = list(fully_measured_samples)
+                if len(selected_samples) < cls.NATURAL_BASELINE_MIN_PEERS:
+                    selected_samples.extend(reconstructed_samples)
+                baseline_padding: dict[str, float | None] = {
+                    "left": None, "right": None, "top": None, "bottom": None,
+                }
+                natural_container = None
+                baseline_valid = False
+                if semantic is not None and len(selected_samples) >= cls.NATURAL_BASELINE_MIN_PEERS:
+                    left, top, right, bottom = semantic
+                    width = max(right - left, 1e-6)
+                    height = max(bottom - top, 1e-6)
+                    baseline_padding = {
+                        side: median([sample[1][side] for sample in selected_samples])
+                        for side in ("left", "right", "top", "bottom")
+                    }
+                    natural_container = clip_natural_container((
+                        left - float(baseline_padding["left"]) * width,
+                        top - float(baseline_padding["top"]) * height,
+                        right + float(baseline_padding["right"]) * width,
+                        bottom + float(baseline_padding["bottom"]) * height,
+                    ), item)
+                    baseline_valid = bool(
+                        natural_container is not None
+                        and natural_container[0] <= left
+                        and natural_container[1] <= top
+                        and natural_container[2] >= right
+                        and natural_container[3] >= bottom
+                    )
+                source = (
+                    "unavailable" if not baseline_valid
+                    else "single_peer" if len(selected_samples) == 1
+                    else "leave_one_out_fully_measured" if all(
+                        sample[2] == "fully_measured" for sample in selected_samples
+                    )
+                    else "leave_one_out_mixed"
+                )
+                confidence = (
+                    0.0 if not baseline_valid else sum(
+                        1.0 if sample[2] == "fully_measured" else 0.75
+                        for sample in selected_samples
+                    ) / max(len(selected_samples), 1)
+                )
+                outlier_score = (
+                    sum(
+                        abs(float(observed_padding[side]) - float(baseline_padding[side]))
+                        for side in ("left", "right", "top", "bottom")
+                    ) / 4.0
+                    if baseline_valid and all(value is not None for value in observed_padding.values())
+                    else None
+                )
+                natural_width = (
+                    max(0.0, natural_container[2] - natural_container[0])
+                    if natural_container is not None else None
+                )
+                natural_height = (
+                    max(0.0, natural_container[3] - natural_container[1])
+                    if natural_container is not None else None
+                )
+                item.update({
+                    "observed_left_padding_ratio": observed_padding["left"],
+                    "observed_right_padding_ratio": observed_padding["right"],
+                    "observed_top_padding_ratio": observed_padding["top"],
+                    "observed_bottom_padding_ratio": observed_padding["bottom"],
+                    "baseline_left_padding_ratio": baseline_padding["left"],
+                    "baseline_right_padding_ratio": baseline_padding["right"],
+                    "baseline_top_padding_ratio": baseline_padding["top"],
+                    "baseline_bottom_padding_ratio": baseline_padding["bottom"],
+                    "natural_container_bbox": [round(value, 2) for value in natural_container] if natural_container else None,
+                    "natural_container_width": natural_width,
+                    "natural_container_height": natural_height,
+                    "natural_container_area": natural_width * natural_height if natural_width is not None and natural_height is not None else None,
+                    "natural_container_baseline_valid": baseline_valid,
+                    "natural_container_baseline_confidence": confidence,
+                    "natural_container_baseline_source": source,
+                    "natural_baseline_sibling_indices": [sample[0] for sample in selected_samples],
+                    "natural_baseline_sample_count": len(selected_samples),
+                    "natural_baseline_fully_measured_sample_count": sum(
+                        sample[2] == "fully_measured" for sample in selected_samples
+                    ),
+                    "natural_baseline_reconstructed_sample_count": sum(
+                        sample[2] == "reconstructed" for sample in selected_samples
+                    ),
+                    "focus_expansion_w": (
+                        float(item.get("visual_extent_width", 0.0)) / max(natural_width, 1e-6)
+                        if baseline_valid and natural_width is not None else None
+                    ),
+                    "focus_expansion_h": (
+                        float(item.get("visual_extent_height", 0.0)) / max(natural_height, 1e-6)
+                        if baseline_valid and natural_height is not None else None
+                    ),
+                    "semantic_container_padding_outlier_score": outlier_score,
+                })
+
         for sibling_set in sibling_sets:
             members = [by_index[index] for index in sibling_set if index in by_index]
             visual_widths = [max(1.0, float(item.get("visual_extent_width", 0.0))) for item in members]
@@ -2167,7 +2390,7 @@ class FocusResolver:
             draw.text((8, 24), f"ROI: {roi_bbox}  INPUT: {raw.width}x{raw.height}", fill=(255, 255, 255))
         else:
             draw.text((8, 24), "FULL IMAGE", fill=(255, 255, 255))
-        draw.text((8, 42), "BOX=semantic CELL=ownership CARD=card cell OBS=card window EXT=visual extent", fill=(255, 255, 255))
+        draw.text((8, 42), "BOX=semantic NAT=natural baseline CELL=ownership CARD=card cell OBS=card window EXT=visual extent", fill=(255, 255, 255))
 
         montage_tile_bboxes = []
         if focus_image_mode == "group_montage" and isinstance(montage_tile_sizes, list):
@@ -2205,6 +2428,7 @@ class FocusResolver:
             peer_id = peer_by_index.get(int(index), -1)
             sibling_id = sibling_by_index.get(int(index), -1)
             draw_box(bbox, (255, 255, 0), 2)
+            draw_box(item.get("natural_container_bbox"), (190, 120, 255), 2)
             draw_box(item.get("visual_cell_bbox"), (0, 180, 255), 2)
             draw_box(item.get("enlargement_card_cell_bbox"), (255, 0, 255), 2)
             draw_box(item.get("enlargement_card_observation_bbox"), (255, 140, 0), 2)
@@ -2271,6 +2495,7 @@ class FocusResolver:
                 "prepared_bbox": bbox,
                 "prepared_candidate_width": item.get("prepared_candidate_width"),
                 "prepared_candidate_height": item.get("prepared_candidate_height"),
+                "prepared_montage_tile_bbox": item.get("prepared_montage_tile_bbox"),
                 "source_device_viewport_bbox": item.get("source_device_viewport_bbox"),
                 "source_device_viewport_valid": item.get("source_device_viewport_valid"),
                 "source_device_left_valid": item.get("source_device_left_valid"),
@@ -2300,6 +2525,28 @@ class FocusResolver:
                 "visual_extent_width": item.get("visual_extent_width"),
                 "visual_extent_height": item.get("visual_extent_height"),
                 "visual_extent_area": item.get("visual_extent_area"),
+                "natural_container_bbox": item.get("natural_container_bbox"),
+                "natural_container_width": item.get("natural_container_width"),
+                "natural_container_height": item.get("natural_container_height"),
+                "natural_container_area": item.get("natural_container_area"),
+                "natural_container_baseline_valid": item.get("natural_container_baseline_valid"),
+                "natural_container_baseline_confidence": item.get("natural_container_baseline_confidence"),
+                "natural_container_baseline_source": item.get("natural_container_baseline_source"),
+                "natural_baseline_sibling_indices": item.get("natural_baseline_sibling_indices"),
+                "natural_baseline_sample_count": item.get("natural_baseline_sample_count"),
+                "natural_baseline_fully_measured_sample_count": item.get("natural_baseline_fully_measured_sample_count"),
+                "natural_baseline_reconstructed_sample_count": item.get("natural_baseline_reconstructed_sample_count"),
+                "observed_left_padding_ratio": item.get("observed_left_padding_ratio"),
+                "observed_right_padding_ratio": item.get("observed_right_padding_ratio"),
+                "observed_top_padding_ratio": item.get("observed_top_padding_ratio"),
+                "observed_bottom_padding_ratio": item.get("observed_bottom_padding_ratio"),
+                "baseline_left_padding_ratio": item.get("baseline_left_padding_ratio"),
+                "baseline_right_padding_ratio": item.get("baseline_right_padding_ratio"),
+                "baseline_top_padding_ratio": item.get("baseline_top_padding_ratio"),
+                "baseline_bottom_padding_ratio": item.get("baseline_bottom_padding_ratio"),
+                "focus_expansion_w": item.get("focus_expansion_w"),
+                "focus_expansion_h": item.get("focus_expansion_h"),
+                "semantic_container_padding_outlier_score": item.get("semantic_container_padding_outlier_score"),
                 "enlargement_sibling_group_id": item.get("enlargement_sibling_group_id"),
                 "enlargement_sibling_indices": item.get("enlargement_sibling_indices"),
                 "enlargement_sibling_count": item.get("enlargement_sibling_count"),

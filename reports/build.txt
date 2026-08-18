@@ -15,7 +15,7 @@
 #4 DONE 0.0s
 
 #5 [internal] load build context
-#5 transferring context: 196.79kB done
+#5 transferring context: 220.90kB done
 #5 DONE 0.0s
 
 #6 [ 3/10] WORKDIR /app
@@ -47,7 +47,7 @@
 
 #15 exporting to image
 #15 exporting layers 0.1s done
-#15 writing image sha256:6852f31ae12b7a4f51800c0531a26f6cf4c037782c9831b8798c1ee0528517ac done
+#15 writing image sha256:7f8ec83bf0ed1fb3559522a8068179397fb2b4e4dabb92eda9311d768fb57186 done
 #15 naming to docker.io/library/vlm-online-dbild-runtime:1.2.0 done
 #15 DONE 0.1s
 image=vlm-online-dbild-runtime:1.2.0
