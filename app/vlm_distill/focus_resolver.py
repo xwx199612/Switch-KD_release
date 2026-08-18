@@ -2355,14 +2355,9 @@ class FocusResolver:
                     if not inward_valid:
                         continue
                     inward_sample_count += 1
-                    if not outward_valid:
-                        outward_context_truncated = True
-                        continue
-                    outward_sample_count += 1
+
                     interior_near_color = pixel_at(*interior_near)
                     interior_far_color = pixel_at(*interior_far)
-                    exterior_near_color = pixel_at(*exterior_near)
-                    exterior_far_color = pixel_at(*exterior_far)
                     luma_distance = abs(
                         luminance(interior_near_color)
                         - luminance(interior_far_color)
@@ -2380,6 +2375,13 @@ class FocusResolver:
                             / cls.ENLARGEMENT_EDGE_COHERENCE_COLOR_NORMALIZER
                         )
                     ))
+
+                    if not outward_valid:
+                        outward_context_truncated = True
+                        continue
+                    outward_sample_count += 1
+                    exterior_near_color = pixel_at(*exterior_near)
+                    exterior_far_color = pixel_at(*exterior_far)
                     exterior_separations.append((
                         oriented_strength(
                             interior_near_color,
