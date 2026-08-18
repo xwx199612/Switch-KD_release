@@ -138,6 +138,13 @@ class FocusResolver:
     ENLARGEMENT_EDGE_COHERENCE_LUMINANCE_NORMALIZER = 0.20
     ENLARGEMENT_EDGE_COHERENCE_COLOR_NORMALIZER = 0.35
     ENLARGEMENT_STRUCTURE_MIN_SAMPLE_STRENGTH = 0.12
+    DEVICE_BOUNDARY_MIN_SPAN_FRACTION = 0.70
+    DEVICE_BOUNDARY_SEARCH_FRACTION = 0.25
+    DEVICE_BOUNDARY_MIN_SCORE = 0.60
+    DEVICE_BOUNDARY_GRADIENT_RADIUS = 2
+    DEVICE_BOUNDARY_MIN_SAMPLE_STRENGTH = 0.35
+    ENLARGEMENT_DEVICE_BOUNDARY_TOLERANCE_PX = 4.0
+    ENLARGEMENT_DEVICE_BOUNDARY_TOLERANCE_RATIO = 0.01
     ENLARGEMENT_COMPLETION_MIN_RETAINED_RATIO = 0.70
     ENLARGEMENT_MIRRORED_CONFIDENCE_FACTOR = 0.75
     ENLARGEMENT_CARD_CELL_OUTER_X = 0.30
@@ -198,6 +205,17 @@ class FocusResolver:
             focus_group_ids=focus_group_ids,
             use_montage=len(candidate_groups) >= 2,
         )
+        source_device_geometry = self._estimate_source_device_viewport(image)
+        prepared_device_geometry_by_index = (
+            self._map_source_device_viewport_to_prepared(
+                source_device_geometry,
+                image.size,
+                unannotated_image.size,
+                focus_image_mode,
+                roi_bbox,
+                montage_tile_sizes,
+            )
+        )
         peer_analysis = self._build_peer_analysis(
             candidate_groups, prepared_candidate_bboxes
         )
@@ -222,6 +240,8 @@ class FocusResolver:
             visual_evidence,
             peer_analysis["peer_sets"],
             unannotated_image,
+            source_device_geometry,
+            prepared_device_geometry_by_index,
         )
         cv_debug_paths: dict[str, str | None] = {
             "focus_cv_prepared_image_path": self.DEBUG_CV_PREPARED_IMAGE_PATH,
@@ -242,6 +262,7 @@ class FocusResolver:
                 montage_size,
                 montage_tile_sizes,
                 roi_bbox,
+                source_device_geometry,
             )
             cv_debug_paths["focus_cv_prepared_debug_image_path"] = self.DEBUG_CV_PREPARED_DEBUG_IMAGE_PATH
             cv_debug_paths["focus_cv_prepared_metadata_path"] = self.DEBUG_CV_PREPARED_METADATA_PATH
@@ -316,6 +337,9 @@ class FocusResolver:
             "focus_montage_grid": montage_grid,
             "focus_montage_size": montage_size,
             "focus_montage_tile_sizes": montage_tile_sizes,
+            "source_device_viewport_bbox": source_device_geometry.get("source_device_viewport_bbox"),
+            "source_device_viewport_valid": source_device_geometry.get("source_device_viewport_valid"),
+            "source_device_viewport_confidence": source_device_geometry.get("source_device_viewport_confidence"),
             "focus_montage_group_tile_count": len(candidate_groups)
             if focus_image_mode == "group_montage" else 0,
             "focus_montage_group_tile_indices": candidate_groups
@@ -480,6 +504,8 @@ class FocusResolver:
         evidence: list[dict[str, Any]],
         peer_sets: list[list[int]],
         image: Image.Image,
+        source_device_geometry: dict[str, Any] | None = None,
+        prepared_device_geometry_by_index: dict[int, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Rebase diagnostic channel comparisons on V5 comparable peers."""
         by_index = {int(item["index"]): item for item in evidence}
@@ -497,6 +523,16 @@ class FocusResolver:
             ]
             item["peer_count"] = len(item["comparable_peer_indices"])
             item["is_isolated"] = peer_id < 0
+            if source_device_geometry:
+                item.update(source_device_geometry)
+            prepared_device_geometry = (
+                (prepared_device_geometry_by_index or {}).get(
+                    index,
+                    (prepared_device_geometry_by_index or {}).get(-1, {}),
+                )
+            )
+            if prepared_device_geometry:
+                item.update(prepared_device_geometry)
 
         def median(values: list[float]) -> float:
             ordered = sorted(values)
@@ -1109,6 +1145,78 @@ class FocusResolver:
                         ),
                     }
 
+            selected_edge_coordinates: dict[str, float] = {
+                "left": left - growth["left"],
+                "right": right + growth["right"],
+                "top": top - growth["top"],
+                "bottom": bottom + growth["bottom"],
+            }
+            device_edges = {
+                "left": item.get("prepared_device_left"),
+                "right": item.get("prepared_device_right"),
+                "top": item.get("prepared_device_top"),
+                "bottom": item.get("prepared_device_bottom"),
+            }
+            device_confidences = {
+                "left": item.get("source_device_left_confidence"),
+                "right": item.get("source_device_right_confidence"),
+                "top": item.get("source_device_top_confidence"),
+                "bottom": item.get("source_device_bottom_confidence"),
+            }
+            device_valid = {
+                "left": bool(item.get("source_device_left_valid")),
+                "right": bool(item.get("source_device_right_valid")),
+                "top": bool(item.get("source_device_top_valid")),
+                "bottom": bool(item.get("source_device_bottom_valid")),
+            }
+            device_distances: dict[str, float | None] = {}
+            for side, entry in boundary_debug.items():
+                device_edge = device_edges[side]
+                candidate_dimension = width if side in ("left", "right") else height
+                tolerance = max(
+                    cls.ENLARGEMENT_DEVICE_BOUNDARY_TOLERANCE_PX,
+                    cls.ENLARGEMENT_DEVICE_BOUNDARY_TOLERANCE_RATIO
+                    * candidate_dimension,
+                )
+                distance_to_device = (
+                    abs(selected_edge_coordinates[side] - float(device_edge))
+                    if device_valid[side]
+                    and isinstance(device_edge, (int, float))
+                    else None
+                )
+                device_distances[side] = distance_to_device
+                contaminated = bool(
+                    entry["state"] in ("boundary", "continuation_to_limit")
+                    and distance_to_device is not None
+                    and isinstance(device_confidences[side], (int, float))
+                    and float(device_confidences[side])
+                    >= cls.DEVICE_BOUNDARY_MIN_SCORE
+                    and distance_to_device <= tolerance
+                )
+                entry["selected_edge_coordinate"] = selected_edge_coordinates[side]
+                entry["distance_to_device_boundary"] = distance_to_device
+                entry["device_boundary_contaminated"] = contaminated
+                entry["boundary_source"] = (
+                    "coherent_outer_edge"
+                    if entry["reason"] == "coherent_outer_edge"
+                    else "legacy_stable_transition"
+                    if entry["reason"] == "legacy_stable_transition"
+                    else "continuation_to_limit"
+                    if entry["state"] == "continuation_to_limit"
+                    else "unresolved"
+                )
+                if contaminated:
+                    entry.update({
+                        "found": False,
+                        "state": "unresolved",
+                        "reason": "device_boundary_contamination",
+                        "confidence": 0.0,
+                        "continuation_confidence": 0.0,
+                        "censored": False,
+                        "edge_found": False,
+                        "boundary_source": "device_boundary_contaminated",
+                    })
+
             raw_growth = dict(growth)
             raw_extent = clipped_box((
                 left - raw_growth["left"],
@@ -1154,6 +1262,11 @@ class FocusResolver:
                 first: str,
                 second: str,
             ) -> tuple[bool, float, str]:
+                if (
+                    boundary_debug[first].get("device_boundary_contaminated")
+                    or boundary_debug[second].get("device_boundary_contaminated")
+                ):
+                    return False, 0.0, "unresolved"
                 first_state = str(boundary_debug[first]["state"])
                 second_state = str(boundary_debug[second]["state"])
                 if first_state == "boundary" and second_state == "boundary":
@@ -1354,6 +1467,26 @@ class FocusResolver:
                 "extent_right_edge_orientation_score": boundary_debug["right"]["edge_orientation_score"],
                 "extent_top_edge_orientation_score": boundary_debug["top"]["edge_orientation_score"],
                 "extent_bottom_edge_orientation_score": boundary_debug["bottom"]["edge_orientation_score"],
+                "extent_left_boundary_source": boundary_debug["left"]["boundary_source"],
+                "extent_right_boundary_source": boundary_debug["right"]["boundary_source"],
+                "extent_top_boundary_source": boundary_debug["top"]["boundary_source"],
+                "extent_bottom_boundary_source": boundary_debug["bottom"]["boundary_source"],
+                "extent_left_selected_edge_coordinate": selected_edge_coordinates["left"],
+                "extent_right_selected_edge_coordinate": selected_edge_coordinates["right"],
+                "extent_top_selected_edge_coordinate": selected_edge_coordinates["top"],
+                "extent_bottom_selected_edge_coordinate": selected_edge_coordinates["bottom"],
+                "extent_left_distance_to_device_boundary": device_distances["left"],
+                "extent_right_distance_to_device_boundary": device_distances["right"],
+                "extent_top_distance_to_device_boundary": device_distances["top"],
+                "extent_bottom_distance_to_device_boundary": device_distances["bottom"],
+                "extent_left_device_boundary_contaminated": boundary_debug["left"]["device_boundary_contaminated"],
+                "extent_right_device_boundary_contaminated": boundary_debug["right"]["device_boundary_contaminated"],
+                "extent_top_device_boundary_contaminated": boundary_debug["top"]["device_boundary_contaminated"],
+                "extent_bottom_device_boundary_contaminated": boundary_debug["bottom"]["device_boundary_contaminated"],
+                "extent_device_boundary_contaminated_side_count": sum(
+                    entry["device_boundary_contaminated"]
+                    for entry in boundary_debug.values()
+                ),
                 "extent_edge_coherent_side_count": sum(
                     entry["edge_found"] for entry in boundary_debug.values()
                 ),
@@ -1408,7 +1541,11 @@ class FocusResolver:
                 "extent_boundary_reliability": reliability,
                 "extent_reliable": extent_reliable,
                 "enlargement_extent_reason": (
-                    "observation_boundary_truncated" if extent_truncated
+                    "device_boundary_contamination" if any(
+                        entry["device_boundary_contaminated"]
+                        for entry in boundary_debug.values()
+                    )
+                    else "observation_boundary_truncated" if extent_truncated
                     else "censored_continuation_extent" if extent_reliable and has_censored_measurement
                     else "partial_boundary_reconstructed" if extent_reliable and used_mirror
                     else "stable_boundary_extent" if extent_reliable
@@ -2007,6 +2144,7 @@ class FocusResolver:
         montage_size: Any,
         montage_tile_sizes: Any,
         roi_bbox: Any,
+        source_device_geometry: dict[str, Any] | None = None,
     ) -> None:
         """Save a raw prepared CV image and a non-invasive geometry overlay."""
         raw = image.convert("RGB").copy()
@@ -2042,6 +2180,25 @@ class FocusResolver:
                 bbox = tile.get("bbox")
                 if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
                     draw.text((int(bbox[0]) + 4, int(bbox[1]) + 4), f"TILE {tile.get('tile_index', '?')} / G{tile.get('group_id', '?')}", fill=(255, 0, 255))
+
+        device_edges: dict[str, set[float]] = {
+            "left": set(), "right": set(), "top": set(), "bottom": set(),
+        }
+        for item in evidence_by_index.values():
+            for side in device_edges:
+                value = item.get(f"prepared_device_{side}")
+                if isinstance(value, (int, float)):
+                    device_edges[side].add(float(value))
+        for side, values in device_edges.items():
+            for value in values:
+                if side in ("left", "right"):
+                    x = int(round(value))
+                    draw.line((x, 0, x, raw.height - 1), fill=(255, 80, 80), width=1)
+                    draw.text((x + 2, 60), f"DEVICE {side[0].upper()}", fill=(255, 80, 80))
+                else:
+                    y = int(round(value))
+                    draw.line((0, y, raw.width - 1, y), fill=(255, 80, 80), width=1)
+                    draw.text((8, y + 2), f"DEVICE {side[0].upper()}", fill=(255, 80, 80))
 
         for index, bbox in sorted(prepared_candidate_bboxes.items()):
             item = evidence_by_index.get(int(index), {})
@@ -2083,7 +2240,16 @@ class FocusResolver:
                     else f"{side_marker}!"
                 )
             )
-            label = f"#{index} P{peer_id}/S{sibling_id if sibling_id >= 0 else '-'} EXT:{extent_state} {hit_sides}".rstrip()
+            device_sides = "".join(
+                marker
+                for marker, field in (
+                    ("LD", "extent_left_device_boundary_contaminated"),
+                    ("RD", "extent_right_device_boundary_contaminated"),
+                    ("TD", "extent_top_device_boundary_contaminated"),
+                    ("BD", "extent_bottom_device_boundary_contaminated"),
+                ) if item.get(field)
+            )
+            label = f"#{index} P{peer_id}/S{sibling_id if sibling_id >= 0 else '-'} EXT:{extent_state} {hit_sides} {device_sides}".rstrip()
             try:
                 left = int(round(float(bbox[0])))
                 top = max(62, int(round(float(bbox[1]))) - 16)
@@ -2105,6 +2271,16 @@ class FocusResolver:
                 "prepared_bbox": bbox,
                 "prepared_candidate_width": item.get("prepared_candidate_width"),
                 "prepared_candidate_height": item.get("prepared_candidate_height"),
+                "source_device_viewport_bbox": item.get("source_device_viewport_bbox"),
+                "source_device_viewport_valid": item.get("source_device_viewport_valid"),
+                "source_device_left_valid": item.get("source_device_left_valid"),
+                "source_device_right_valid": item.get("source_device_right_valid"),
+                "source_device_top_valid": item.get("source_device_top_valid"),
+                "source_device_bottom_valid": item.get("source_device_bottom_valid"),
+                "source_device_left_confidence": item.get("source_device_left_confidence"),
+                "source_device_right_confidence": item.get("source_device_right_confidence"),
+                "source_device_top_confidence": item.get("source_device_top_confidence"),
+                "source_device_bottom_confidence": item.get("source_device_bottom_confidence"),
                 "enlargement_semantic_width": item.get("enlargement_semantic_width"),
                 "enlargement_semantic_height": item.get("enlargement_semantic_height"),
                 "visual_cell_bbox": item.get("visual_cell_bbox"),
@@ -2113,6 +2289,13 @@ class FocusResolver:
                 "enlargement_card_observation_bbox": item.get("enlargement_card_observation_bbox"),
                 "enlargement_card_observation_valid": item.get("enlargement_card_observation_valid"),
                 "enlargement_extent_observation_source": item.get("enlargement_extent_observation_source"),
+                "prepared_device_viewport_bbox": item.get("prepared_device_viewport_bbox"),
+                "prepared_device_left": item.get("prepared_device_left"),
+                "prepared_device_right": item.get("prepared_device_right"),
+                "prepared_device_top": item.get("prepared_device_top"),
+                "prepared_device_bottom": item.get("prepared_device_bottom"),
+                "prepared_device_geometry_source": item.get("prepared_device_geometry_source"),
+                "device_geometry_transform_mode": item.get("device_geometry_transform_mode"),
                 "visual_extent_bbox": item.get("visual_extent_bbox"),
                 "visual_extent_width": item.get("visual_extent_width"),
                 "visual_extent_height": item.get("visual_extent_height"),
@@ -2162,12 +2345,30 @@ class FocusResolver:
                 "extent_mean_edge_coherence": item.get("extent_mean_edge_coherence"),
                 "extent_obs_boundary_hit_count": item.get("extent_obs_boundary_hit_count"),
                 "extent_boundary_debug": item.get("extent_boundary_debug"),
+                "extent_left_boundary_source": item.get("extent_left_boundary_source"),
+                "extent_right_boundary_source": item.get("extent_right_boundary_source"),
+                "extent_top_boundary_source": item.get("extent_top_boundary_source"),
+                "extent_bottom_boundary_source": item.get("extent_bottom_boundary_source"),
+                "extent_left_selected_edge_coordinate": item.get("extent_left_selected_edge_coordinate"),
+                "extent_right_selected_edge_coordinate": item.get("extent_right_selected_edge_coordinate"),
+                "extent_top_selected_edge_coordinate": item.get("extent_top_selected_edge_coordinate"),
+                "extent_bottom_selected_edge_coordinate": item.get("extent_bottom_selected_edge_coordinate"),
+                "extent_left_distance_to_device_boundary": item.get("extent_left_distance_to_device_boundary"),
+                "extent_right_distance_to_device_boundary": item.get("extent_right_distance_to_device_boundary"),
+                "extent_top_distance_to_device_boundary": item.get("extent_top_distance_to_device_boundary"),
+                "extent_bottom_distance_to_device_boundary": item.get("extent_bottom_distance_to_device_boundary"),
+                "extent_left_device_boundary_contaminated": item.get("extent_left_device_boundary_contaminated"),
+                "extent_right_device_boundary_contaminated": item.get("extent_right_device_boundary_contaminated"),
+                "extent_top_device_boundary_contaminated": item.get("extent_top_device_boundary_contaminated"),
+                "extent_bottom_device_boundary_contaminated": item.get("extent_bottom_device_boundary_contaminated"),
+                "extent_device_boundary_contaminated_side_count": item.get("extent_device_boundary_contaminated_side_count"),
             })
         metadata = {
             "image_name": None,
             "focus_image_mode": focus_image_mode,
             "prepared_size": [raw.width, raw.height],
             "roi_bbox_pixels": roi_bbox,
+            "source_device_viewport": source_device_geometry or {},
             "montage_grid": montage_grid,
             "montage_size": montage_size,
             "montage_tile_sizes": montage_tile_sizes,
@@ -3399,6 +3600,242 @@ class FocusResolver:
         return horizontal_gap <= cls.PEER_MAX_HORIZONTAL_GAP_RATIO * max(width_a, width_b)
 
     @classmethod
+    def _estimate_source_device_viewport(cls, image: Image.Image) -> dict[str, Any]:
+        """Estimate only globally coherent display edges in source coordinates."""
+        pixels = image.convert("RGB")
+        width, height = pixels.size
+        if width <= 2 or height <= 2:
+            return {
+                "source_device_viewport_bbox": [None, None, None, None],
+                "source_device_viewport_valid": False,
+                "source_device_left_valid": False,
+                "source_device_right_valid": False,
+                "source_device_top_valid": False,
+                "source_device_bottom_valid": False,
+                "source_device_left_confidence": 0.0,
+                "source_device_right_confidence": 0.0,
+                "source_device_top_confidence": 0.0,
+                "source_device_bottom_confidence": 0.0,
+                "source_device_viewport_confidence": 0.0,
+                "source_device_geometry_source": "global_long_span_edge_v5_4_2",
+            }
+        data = pixels.load()
+        radius = cls.DEVICE_BOUNDARY_GRADIENT_RADIUS
+
+        def pixel_at(x: int, y: int) -> tuple[int, int, int]:
+            return data[
+                max(0, min(width - 1, x)),
+                max(0, min(height - 1, y)),
+            ]
+
+        def luma(color: tuple[int, int, int]) -> float:
+            return (
+                0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]
+            ) / 255.0
+
+        def strength(first: tuple[int, int, int], second: tuple[int, int, int]) -> float:
+            luminance_gradient = abs(luma(first) - luma(second))
+            color_gradient = math.sqrt(sum(
+                ((first[channel] - second[channel]) / 255.0) ** 2
+                for channel in range(3)
+            ) / 3.0)
+            return cls._clamp01(
+                0.45 * cls._clamp01(
+                    luminance_gradient
+                    / cls.ENLARGEMENT_EDGE_COHERENCE_LUMINANCE_NORMALIZER
+                )
+                + 0.55 * cls._clamp01(
+                    color_gradient
+                    / cls.ENLARGEMENT_EDGE_COHERENCE_COLOR_NORMALIZER
+                )
+            )
+
+        def profile(side: str, coordinate: int) -> tuple[float, float]:
+            span = height if side in ("left", "right") else width
+            sample_count = max(20, min(160, int(round(span / 16.0))))
+            strengths: list[float] = []
+            for sample_index in range(sample_count):
+                fraction = 0.05 + 0.90 * (sample_index + 0.5) / sample_count
+                if side in ("left", "right"):
+                    x = coordinate
+                    y = int(round(fraction * (height - 1)))
+                    normal = strength(pixel_at(x - radius, y), pixel_at(x + radius, y))
+                    tangent = strength(pixel_at(x, y - radius), pixel_at(x, y + radius))
+                else:
+                    x = int(round(fraction * (width - 1)))
+                    y = coordinate
+                    normal = strength(pixel_at(x, y - radius), pixel_at(x, y + radius))
+                    tangent = strength(pixel_at(x - radius, y), pixel_at(x + radius, y))
+                strengths.append(normal * normal / max(normal + tangent, 1e-6))
+            span_support = sum(
+                value >= cls.DEVICE_BOUNDARY_MIN_SAMPLE_STRENGTH
+                for value in strengths
+            ) / max(len(strengths), 1)
+            mean_strength = sum(strengths) / max(len(strengths), 1)
+            return span_support, cls._clamp01(
+                0.70 * span_support + 0.30 * mean_strength
+            )
+
+        def find_edge(side: str) -> tuple[int | None, float]:
+            maximum = width if side in ("left", "right") else height
+            search = max(radius, int(round(maximum * cls.DEVICE_BOUNDARY_SEARCH_FRACTION)))
+            positions = (
+                range(radius, min(search, maximum - radius) + 1)
+                if side in ("left", "top")
+                else range(max(radius, maximum - search), maximum - radius + 1)
+            )
+            best: tuple[float, int] | None = None
+            for position in positions:
+                span_support, score = profile(side, position)
+                if span_support < cls.DEVICE_BOUNDARY_MIN_SPAN_FRACTION:
+                    continue
+                if best is None or score > best[0]:
+                    best = (score, position)
+            if best is None or best[0] < cls.DEVICE_BOUNDARY_MIN_SCORE:
+                return None, 0.0
+            return best[1], best[0]
+
+        left, left_confidence = find_edge("left")
+        right, right_confidence = find_edge("right")
+        top, top_confidence = find_edge("top")
+        bottom, bottom_confidence = find_edge("bottom")
+        horizontal_valid = (
+            left is not None and right is not None and right > left
+            and right - left >= 0.30 * width
+        )
+        vertical_valid = (
+            top is not None and bottom is not None and bottom > top
+            and bottom - top >= 0.30 * height
+        )
+        confidences = [
+            value for value in (
+                left_confidence if left is not None else None,
+                right_confidence if right is not None else None,
+                top_confidence if top is not None else None,
+                bottom_confidence if bottom is not None else None,
+            ) if value is not None
+        ]
+        return {
+            "source_device_viewport_bbox": [left, top, right, bottom],
+            "source_device_viewport_valid": horizontal_valid or vertical_valid,
+            "source_device_left_valid": left is not None,
+            "source_device_right_valid": right is not None,
+            "source_device_top_valid": top is not None,
+            "source_device_bottom_valid": bottom is not None,
+            "source_device_left_confidence": left_confidence,
+            "source_device_right_confidence": right_confidence,
+            "source_device_top_confidence": top_confidence,
+            "source_device_bottom_confidence": bottom_confidence,
+            "source_device_viewport_confidence": (
+                sum(confidences) / len(confidences) if confidences else 0.0
+            ),
+            "source_device_geometry_source": "global_long_span_edge_v5_4_2",
+        }
+
+    @classmethod
+    def _map_source_device_viewport_to_prepared(
+        cls,
+        source_geometry: dict[str, Any],
+        source_size: tuple[int, int],
+        prepared_size: tuple[int, int],
+        focus_image_mode: str,
+        roi_bbox: tuple[int, int, int, int] | None,
+        montage_tiles: Any,
+    ) -> dict[int, dict[str, Any]]:
+        """Map source device edges only through the actual crop/tile transform."""
+        source_bbox = source_geometry.get("source_device_viewport_bbox", [])
+        if not isinstance(source_bbox, (list, tuple)) or len(source_bbox) < 4:
+            return {}
+
+        def map_region(
+            source_region: tuple[float, float, float, float],
+            prepared_region: tuple[float, float, float, float],
+            indices: list[int],
+            transform_mode: str,
+        ) -> dict[int, dict[str, Any]]:
+            source_left, source_top, source_right, source_bottom = source_region
+            prepared_left, prepared_top, prepared_right, prepared_bottom = prepared_region
+            scale_x = (prepared_right - prepared_left) / max(source_right - source_left, 1e-6)
+            scale_y = (prepared_bottom - prepared_top) / max(source_bottom - source_top, 1e-6)
+
+            def map_edge(value: Any, valid: bool, axis: str) -> float | None:
+                if not valid or not isinstance(value, (int, float)):
+                    return None
+                lower, upper = (
+                    (source_left, source_right)
+                    if axis == "x" else (source_top, source_bottom)
+                )
+                if value < lower or value > upper:
+                    return None
+                if axis == "x":
+                    return prepared_left + (float(value) - source_left) * scale_x
+                return prepared_top + (float(value) - source_top) * scale_y
+
+            mapped = {
+                "prepared_device_left": map_edge(
+                    source_bbox[0], bool(source_geometry.get("source_device_left_valid")), "x"
+                ),
+                "prepared_device_top": map_edge(
+                    source_bbox[1], bool(source_geometry.get("source_device_top_valid")), "y"
+                ),
+                "prepared_device_right": map_edge(
+                    source_bbox[2], bool(source_geometry.get("source_device_right_valid")), "x"
+                ),
+                "prepared_device_bottom": map_edge(
+                    source_bbox[3], bool(source_geometry.get("source_device_bottom_valid")), "y"
+                ),
+                "prepared_device_geometry_source": source_geometry.get("source_device_geometry_source"),
+                "device_geometry_transform_mode": transform_mode,
+            }
+            mapped["prepared_device_viewport_bbox"] = [
+                mapped["prepared_device_left"],
+                mapped["prepared_device_top"],
+                mapped["prepared_device_right"],
+                mapped["prepared_device_bottom"],
+            ]
+            return {index: dict(mapped) for index in indices}
+
+        if focus_image_mode == "group_montage":
+            mapped: dict[int, dict[str, Any]] = {}
+            if not isinstance(montage_tiles, list):
+                return mapped
+            for tile in montage_tiles:
+                if not isinstance(tile, dict):
+                    continue
+                source_region = tile.get("source_crop_bbox")
+                prepared_region = tile.get("bbox")
+                indices = tile.get("candidate_indices")
+                if (
+                    not isinstance(source_region, (list, tuple))
+                    or not isinstance(prepared_region, (list, tuple))
+                    or not isinstance(indices, list)
+                    or len(source_region) < 4
+                    or len(prepared_region) < 4
+                ):
+                    continue
+                mapped.update(map_region(
+                    tuple(float(value) for value in source_region[:4]),
+                    tuple(float(value) for value in prepared_region[:4]),
+                    [int(index) for index in indices],
+                    "montage",
+                ))
+            return mapped
+
+        if focus_image_mode == "roi" and roi_bbox is not None:
+            source_region = tuple(float(value) for value in roi_bbox)
+            transform_mode = "roi"
+        else:
+            source_region = (0.0, 0.0, float(source_size[0]), float(source_size[1]))
+            transform_mode = "full_image"
+        global_mapping = map_region(
+            source_region,
+            (0.0, 0.0, float(prepared_size[0]), float(prepared_size[1])),
+            [0],
+            transform_mode,
+        )
+        return {-1: global_mapping[0]}
+
+    @classmethod
     def _prepare_focus_image(
         cls,
         image: Image.Image,
@@ -3416,7 +3853,7 @@ class FocusResolver:
         list[int],
         list[int],
         list[int],
-        list[list[int]],
+        list[dict[str, Any]],
         dict[int, list[int]],
     ]:
         """Make one geometrically selected, annotated image for focus inference."""
@@ -3601,7 +4038,7 @@ class FocusResolver:
         list[int],
         list[int],
         list[int],
-        list[list[int]],
+        list[dict[str, Any]],
         dict[int, list[int]],
     ] | None:
         """Build one context-preserving crop tile for each candidate group."""
@@ -3682,7 +4119,7 @@ class FocusResolver:
                 "RGB", (montage_width, montage_height), (32, 32, 32)
             )
             annotated_indices: list[int] = []
-            tile_sizes: list[list[int]] = []
+            tile_sizes: list[dict[str, Any]] = []
             prepared_candidate_bboxes: dict[int, list[int]] = {}
             draw = ImageDraw.Draw(montage)
             y = padding
@@ -3719,7 +4156,20 @@ class FocusResolver:
                         ]
                     unannotated_montage.paste(unannotated_tile, (x, y))
                     montage.paste(tile, (x, y))
-                    tile_sizes.append([tile_width, tile_height])
+                    tile_sizes.append({
+                        "tile_index": tile_index,
+                        "group_id": tile_data["group_id"],
+                        "candidate_indices": list(tile_data["indices"]),
+                        "bbox": [x, y, x + tile_width, y + tile_height],
+                        "source_crop_bbox": [
+                            tile_data["crop_left"],
+                            tile_data["crop_top"],
+                            tile_data["crop_left"] + tile_data["crop"].width,
+                            tile_data["crop_top"] + tile_data["crop"].height,
+                        ],
+                        "scale_x": scale_x,
+                        "scale_y": scale_y,
+                    })
                     x += tile_width + gap
                 y += row_heights[row] + gap
 
