@@ -149,6 +149,10 @@ class FocusResolver:
     NATURAL_BASELINE_MIN_PEERS = 1
     NATURAL_BASELINE_MAX_PADDING_RATIO_X = 0.30
     NATURAL_BASELINE_MAX_PADDING_RATIO_Y = 0.30
+    NATURAL_CONTAINER_MIN_EDGE_SCORE = 0.55
+    NATURAL_CONTAINER_MIN_SPAN_SUPPORT = 0.55
+    NATURAL_CONTAINER_MIN_ORIENTED_STRENGTH = 0.35
+    NATURAL_CONTAINER_LOCAL_RIDGE_RADIUS_STEPS = 1
     ENLARGEMENT_COMPLETION_MIN_RETAINED_RATIO = 0.70
     ENLARGEMENT_MIRRORED_CONFIDENCE_FACTOR = 0.75
     ENLARGEMENT_CARD_CELL_OUTER_X = 0.30
@@ -1974,15 +1978,468 @@ class FocusResolver:
             })
             return observation, valid
 
+        def recover_independent_current_container(
+            item: dict[str, Any],
+            observation: tuple[float, float, float, float] | None,
+            siblings: list[dict[str, Any]],
+        ) -> None:
+            """Measure the nearest enclosing card body without V5.4 extent state."""
+            semantic = clipped_box(item.get("prepared_bbox"))
+
+            def unavailable(reason: str) -> None:
+                item.update({
+                    "recovered_current_container_bbox": None,
+                    "recovered_current_container_width": None,
+                    "recovered_current_container_height": None,
+                    "recovered_current_container_area": None,
+                    "recovered_current_container_valid": False,
+                    "recovered_current_container_confidence": 0.0,
+                    "recovered_current_container_source": "unavailable",
+                    "recovered_container_left": None,
+                    "recovered_container_right": None,
+                    "recovered_container_top": None,
+                    "recovered_container_bottom": None,
+                    "semantic_coverage_w": None,
+                    "semantic_coverage_h": None,
+                    "recovered_container_left_padding_ratio": None,
+                    "recovered_container_right_padding_ratio": None,
+                    "recovered_container_top_padding_ratio": None,
+                    "recovered_container_bottom_padding_ratio": None,
+                    **{
+                        f"natural_container_{side}_state": "unresolved"
+                        for side in ("left", "right", "top", "bottom")
+                    },
+                    **{
+                        f"natural_container_{side}_reason": reason
+                        for side in ("left", "right", "top", "bottom")
+                    },
+                    **{
+                        f"natural_container_{side}_score": 0.0
+                        for side in ("left", "right", "top", "bottom")
+                    },
+                    **{
+                        f"natural_container_{side}_distance": None
+                        for side in ("left", "right", "top", "bottom")
+                    },
+                })
+
+            if semantic is None or observation is None:
+                unavailable("invalid_geometry")
+                return
+            search = clipped_box(observation)
+            if search is None:
+                unavailable("invalid_geometry")
+                return
+            for boundary in (
+                clipped_box(item.get("visual_cell_bbox")),
+                clipped_box(item.get("prepared_montage_tile_bbox")),
+            ):
+                if boundary is None:
+                    continue
+                search = clipped_box((
+                    max(search[0], boundary[0]),
+                    max(search[1], boundary[1]),
+                    min(search[2], boundary[2]),
+                    min(search[3], boundary[3]),
+                ))
+                if search is None:
+                    unavailable("invalid_geometry")
+                    return
+            left, top, right, bottom = semantic
+            if not (
+                search[0] <= left and search[1] <= top
+                and search[2] >= right and search[3] >= bottom
+            ):
+                unavailable("invalid_geometry")
+                return
+            width = max(right - left, 1e-6)
+            height = max(bottom - top, 1e-6)
+            center_x = (left + right) / 2.0
+            center_y = (top + bottom) / 2.0
+            step = max(1, min(4, int(round(min(width, height) * 0.025))))
+            sample_count = max(5, min(15, int(round(max(width, height) / 20.0))))
+            gradient_radius = cls.ENLARGEMENT_EDGE_COHERENCE_GRADIENT_RADIUS
+
+            def pixel_at(x: int, y: int) -> tuple[int, int, int]:
+                return pixel_data[
+                    max(int(search[0]), min(int(search[2]) - 1, x)),
+                    max(int(search[1]), min(int(search[3]) - 1, y)),
+                ]
+
+            def luminance(color: tuple[int, int, int]) -> float:
+                return (
+                    0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]
+                ) / 255.0
+
+            def oriented_strength(
+                first: tuple[int, int, int],
+                second: tuple[int, int, int],
+            ) -> float:
+                luma_gradient = abs(luminance(first) - luminance(second))
+                color_gradient = math.sqrt(sum(
+                    ((first[channel] - second[channel]) / 255.0) ** 2
+                    for channel in range(3)
+                ) / 3.0)
+                return cls._clamp01(
+                    0.45 * cls._clamp01(
+                        luma_gradient / cls.ENLARGEMENT_EDGE_COHERENCE_LUMINANCE_NORMALIZER
+                    )
+                    + 0.55 * cls._clamp01(
+                        color_gradient / cls.ENLARGEMENT_EDGE_COHERENCE_COLOR_NORMALIZER
+                    )
+                )
+
+            def point(side: str, distance: int, fraction: float) -> tuple[int, int]:
+                if side == "left":
+                    coordinate = left - distance
+                    parallel = top + fraction * height
+                    return int(round(coordinate)), int(round(parallel))
+                if side == "right":
+                    coordinate = right + distance
+                    parallel = top + fraction * height
+                    return int(round(coordinate)), int(round(parallel))
+                if side == "top":
+                    coordinate = top - distance
+                    parallel = left + fraction * width
+                    return int(round(parallel)), int(round(coordinate))
+                coordinate = bottom + distance
+                parallel = left + fraction * width
+                return int(round(parallel)), int(round(coordinate))
+
+            def profile(side: str, distance: int) -> dict[str, float]:
+                strengths: list[float] = []
+                normal_values: list[float] = []
+                orientations: list[float] = []
+                inset = cls.ENLARGEMENT_EDGE_SAMPLE_INSET
+                for sample_index in range(sample_count):
+                    fraction = inset + (1.0 - 2.0 * inset) * (sample_index + 0.5) / sample_count
+                    x, y = point(side, distance, fraction)
+                    if side == "left":
+                        inside, outside = pixel_at(x + gradient_radius, y), pixel_at(x - gradient_radius, y)
+                        tangent_first, tangent_second = pixel_at(x, y - gradient_radius), pixel_at(x, y + gradient_radius)
+                    elif side == "right":
+                        inside, outside = pixel_at(x - gradient_radius, y), pixel_at(x + gradient_radius, y)
+                        tangent_first, tangent_second = pixel_at(x, y - gradient_radius), pixel_at(x, y + gradient_radius)
+                    elif side == "top":
+                        inside, outside = pixel_at(x, y + gradient_radius), pixel_at(x, y - gradient_radius)
+                        tangent_first, tangent_second = pixel_at(x - gradient_radius, y), pixel_at(x + gradient_radius, y)
+                    else:
+                        inside, outside = pixel_at(x, y - gradient_radius), pixel_at(x, y + gradient_radius)
+                        tangent_first, tangent_second = pixel_at(x - gradient_radius, y), pixel_at(x + gradient_radius, y)
+                    normal = oriented_strength(inside, outside)
+                    tangent = oriented_strength(tangent_first, tangent_second)
+                    orientation = normal / max(normal + tangent, 1e-6)
+                    normal_values.append(normal)
+                    strengths.append(normal * orientation)
+                    orientations.append(orientation)
+                span_support = sum(
+                    value >= cls.NATURAL_CONTAINER_MIN_ORIENTED_STRENGTH
+                    for value in strengths
+                ) / max(len(strengths), 1)
+                mean_strength = sum(strengths) / max(len(strengths), 1)
+                inside_outside_contrast = sum(normal_values) / max(len(normal_values), 1)
+                return {
+                    "score": cls._clamp01(
+                        0.55 * span_support
+                        + 0.30 * mean_strength
+                        + 0.15 * inside_outside_contrast
+                    ),
+                    "span_support": span_support,
+                    "mean_strength": mean_strength,
+                    "orientation": sum(orientations) / max(len(orientations), 1),
+                }
+
+            sibling_centers = [
+                (
+                    (box[0] + box[2]) / 2.0,
+                    (box[1] + box[3]) / 2.0,
+                )
+                for sibling in siblings
+                if sibling is not item
+                for box in [clipped_box(sibling.get("prepared_bbox"))]
+                if box is not None
+            ]
+            protected_cores = [
+                core for field in (
+                    "enlargement_card_left_neighbor_protected_core_bbox",
+                    "enlargement_card_right_neighbor_protected_core_bbox",
+                    "enlargement_card_top_neighbor_protected_core_bbox",
+                    "enlargement_card_bottom_neighbor_protected_core_bbox",
+                )
+                for core in [clipped_box(item.get(field))]
+                if core is not None
+            ]
+            device_edges = {
+                "left": item.get("prepared_device_left"),
+                "right": item.get("prepared_device_right"),
+                "top": item.get("prepared_device_top"),
+                "bottom": item.get("prepared_device_bottom"),
+            }
+            device_valid = {
+                "left": bool(item.get("source_device_left_valid")),
+                "right": bool(item.get("source_device_right_valid")),
+                "top": bool(item.get("source_device_top_valid")),
+                "bottom": bool(item.get("source_device_bottom_valid")),
+            }
+            device_confidence = {
+                "left": item.get("source_device_left_confidence"),
+                "right": item.get("source_device_right_confidence"),
+                "top": item.get("source_device_top_confidence"),
+                "bottom": item.get("source_device_bottom_confidence"),
+            }
+            side_results: dict[str, dict[str, Any]] = {}
+            for side in ("left", "right", "top", "bottom"):
+                maximum = int(round(
+                    left - search[0] if side == "left"
+                    else search[2] - right if side == "right"
+                    else top - search[1] if side == "top"
+                    else search[3] - bottom
+                ))
+                device_edge = device_edges[side]
+                semantic_edge = left if side == "left" else right if side == "right" else top if side == "top" else bottom
+                if device_valid[side] and isinstance(device_edge, (int, float)):
+                    outward_distance = (
+                        semantic_edge - float(device_edge)
+                        if side in ("left", "top") else float(device_edge) - semantic_edge
+                    )
+                    if outward_distance >= 0.0:
+                        maximum = min(maximum, int(round(outward_distance)))
+                if maximum < step:
+                    side_results[side] = {
+                        "state": "unresolved", "reason": "insufficient_scan_space",
+                        "score": 0.0, "distance": None, "coordinate": None,
+                    }
+                    continue
+                distances = list(range(step, maximum + 1, step))
+                if distances[-1] != maximum:
+                    distances.append(maximum)
+                profiles: dict[int, dict[str, float]] = {}
+
+                def at(distance: int) -> dict[str, float]:
+                    if distance not in profiles:
+                        profiles[distance] = profile(side, distance)
+                    return profiles[distance]
+
+                selected: tuple[int, dict[str, float]] | None = None
+                for position, distance in enumerate(distances):
+                    current = at(distance)
+                    adjacent = [
+                        at(distances[neighbor])["score"]
+                        for neighbor in range(
+                            max(0, position - cls.NATURAL_CONTAINER_LOCAL_RIDGE_RADIUS_STEPS),
+                            min(len(distances), position + cls.NATURAL_CONTAINER_LOCAL_RIDGE_RADIUS_STEPS + 1),
+                        )
+                    ]
+                    if (
+                        current["score"] >= cls.NATURAL_CONTAINER_MIN_EDGE_SCORE
+                        and current["span_support"] >= cls.NATURAL_CONTAINER_MIN_SPAN_SUPPORT
+                        and current["mean_strength"] >= cls.NATURAL_CONTAINER_MIN_ORIENTED_STRENGTH
+                        and current["score"] >= max(adjacent)
+                    ):
+                        selected = (distance, current)
+                        break
+                if selected is None:
+                    side_results[side] = {
+                        "state": "unresolved", "reason": "no_qualifying_container_boundary",
+                        "score": 0.0, "distance": None, "coordinate": None,
+                    }
+                    continue
+                distance, selected_profile = selected
+                coordinate = semantic_edge - distance if side in ("left", "top") else semantic_edge + distance
+                core_overlap = any(
+                    core[0] < coordinate < core[2]
+                    if side in ("left", "right") else core[1] < coordinate < core[3]
+                    for core in protected_cores
+                )
+                beyond_sibling_center = any(
+                    center[0] < center_x and coordinate <= center[0]
+                    if side == "left"
+                    else center[0] > center_x and coordinate >= center[0]
+                    if side == "right"
+                    else center[1] < center_y and coordinate <= center[1]
+                    if side == "top"
+                    else center[1] > center_y and coordinate >= center[1]
+                    for center in sibling_centers
+                )
+                candidate_dimension = width if side in ("left", "right") else height
+                tolerance = max(
+                    cls.ENLARGEMENT_DEVICE_BOUNDARY_TOLERANCE_PX,
+                    cls.ENLARGEMENT_DEVICE_BOUNDARY_TOLERANCE_RATIO * candidate_dimension,
+                )
+                device_contaminated = bool(
+                    device_valid[side]
+                    and isinstance(device_edge, (int, float))
+                    and isinstance(device_confidence[side], (int, float))
+                    and float(device_confidence[side]) >= cls.DEVICE_BOUNDARY_MIN_SCORE
+                    and abs(coordinate - float(device_edge)) <= tolerance
+                )
+                if device_contaminated:
+                    reason = "device_boundary_contamination"
+                elif core_overlap or beyond_sibling_center:
+                    reason = "sibling_ownership_rejected"
+                else:
+                    side_results[side] = {
+                        "state": "container_boundary",
+                        "reason": "nearest_qualifying_container_boundary",
+                        "score": selected_profile["score"],
+                        "distance": float(distance),
+                        "coordinate": float(coordinate),
+                    }
+                    continue
+                side_results[side] = {
+                    "state": "unresolved", "reason": reason,
+                    "score": selected_profile["score"], "distance": None,
+                    "coordinate": float(coordinate),
+                }
+
+            valid = all(
+                side_results[side]["state"] == "container_boundary"
+                for side in ("left", "right", "top", "bottom")
+            )
+            recovered = (
+                side_results["left"]["coordinate"],
+                side_results["top"]["coordinate"],
+                side_results["right"]["coordinate"],
+                side_results["bottom"]["coordinate"],
+            ) if valid else None
+            recovered_width = recovered[2] - recovered[0] if recovered else None
+            recovered_height = recovered[3] - recovered[1] if recovered else None
+            confidence = min(
+                side_results[side]["score"] for side in ("left", "right", "top", "bottom")
+            ) if valid else 0.0
+            item.update({
+                "recovered_current_container_bbox": [round(value, 2) for value in recovered] if recovered else None,
+                "recovered_current_container_width": recovered_width,
+                "recovered_current_container_height": recovered_height,
+                "recovered_current_container_area": recovered_width * recovered_height if recovered_width is not None and recovered_height is not None else None,
+                "recovered_current_container_valid": valid,
+                "recovered_current_container_confidence": confidence,
+                "recovered_current_container_source": "independent_pixel_boundary_v5_5_1" if valid else "unavailable",
+                "recovered_container_left": recovered[0] if recovered else None,
+                "recovered_container_right": recovered[2] if recovered else None,
+                "recovered_container_top": recovered[1] if recovered else None,
+                "recovered_container_bottom": recovered[3] if recovered else None,
+                "semantic_coverage_w": width / max(recovered_width, 1e-6) if recovered_width is not None else None,
+                "semantic_coverage_h": height / max(recovered_height, 1e-6) if recovered_height is not None else None,
+                "recovered_container_left_padding_ratio": (left - recovered[0]) / width if recovered else None,
+                "recovered_container_right_padding_ratio": (recovered[2] - right) / width if recovered else None,
+                "recovered_container_top_padding_ratio": (top - recovered[1]) / height if recovered else None,
+                "recovered_container_bottom_padding_ratio": (recovered[3] - bottom) / height if recovered else None,
+                **{
+                    f"natural_container_{side}_state": side_results[side]["state"]
+                    for side in side_results
+                },
+                **{
+                    f"natural_container_{side}_reason": side_results[side]["reason"]
+                    for side in side_results
+                },
+                **{
+                    f"natural_container_{side}_score": side_results[side]["score"]
+                    for side in side_results
+                },
+                **{
+                    f"natural_container_{side}_distance": side_results[side]["distance"]
+                    for side in side_results
+                },
+            })
+
         for sibling_set in sibling_sets:
             members = [by_index[index] for index in sibling_set if index in by_index]
             for item in members:
                 card_observation, valid = build_enlargement_card_observation(item, members)
                 if valid and card_observation is not None:
+                    recover_independent_current_container(item, card_observation, members)
                     measure_direct_extent(item, card_observation)
                 else:
+                    recover_independent_current_container(item, None, members)
                     item["extent_reliable"] = False
                     item["enlargement_extent_reason"] = "invalid_geometry"
+
+        def independent_container_sample(
+            item: dict[str, Any],
+        ) -> tuple[int, float, float, float] | None:
+            if not bool(item.get("recovered_current_container_valid")):
+                return None
+            width = item.get("recovered_current_container_width")
+            height = item.get("recovered_current_container_height")
+            confidence = item.get("recovered_current_container_confidence")
+            if not isinstance(width, (int, float)) or not isinstance(height, (int, float)):
+                return None
+            if float(width) <= 0.0 or float(height) <= 0.0:
+                return None
+            return (
+                int(item["index"]),
+                float(width),
+                float(height),
+                float(confidence) if isinstance(confidence, (int, float)) else 0.0,
+            )
+
+        for sibling_set in sibling_sets:
+            members = [by_index[index] for index in sibling_set if index in by_index]
+            for item in members:
+                samples = [
+                    sample
+                    for sibling in members
+                    if sibling is not item
+                    for sample in [independent_container_sample(sibling)]
+                    if sample is not None
+                ]
+                baseline_valid = len(samples) >= cls.NATURAL_BASELINE_MIN_PEERS
+                peer_width = median([sample[1] for sample in samples]) if baseline_valid else None
+                peer_height = median([sample[2] for sample in samples]) if baseline_valid else None
+                recovered = clipped_box(item.get("recovered_current_container_bbox"))
+                semantic = clipped_box(item.get("prepared_bbox"))
+                if recovered is not None:
+                    center_x = (recovered[0] + recovered[2]) / 2.0
+                    center_y = (recovered[1] + recovered[3]) / 2.0
+                elif semantic is not None:
+                    center_x = (semantic[0] + semantic[2]) / 2.0
+                    center_y = (semantic[1] + semantic[3]) / 2.0
+                else:
+                    center_x = center_y = None
+                reference_bbox = (
+                    [
+                        round(center_x - peer_width / 2.0, 2),
+                        round(center_y - peer_height / 2.0, 2),
+                        round(center_x + peer_width / 2.0, 2),
+                        round(center_y + peer_height / 2.0, 2),
+                    ]
+                    if baseline_valid
+                    and peer_width is not None
+                    and peer_height is not None
+                    and center_x is not None
+                    and center_y is not None
+                    else None
+                )
+                item.update({
+                    "independent_natural_baseline_bbox": reference_bbox,
+                    "independent_natural_baseline_valid": bool(
+                        baseline_valid and reference_bbox is not None
+                    ),
+                    "independent_natural_baseline_source": (
+                        "unavailable" if not baseline_valid or reference_bbox is None
+                        else "single_peer_independent_container" if len(samples) == 1
+                        else "leave_one_out_independent_container"
+                    ),
+                    "independent_natural_baseline_confidence": (
+                        sum(sample[3] for sample in samples) / max(len(samples), 1)
+                        if baseline_valid else 0.0
+                    ),
+                    "independent_natural_baseline_sibling_indices": [sample[0] for sample in samples],
+                    "independent_natural_baseline_sample_count": len(samples),
+                    "natural_baseline_peer_width": peer_width,
+                    "natural_baseline_peer_height": peer_height,
+                    "independent_focus_scale_w": (
+                        float(item["recovered_current_container_width"]) / max(peer_width, 1e-6)
+                        if bool(item.get("recovered_current_container_valid"))
+                        and peer_width is not None else None
+                    ),
+                    "independent_focus_scale_h": (
+                        float(item["recovered_current_container_height"]) / max(peer_height, 1e-6)
+                        if bool(item.get("recovered_current_container_valid"))
+                        and peer_height is not None else None
+                    ),
+                })
 
         def natural_baseline_sample(
             item: dict[str, Any],
@@ -2403,7 +2860,7 @@ class FocusResolver:
             draw.text((8, 24), f"ROI: {roi_bbox}  INPUT: {raw.width}x{raw.height}", fill=(255, 255, 255))
         else:
             draw.text((8, 24), "FULL IMAGE", fill=(255, 255, 255))
-        draw.text((8, 42), "BOX=semantic NAT=natural baseline CELL=ownership CARD=card cell OBS=card window EXT=visual extent", fill=(255, 255, 255))
+        draw.text((8, 42), "BOX=semantic IC=current container NAT=legacy baseline CELL=ownership CARD=card cell OBS=card window EXT=visual extent", fill=(255, 255, 255))
 
         montage_tile_bboxes = []
         if focus_image_mode == "group_montage" and isinstance(montage_tile_sizes, list):
@@ -2441,6 +2898,7 @@ class FocusResolver:
             peer_id = peer_by_index.get(int(index), -1)
             sibling_id = sibling_by_index.get(int(index), -1)
             draw_box(bbox, (255, 255, 0), 2)
+            draw_box(item.get("recovered_current_container_bbox"), (0, 220, 210), 2)
             draw_box(item.get("natural_container_bbox"), (190, 120, 255), 2)
             draw_box(item.get("visual_cell_bbox"), (0, 180, 255), 2)
             draw_box(item.get("enlargement_card_cell_bbox"), (255, 0, 255), 2)
@@ -2538,6 +2996,49 @@ class FocusResolver:
                 "visual_extent_width": item.get("visual_extent_width"),
                 "visual_extent_height": item.get("visual_extent_height"),
                 "visual_extent_area": item.get("visual_extent_area"),
+                "recovered_current_container_bbox": item.get("recovered_current_container_bbox"),
+                "recovered_current_container_width": item.get("recovered_current_container_width"),
+                "recovered_current_container_height": item.get("recovered_current_container_height"),
+                "recovered_current_container_area": item.get("recovered_current_container_area"),
+                "recovered_current_container_valid": item.get("recovered_current_container_valid"),
+                "recovered_current_container_confidence": item.get("recovered_current_container_confidence"),
+                "recovered_current_container_source": item.get("recovered_current_container_source"),
+                "recovered_container_left": item.get("recovered_container_left"),
+                "recovered_container_right": item.get("recovered_container_right"),
+                "recovered_container_top": item.get("recovered_container_top"),
+                "recovered_container_bottom": item.get("recovered_container_bottom"),
+                "natural_container_left_state": item.get("natural_container_left_state"),
+                "natural_container_right_state": item.get("natural_container_right_state"),
+                "natural_container_top_state": item.get("natural_container_top_state"),
+                "natural_container_bottom_state": item.get("natural_container_bottom_state"),
+                "natural_container_left_reason": item.get("natural_container_left_reason"),
+                "natural_container_right_reason": item.get("natural_container_right_reason"),
+                "natural_container_top_reason": item.get("natural_container_top_reason"),
+                "natural_container_bottom_reason": item.get("natural_container_bottom_reason"),
+                "natural_container_left_score": item.get("natural_container_left_score"),
+                "natural_container_right_score": item.get("natural_container_right_score"),
+                "natural_container_top_score": item.get("natural_container_top_score"),
+                "natural_container_bottom_score": item.get("natural_container_bottom_score"),
+                "natural_container_left_distance": item.get("natural_container_left_distance"),
+                "natural_container_right_distance": item.get("natural_container_right_distance"),
+                "natural_container_top_distance": item.get("natural_container_top_distance"),
+                "natural_container_bottom_distance": item.get("natural_container_bottom_distance"),
+                "recovered_container_left_padding_ratio": item.get("recovered_container_left_padding_ratio"),
+                "recovered_container_right_padding_ratio": item.get("recovered_container_right_padding_ratio"),
+                "recovered_container_top_padding_ratio": item.get("recovered_container_top_padding_ratio"),
+                "recovered_container_bottom_padding_ratio": item.get("recovered_container_bottom_padding_ratio"),
+                "semantic_coverage_w": item.get("semantic_coverage_w"),
+                "semantic_coverage_h": item.get("semantic_coverage_h"),
+                "independent_natural_baseline_bbox": item.get("independent_natural_baseline_bbox"),
+                "independent_natural_baseline_valid": item.get("independent_natural_baseline_valid"),
+                "independent_natural_baseline_source": item.get("independent_natural_baseline_source"),
+                "independent_natural_baseline_confidence": item.get("independent_natural_baseline_confidence"),
+                "independent_natural_baseline_sibling_indices": item.get("independent_natural_baseline_sibling_indices"),
+                "independent_natural_baseline_sample_count": item.get("independent_natural_baseline_sample_count"),
+                "natural_baseline_peer_width": item.get("natural_baseline_peer_width"),
+                "natural_baseline_peer_height": item.get("natural_baseline_peer_height"),
+                "independent_focus_scale_w": item.get("independent_focus_scale_w"),
+                "independent_focus_scale_h": item.get("independent_focus_scale_h"),
                 "natural_container_bbox": item.get("natural_container_bbox"),
                 "natural_container_width": item.get("natural_container_width"),
                 "natural_container_height": item.get("natural_container_height"),
@@ -2699,7 +3200,7 @@ class FocusResolver:
         ]
         header_height = 14 * (len(stage_lines) + 1) + 8
         draw.rectangle((0, 0, min(debug_image.width, 420), header_height), fill=(0, 0, 0))
-        draw.text((8, 5), "CV FINAL  BOX=semantic NAT=natural EXT=final extent", fill=(255, 255, 255))
+        draw.text((8, 5), "CV FINAL  BOX=semantic IC=current container NAT=peer baseline EXT=V5.4 extent", fill=(255, 255, 255))
         for line_index, line in enumerate(stage_lines, start=1):
             draw.text((8, 5 + 14 * line_index), line, fill=(255, 255, 255))
 
@@ -2733,8 +3234,10 @@ class FocusResolver:
         for index, bbox in sorted(prepared_candidate_bboxes.items()):
             item = evidence_by_index.get(int(index), {})
             draw_box(bbox, (255, 255, 0), 2)
-            if bool(item.get("natural_container_baseline_valid")):
-                draw_box(item.get("natural_container_bbox"), (190, 120, 255), 2)
+            if bool(item.get("recovered_current_container_valid")):
+                draw_box(item.get("recovered_current_container_bbox"), (0, 220, 210), 2)
+            if bool(item.get("independent_natural_baseline_valid")):
+                draw_box(item.get("independent_natural_baseline_bbox"), (190, 120, 255), 2)
             if bool(item.get("extent_valid")) and bool(item.get("extent_reliable")):
                 draw_box(item.get("visual_extent_bbox"), (80, 255, 100), 3)
             device_markers = " ".join(
