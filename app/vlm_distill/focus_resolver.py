@@ -153,6 +153,8 @@ class FocusResolver:
     NATURAL_CONTAINER_MIN_SPAN_SUPPORT = 0.55
     NATURAL_CONTAINER_MIN_ORIENTED_STRENGTH = 0.35
     NATURAL_CONTAINER_LOCAL_RIDGE_RADIUS_STEPS = 1
+    NATURAL_CONTAINER_DENSE_SCAN_RADIUS_PX = 8
+    NATURAL_CONTAINER_LOCAL_RIDGE_TOLERANCE = 0.03
     ENLARGEMENT_COMPLETION_MIN_RETAINED_RATIO = 0.70
     ENLARGEMENT_MIRRORED_CONFIDENCE_FACTOR = 0.75
     ENLARGEMENT_CARD_CELL_OUTER_X = 0.30
@@ -2021,6 +2023,24 @@ class FocusResolver:
                         f"natural_container_{side}_distance": None
                         for side in ("left", "right", "top", "bottom")
                     },
+                    **{
+                        f"natural_container_{side}_scan_mode": "unresolved"
+                        for side in ("left", "right", "top", "bottom")
+                    },
+                    **{
+                        f"natural_container_{side}_selected_scan_step": None
+                        for side in ("left", "right", "top", "bottom")
+                    },
+                    **{
+                        f"natural_container_{side}_{metric}": 0.0
+                        for side in ("left", "right", "top", "bottom")
+                        for metric in (
+                            "span_support",
+                            "mean_oriented_strength",
+                            "inside_outside_contrast",
+                        )
+                    },
+                    "natural_container_dense_boundary_side_count": 0,
                 })
 
             if semantic is None or observation is None:
@@ -2056,7 +2076,6 @@ class FocusResolver:
             height = max(bottom - top, 1e-6)
             center_x = (left + right) / 2.0
             center_y = (top + bottom) / 2.0
-            step = max(1, min(4, int(round(min(width, height) * 0.025))))
             sample_count = max(5, min(15, int(round(max(width, height) / 20.0))))
             gradient_radius = cls.ENLARGEMENT_EDGE_COHERENCE_GRADIENT_RADIUS
 
@@ -2204,15 +2223,31 @@ class FocusResolver:
                     )
                     if outward_distance >= 0.0:
                         maximum = min(maximum, int(round(outward_distance)))
-                if maximum < step:
+                if maximum < 1:
                     side_results[side] = {
                         "state": "unresolved", "reason": "insufficient_scan_space",
                         "score": 0.0, "distance": None, "coordinate": None,
+                        "scan_mode": "unresolved", "selected_scan_step": None,
+                        "span_support": 0.0, "mean_strength": 0.0,
+                        "inside_outside_contrast": 0.0,
                     }
                     continue
-                distances = list(range(step, maximum + 1, step))
-                if distances[-1] != maximum:
-                    distances.append(maximum)
+                dense_limit = min(
+                    maximum,
+                    cls.NATURAL_CONTAINER_DENSE_SCAN_RADIUS_PX,
+                )
+                coarse_step = max(
+                    2,
+                    min(4, int(round(min(width, height) * 0.025))),
+                )
+                distances = list(range(1, dense_limit + 1))
+                distances.extend(range(
+                    cls.NATURAL_CONTAINER_DENSE_SCAN_RADIUS_PX + coarse_step,
+                    maximum + 1,
+                    coarse_step,
+                ))
+                distances.append(maximum)
+                distances = sorted(set(distances))
                 profiles: dict[int, dict[str, float]] = {}
 
                 def at(distance: int) -> dict[str, float]:
@@ -2234,7 +2269,8 @@ class FocusResolver:
                         current["score"] >= cls.NATURAL_CONTAINER_MIN_EDGE_SCORE
                         and current["span_support"] >= cls.NATURAL_CONTAINER_MIN_SPAN_SUPPORT
                         and current["mean_strength"] >= cls.NATURAL_CONTAINER_MIN_ORIENTED_STRENGTH
-                        and current["score"] >= max(adjacent)
+                        and current["score"] + cls.NATURAL_CONTAINER_LOCAL_RIDGE_TOLERANCE
+                        >= max(adjacent)
                     ):
                         selected = (distance, current)
                         break
@@ -2242,6 +2278,9 @@ class FocusResolver:
                     side_results[side] = {
                         "state": "unresolved", "reason": "no_qualifying_container_boundary",
                         "score": 0.0, "distance": None, "coordinate": None,
+                        "scan_mode": "unresolved", "selected_scan_step": None,
+                        "span_support": 0.0, "mean_strength": 0.0,
+                        "inside_outside_contrast": 0.0,
                     }
                     continue
                 distance, selected_profile = selected
@@ -2284,12 +2323,29 @@ class FocusResolver:
                         "score": selected_profile["score"],
                         "distance": float(distance),
                         "coordinate": float(coordinate),
+                        "scan_mode": (
+                            "dense"
+                            if distance <= cls.NATURAL_CONTAINER_DENSE_SCAN_RADIUS_PX
+                            else "coarse"
+                        ),
+                        "selected_scan_step": (
+                            1
+                            if distance <= cls.NATURAL_CONTAINER_DENSE_SCAN_RADIUS_PX
+                            else coarse_step
+                        ),
+                        "span_support": selected_profile["span_support"],
+                        "mean_strength": selected_profile["mean_strength"],
+                        "inside_outside_contrast": selected_profile["inside_outside_contrast"],
                     }
                     continue
                 side_results[side] = {
                     "state": "unresolved", "reason": reason,
                     "score": selected_profile["score"], "distance": None,
                     "coordinate": float(coordinate),
+                    "scan_mode": "unresolved", "selected_scan_step": None,
+                    "span_support": selected_profile["span_support"],
+                    "mean_strength": selected_profile["mean_strength"],
+                    "inside_outside_contrast": selected_profile["inside_outside_contrast"],
                 }
 
             valid = all(
@@ -2341,6 +2397,31 @@ class FocusResolver:
                     f"natural_container_{side}_distance": side_results[side]["distance"]
                     for side in side_results
                 },
+                **{
+                    f"natural_container_{side}_scan_mode": side_results[side]["scan_mode"]
+                    for side in side_results
+                },
+                **{
+                    f"natural_container_{side}_selected_scan_step": side_results[side]["selected_scan_step"]
+                    for side in side_results
+                },
+                **{
+                    f"natural_container_{side}_span_support": side_results[side]["span_support"]
+                    for side in side_results
+                },
+                **{
+                    f"natural_container_{side}_mean_oriented_strength": side_results[side]["mean_strength"]
+                    for side in side_results
+                },
+                **{
+                    f"natural_container_{side}_inside_outside_contrast": side_results[side]["inside_outside_contrast"]
+                    for side in side_results
+                },
+                "natural_container_dense_boundary_side_count": sum(
+                    side_results[side]["state"] == "container_boundary"
+                    and side_results[side]["scan_mode"] == "dense"
+                    for side in side_results
+                ),
             })
 
         for sibling_set in sibling_sets:
@@ -3023,6 +3104,27 @@ class FocusResolver:
                 "natural_container_right_distance": item.get("natural_container_right_distance"),
                 "natural_container_top_distance": item.get("natural_container_top_distance"),
                 "natural_container_bottom_distance": item.get("natural_container_bottom_distance"),
+                "natural_container_left_scan_mode": item.get("natural_container_left_scan_mode"),
+                "natural_container_right_scan_mode": item.get("natural_container_right_scan_mode"),
+                "natural_container_top_scan_mode": item.get("natural_container_top_scan_mode"),
+                "natural_container_bottom_scan_mode": item.get("natural_container_bottom_scan_mode"),
+                "natural_container_left_selected_scan_step": item.get("natural_container_left_selected_scan_step"),
+                "natural_container_right_selected_scan_step": item.get("natural_container_right_selected_scan_step"),
+                "natural_container_top_selected_scan_step": item.get("natural_container_top_selected_scan_step"),
+                "natural_container_bottom_selected_scan_step": item.get("natural_container_bottom_selected_scan_step"),
+                "natural_container_left_span_support": item.get("natural_container_left_span_support"),
+                "natural_container_right_span_support": item.get("natural_container_right_span_support"),
+                "natural_container_top_span_support": item.get("natural_container_top_span_support"),
+                "natural_container_bottom_span_support": item.get("natural_container_bottom_span_support"),
+                "natural_container_left_mean_oriented_strength": item.get("natural_container_left_mean_oriented_strength"),
+                "natural_container_right_mean_oriented_strength": item.get("natural_container_right_mean_oriented_strength"),
+                "natural_container_top_mean_oriented_strength": item.get("natural_container_top_mean_oriented_strength"),
+                "natural_container_bottom_mean_oriented_strength": item.get("natural_container_bottom_mean_oriented_strength"),
+                "natural_container_left_inside_outside_contrast": item.get("natural_container_left_inside_outside_contrast"),
+                "natural_container_right_inside_outside_contrast": item.get("natural_container_right_inside_outside_contrast"),
+                "natural_container_top_inside_outside_contrast": item.get("natural_container_top_inside_outside_contrast"),
+                "natural_container_bottom_inside_outside_contrast": item.get("natural_container_bottom_inside_outside_contrast"),
+                "natural_container_dense_boundary_side_count": item.get("natural_container_dense_boundary_side_count"),
                 "recovered_container_left_padding_ratio": item.get("recovered_container_left_padding_ratio"),
                 "recovered_container_right_padding_ratio": item.get("recovered_container_right_padding_ratio"),
                 "recovered_container_top_padding_ratio": item.get("recovered_container_top_padding_ratio"),
