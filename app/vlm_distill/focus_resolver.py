@@ -129,10 +129,15 @@ class FocusResolver:
     ENLARGEMENT_CONTINUATION_MIN_TAIL_STEPS = 2
     ENLARGEMENT_CONTINUATION_MIN_PATH_SUPPORT = 0.60
     ENLARGEMENT_CONTINUATION_MIN_SAMPLE_SUPPORT = 0.60
-    ENLARGEMENT_CONTINUATION_MAX_UNSUPPORTED_RUN = 2
-    ENLARGEMENT_CONTINUATION_COLOR_TOLERANCE = 0.35
-    ENLARGEMENT_CONTINUATION_LUMINANCE_TOLERANCE = 0.18
     ENLARGEMENT_CENSORED_CONFIDENCE_FACTOR = 0.70
+    ENLARGEMENT_EDGE_COHERENCE_GRADIENT_RADIUS = 2
+    ENLARGEMENT_EDGE_COHERENCE_MIN_SAMPLE_STRENGTH = 0.35
+    ENLARGEMENT_EDGE_COHERENCE_MIN_SPAN_SUPPORT = 0.55
+    ENLARGEMENT_EDGE_COHERENCE_MIN_SCORE = 0.55
+    ENLARGEMENT_EDGE_COHERENCE_LOCAL_RADIUS_STEPS = 1
+    ENLARGEMENT_EDGE_COHERENCE_LUMINANCE_NORMALIZER = 0.20
+    ENLARGEMENT_EDGE_COHERENCE_COLOR_NORMALIZER = 0.35
+    ENLARGEMENT_STRUCTURE_MIN_SAMPLE_STRENGTH = 0.12
     ENLARGEMENT_COMPLETION_MIN_RETAINED_RATIO = 0.70
     ENLARGEMENT_MIRRORED_CONFIDENCE_FACTOR = 0.75
     ENLARGEMENT_CARD_CELL_OUTER_X = 0.30
@@ -688,6 +693,116 @@ class FocusResolver:
                     max(int(observation[1]), min(int(observation[3]) - 1, y)),
                 )
 
+            def pixel_at(x: int, y: int) -> tuple[int, int, int]:
+                return pixel_data[
+                    max(int(observation[0]), min(int(observation[2]) - 1, x)),
+                    max(int(observation[1]), min(int(observation[3]) - 1, y)),
+                ]
+
+            def gradient_strength(
+                first: tuple[int, int, int],
+                second: tuple[int, int, int],
+            ) -> float:
+                luminance_gradient = abs(luminance(first) - luminance(second))
+                color_gradient = math.sqrt(sum(
+                    ((first[channel] - second[channel]) / 255.0) ** 2
+                    for channel in range(3)
+                ) / 3.0)
+                return cls._clamp01(
+                    0.45 * cls._clamp01(
+                        luminance_gradient
+                        / cls.ENLARGEMENT_EDGE_COHERENCE_LUMINANCE_NORMALIZER
+                    )
+                    + 0.55 * cls._clamp01(
+                        color_gradient
+                        / cls.ENLARGEMENT_EDGE_COHERENCE_COLOR_NORMALIZER
+                    )
+                )
+
+            def edge_profile(
+                side: str,
+                distance: int,
+            ) -> dict[str, float]:
+                radius = cls.ENLARGEMENT_EDGE_COHERENCE_GRADIENT_RADIUS
+                strengths: list[float] = []
+                orientations: list[float] = []
+                structure_values: list[float] = []
+                background_values: list[float] = []
+                inset = cls.ENLARGEMENT_EDGE_SAMPLE_INSET
+                for sample_index in range(sample_count):
+                    fraction = inset + (1.0 - 2.0 * inset) * (sample_index + 0.5) / sample_count
+                    x, y = coordinate(side, distance, fraction)
+                    if side == "top":
+                        inside, outside, farther = (
+                            pixel_at(x, y + radius),
+                            pixel_at(x, y - radius),
+                            pixel_at(x, y - 2 * radius),
+                        )
+                        tangent_first, tangent_second = (
+                            pixel_at(x - radius, y), pixel_at(x + radius, y)
+                        )
+                    elif side == "bottom":
+                        inside, outside, farther = (
+                            pixel_at(x, y - radius),
+                            pixel_at(x, y + radius),
+                            pixel_at(x, y + 2 * radius),
+                        )
+                        tangent_first, tangent_second = (
+                            pixel_at(x - radius, y), pixel_at(x + radius, y)
+                        )
+                    elif side == "left":
+                        inside, outside, farther = (
+                            pixel_at(x + radius, y),
+                            pixel_at(x - radius, y),
+                            pixel_at(x - 2 * radius, y),
+                        )
+                        tangent_first, tangent_second = (
+                            pixel_at(x, y - radius), pixel_at(x, y + radius)
+                        )
+                    else:
+                        inside, outside, farther = (
+                            pixel_at(x - radius, y),
+                            pixel_at(x + radius, y),
+                            pixel_at(x + 2 * radius, y),
+                        )
+                        tangent_first, tangent_second = (
+                            pixel_at(x, y - radius), pixel_at(x, y + radius)
+                        )
+                    normal_strength = gradient_strength(inside, outside)
+                    tangential_strength = gradient_strength(
+                        tangent_first,
+                        tangent_second,
+                    )
+                    orientation = normal_strength / max(
+                        normal_strength + tangential_strength,
+                        1e-6,
+                    )
+                    strengths.append(normal_strength * orientation)
+                    orientations.append(orientation)
+                    structure_values.append(max(normal_strength, tangential_strength))
+                    background_values.append(cls._clamp01(
+                        1.0 - abs(luminance(outside) - luminance(farther)) / 0.08
+                    ))
+                span_support = sum(
+                    value >= cls.ENLARGEMENT_EDGE_COHERENCE_MIN_SAMPLE_STRENGTH
+                    for value in strengths
+                ) / max(len(strengths), 1)
+                mean_strength = sum(strengths) / max(len(strengths), 1)
+                return {
+                    "edge_coherence_score": cls._clamp01(
+                        0.65 * span_support + 0.35 * mean_strength
+                    ),
+                    "edge_span_support": span_support,
+                    "edge_mean_strength": mean_strength,
+                    "edge_orientation_score": sum(orientations) / max(len(orientations), 1),
+                    "outer_background_contrast": mean_strength,
+                    "background_stability": sum(background_values) / max(len(background_values), 1),
+                    "structure_persistence": sum(
+                        value >= cls.ENLARGEMENT_STRUCTURE_MIN_SAMPLE_STRENGTH
+                        for value in structure_values
+                    ) / max(len(structure_values), 1),
+                }
+
             for side in growth:
                 maximum = int(round(
                     (left - observation[0]) if side == "left"
@@ -704,28 +819,61 @@ class FocusResolver:
                         "continuation_confidence": 0.0,
                         "continuation_path_support": 0.0,
                         "continuation_tail_support": 0.0,
+                        "continuation_sample_support": 0.0,
                         "censored": False,
                         "sample_count": 0,
                         "boundary_sample_count": 0,
                         "continuation_sample_count": 0,
                         "unresolved_sample_count": 0,
+                        "edge_coherence_score": 0.0,
+                        "edge_span_support": 0.0,
+                        "edge_mean_strength": 0.0,
+                        "edge_orientation_score": 0.0,
+                        "edge_distance": None,
+                        "edge_found": False,
+                        "structure_persistence": 0.0,
+                        "background_takeover_score": 0.0,
                     }
                     continue
+                distances = list(range(step, maximum + 1, step))
+                profiles = {
+                    distance: edge_profile(side, distance)
+                    for distance in distances
+                }
+                coherent_boundary: tuple[int, dict[str, float]] | None = None
+                for position, distance in enumerate(distances):
+                    profile = profiles[distance]
+                    nearby = [
+                        profiles[distances[neighbor]]["edge_coherence_score"]
+                        for neighbor in range(
+                            max(0, position - cls.ENLARGEMENT_EDGE_COHERENCE_LOCAL_RADIUS_STEPS),
+                            min(
+                                len(distances),
+                                position
+                                + cls.ENLARGEMENT_EDGE_COHERENCE_LOCAL_RADIUS_STEPS
+                                + 1,
+                            ),
+                        )
+                    ]
+                    if (
+                        profile["edge_coherence_score"]
+                        >= cls.ENLARGEMENT_EDGE_COHERENCE_MIN_SCORE
+                        and profile["edge_span_support"]
+                        >= cls.ENLARGEMENT_EDGE_COHERENCE_MIN_SPAN_SUPPORT
+                        and profile["background_stability"] >= 0.55
+                        and profile["edge_coherence_score"] >= max(nearby)
+                    ):
+                        coherent_boundary = (distance, profile)
+                        break
                 positions: list[tuple[int, float]] = []
                 scores: list[float] = []
-                continuation_samples: list[tuple[float, float, float]] = []
                 inset = cls.ENLARGEMENT_EDGE_SAMPLE_INSET
                 for sample_index in range(sample_count):
                     fraction = inset + (1.0 - 2.0 * inset) * (sample_index + 0.5) / sample_count
-                    inner_color = pixel_data[inner_coordinate(side, fraction)]
-                    inner = luminance(inner_color)
+                    inner = luminance(pixel_data[inner_coordinate(side, fraction)])
                     found_position: tuple[int, float] | None = None
-                    continuation_scores: list[float] = []
-                    previous_color = inner_color
-                    previous_luminance = inner
                     for distance in range(step, maximum + 1, step):
-                        current_color = pixel_data[coordinate(side, distance, fraction)]
-                        current = luminance(current_color)
+                        current = luminance(pixel_data[coordinate(side, distance, fraction)])
                         farther = luminance(pixel_data[coordinate(side, distance, fraction, step)])
                         farther_next = luminance(pixel_data[coordinate(side, distance, fraction, 2 * step)])
                         inner_support = cls._clamp01(1.0 - abs(current - inner) / 0.18)
@@ -745,101 +893,110 @@ class FocusResolver:
                         ):
                             found_position = (distance, score)
                             break
-                        color_distance_value = math.sqrt(sum(
-                            ((current_color[channel] - inner_color[channel]) / 255.0) ** 2
-                            for channel in range(3)
-                        ) / 3.0)
-                        color_similarity = cls._clamp01(
-                            1.0 - color_distance_value
-                            / cls.ENLARGEMENT_CONTINUATION_COLOR_TOLERANCE
-                        )
-                        luminance_similarity = cls._clamp01(
-                            1.0 - abs(current - inner)
-                            / cls.ENLARGEMENT_CONTINUATION_LUMINANCE_TOLERANCE
-                        )
-                        previous_color_distance = math.sqrt(sum(
-                            ((current_color[channel] - previous_color[channel]) / 255.0) ** 2
-                            for channel in range(3)
-                        ) / 3.0)
-                        previous_color_similarity = cls._clamp01(
-                            1.0 - previous_color_distance
-                            / cls.ENLARGEMENT_CONTINUATION_COLOR_TOLERANCE
-                        )
-                        previous_luminance_similarity = cls._clamp01(
-                            1.0 - abs(current - previous_luminance)
-                            / cls.ENLARGEMENT_CONTINUATION_LUMINANCE_TOLERANCE
-                        )
-                        object_similarity = (
-                            0.40 * luminance_similarity
-                            + 0.60 * color_similarity
-                        )
-                        local_consistency = (
-                            0.40 * previous_luminance_similarity
-                            + 0.60 * previous_color_similarity
-                        )
-                        transition_absence = 1.0 - outward_change
-                        continuation_scores.append(cls._clamp01(
-                            0.55 * object_similarity
-                            + 0.30 * local_consistency
-                            + 0.15 * transition_absence
-                        ))
-                        previous_color = current_color
-                        previous_luminance = current
                     if found_position is not None:
                         positions.append(found_position)
                         scores.append(found_position[1])
-                    elif continuation_scores:
-                        supported = [
-                            value for value in continuation_scores
-                            if value >= cls.ENLARGEMENT_CONTINUATION_MIN_SCORE
-                        ]
-                        path_support = len(supported) / len(continuation_scores)
-                        tail_steps = min(
-                            cls.ENLARGEMENT_CONTINUATION_MIN_TAIL_STEPS,
-                            len(continuation_scores),
-                        )
-                        tail_support = (
-                            sum(continuation_scores[-tail_steps:]) / tail_steps
-                            if tail_steps else 0.0
-                        )
-                        unsupported_run = 0
-                        max_unsupported_run = 0
-                        for value in continuation_scores:
-                            if value < cls.ENLARGEMENT_CONTINUATION_MIN_SCORE:
-                                unsupported_run += 1
-                                max_unsupported_run = max(
-                                    max_unsupported_run,
-                                    unsupported_run,
-                                )
-                            else:
-                                unsupported_run = 0
-                        continuation_allowed = (
-                            observation_override is not None
-                            and item.get("enlargement_extent_observation_source")
-                            == "pure_card_v5_3"
-                            and bool(item.get("enlargement_card_observation_valid"))
-                            and not bool(item.get(
-                                "enlargement_card_observation_intersects_other_sibling_core"
-                            ))
-                        )
-                        if (
-                            continuation_allowed
-                            and len(continuation_scores)
-                            >= cls.ENLARGEMENT_CONTINUATION_MIN_TAIL_STEPS
-                            and tail_support
-                            >= cls.ENLARGEMENT_CONTINUATION_MIN_SCORE
-                            and path_support
-                            >= cls.ENLARGEMENT_CONTINUATION_MIN_PATH_SUPPORT
-                            and max_unsupported_run
-                            <= cls.ENLARGEMENT_CONTINUATION_MAX_UNSUPPORTED_RUN
-                        ):
-                            continuation_samples.append((
-                                tail_support,
-                                path_support,
-                                tail_support * path_support,
-                            ))
                 required = max(1, math.ceil(sample_count * cls.ENLARGEMENT_BOUNDARY_MIN_SAMPLE_SUPPORT))
-                if len(positions) >= required:
+                selected_profile = (
+                    coherent_boundary[1]
+                    if coherent_boundary is not None
+                    else max(
+                        profiles.values(),
+                        key=lambda profile: profile["edge_coherence_score"],
+                    )
+                )
+                continuation_values: list[float] = []
+                for profile in profiles.values():
+                    background_takeover = cls._clamp01(
+                        profile["background_stability"]
+                        * (1.0 - profile["structure_persistence"])
+                    )
+                    continuation_values.append(cls._clamp01(
+                        0.50 * profile["structure_persistence"]
+                        + 0.30 * (1.0 - background_takeover)
+                        + 0.20 * (1.0 - profile["edge_coherence_score"])
+                    ))
+                continuation_path_support = sum(
+                    value >= cls.ENLARGEMENT_CONTINUATION_MIN_SCORE
+                    for value in continuation_values
+                ) / max(len(continuation_values), 1)
+                tail_steps = min(
+                    cls.ENLARGEMENT_CONTINUATION_MIN_TAIL_STEPS,
+                    len(continuation_values),
+                )
+                continuation_tail_support = (
+                    sum(continuation_values[-tail_steps:]) / tail_steps
+                    if tail_steps else 0.0
+                )
+                continuation_tail_structure_support = (
+                    sum(
+                        profiles[distance]["structure_persistence"]
+                        for distance in distances[-tail_steps:]
+                    ) / tail_steps
+                    if tail_steps else 0.0
+                )
+                continuation_score = (
+                    sum(continuation_values) / len(continuation_values)
+                    if continuation_values else 0.0
+                )
+                continuation_allowed = (
+                    observation_override is not None
+                    and item.get("enlargement_extent_observation_source")
+                    == "pure_card_v5_3"
+                    and bool(item.get("enlargement_card_observation_valid"))
+                    and not bool(item.get(
+                        "enlargement_card_observation_intersects_other_sibling_core"
+                    ))
+                )
+                continuation_qualified = (
+                    continuation_allowed
+                    and len(continuation_values)
+                    >= cls.ENLARGEMENT_CONTINUATION_MIN_TAIL_STEPS
+                    and continuation_tail_support
+                    >= cls.ENLARGEMENT_CONTINUATION_MIN_SCORE
+                    and continuation_path_support
+                    >= cls.ENLARGEMENT_CONTINUATION_MIN_PATH_SUPPORT
+                    and continuation_tail_structure_support
+                    >= cls.ENLARGEMENT_CONTINUATION_MIN_SAMPLE_SUPPORT
+                )
+                if coherent_boundary is not None:
+                    growth[side] = coherent_boundary[0]
+                    boundary_score = cls._clamp01(
+                        0.60 * selected_profile["edge_coherence_score"]
+                        + 0.25 * selected_profile["outer_background_contrast"]
+                        + 0.15 * selected_profile["background_stability"]
+                    )
+                    boundary_debug[side] = {
+                        "found": True,
+                        "growth": growth[side],
+                        "score": boundary_score,
+                        "confidence": selected_profile["edge_span_support"],
+                        "reason": "coherent_outer_edge",
+                        "obs_hit": False,
+                        "state": "boundary",
+                        "continuation_score": continuation_score,
+                        "continuation_confidence": 0.0,
+                        "continuation_path_support": continuation_path_support,
+                        "continuation_tail_support": continuation_tail_support,
+                        "continuation_sample_support": continuation_tail_structure_support,
+                        "censored": False,
+                        "sample_count": sample_count,
+                        "boundary_sample_count": len(positions),
+                        "continuation_sample_count": 0,
+                        "unresolved_sample_count": sample_count - len(positions),
+                        "edge_coherence_score": selected_profile["edge_coherence_score"],
+                        "edge_span_support": selected_profile["edge_span_support"],
+                        "edge_mean_strength": selected_profile["edge_mean_strength"],
+                        "edge_orientation_score": selected_profile["edge_orientation_score"],
+                        "edge_distance": growth[side],
+                        "edge_found": True,
+                        "structure_persistence": selected_profile["structure_persistence"],
+                        "background_takeover_score": cls._clamp01(
+                            selected_profile["background_stability"]
+                            * (1.0 - selected_profile["structure_persistence"])
+                        ),
+                    }
+                elif len(positions) >= required:
                     ordered_positions = sorted(position for position, _ in positions)
                     growth[side] = ordered_positions[len(ordered_positions) // 2]
                     boundary_debug[side] = {
@@ -847,53 +1004,71 @@ class FocusResolver:
                         "growth": growth[side],
                         "score": sum(scores) / len(scores),
                         "confidence": len(positions) / sample_count,
-                        "reason": "stable_transition",
+                        "reason": "legacy_stable_transition",
                         "obs_hit": False,
                         "state": "boundary",
                         "continuation_score": 0.0,
                         "continuation_confidence": 0.0,
                         "continuation_path_support": 0.0,
                         "continuation_tail_support": 0.0,
+                        "continuation_sample_support": 0.0,
                         "censored": False,
                         "sample_count": sample_count,
                         "boundary_sample_count": len(positions),
-                        "continuation_sample_count": len(continuation_samples),
-                        "unresolved_sample_count": sample_count - len(positions) - len(continuation_samples),
+                        "continuation_sample_count": 0,
+                        "unresolved_sample_count": sample_count - len(positions),
+                        "edge_coherence_score": selected_profile["edge_coherence_score"],
+                        "edge_span_support": selected_profile["edge_span_support"],
+                        "edge_mean_strength": selected_profile["edge_mean_strength"],
+                        "edge_orientation_score": selected_profile["edge_orientation_score"],
+                        "edge_distance": None,
+                        "edge_found": False,
+                        "structure_persistence": selected_profile["structure_persistence"],
+                        "background_takeover_score": cls._clamp01(
+                            selected_profile["background_stability"]
+                            * (1.0 - selected_profile["structure_persistence"])
+                        ),
                     }
-                elif len(continuation_samples) >= max(
-                    1,
-                    math.ceil(
-                        sample_count
-                        * cls.ENLARGEMENT_CONTINUATION_MIN_SAMPLE_SUPPORT
-                    ),
-                ):
+                elif continuation_qualified:
                     growth[side] = maximum
-                    continuation_score = sum(
-                        value[0] for value in continuation_samples
-                    ) / len(continuation_samples)
-                    continuation_path_support = sum(
-                        value[1] for value in continuation_samples
-                    ) / len(continuation_samples)
-                    continuation_confidence = sum(
-                        value[2] for value in continuation_samples
-                    ) / len(continuation_samples)
+                    continuation_confidence = (
+                        continuation_tail_support * continuation_path_support
+                    )
                     boundary_debug[side] = {
                         "found": False,
                         "growth": maximum,
                         "score": max(scores, default=0.0),
                         "confidence": continuation_confidence,
-                        "reason": "object_continuation_to_observation_limit",
+                        "reason": "structure_continues_to_observation_limit",
                         "obs_hit": True,
                         "state": "continuation_to_limit",
                         "continuation_score": continuation_score,
                         "continuation_confidence": continuation_confidence,
                         "continuation_path_support": continuation_path_support,
-                        "continuation_tail_support": continuation_score,
+                        "continuation_tail_support": continuation_tail_support,
+                        "continuation_sample_support": continuation_tail_structure_support,
                         "censored": True,
                         "sample_count": sample_count,
                         "boundary_sample_count": len(positions),
-                        "continuation_sample_count": len(continuation_samples),
-                        "unresolved_sample_count": sample_count - len(positions) - len(continuation_samples),
+                        "continuation_sample_count": sum(
+                            value >= cls.ENLARGEMENT_CONTINUATION_MIN_SCORE
+                            for value in continuation_values
+                        ),
+                        "unresolved_sample_count": sum(
+                            value < cls.ENLARGEMENT_CONTINUATION_MIN_SCORE
+                            for value in continuation_values
+                        ),
+                        "edge_coherence_score": selected_profile["edge_coherence_score"],
+                        "edge_span_support": selected_profile["edge_span_support"],
+                        "edge_mean_strength": selected_profile["edge_mean_strength"],
+                        "edge_orientation_score": selected_profile["edge_orientation_score"],
+                        "edge_distance": None,
+                        "edge_found": False,
+                        "structure_persistence": selected_profile["structure_persistence"],
+                        "background_takeover_score": cls._clamp01(
+                            selected_profile["background_stability"]
+                            * (1.0 - selected_profile["structure_persistence"])
+                        ),
                     }
                 else:
                     growth[side] = maximum
@@ -902,18 +1077,36 @@ class FocusResolver:
                         "growth": maximum,
                         "score": max(scores, default=0.0),
                         "confidence": len(positions) / sample_count,
-                        "reason": "no_stable_boundary_or_continuation",
+                        "reason": "no_coherent_edge_or_persistent_structure",
                         "obs_hit": True,
                         "state": "unresolved",
                         "continuation_score": 0.0,
                         "continuation_confidence": 0.0,
                         "continuation_path_support": 0.0,
                         "continuation_tail_support": 0.0,
+                        "continuation_sample_support": continuation_tail_structure_support,
                         "censored": False,
                         "sample_count": sample_count,
                         "boundary_sample_count": len(positions),
-                        "continuation_sample_count": len(continuation_samples),
-                        "unresolved_sample_count": sample_count - len(positions) - len(continuation_samples),
+                        "continuation_sample_count": sum(
+                            value >= cls.ENLARGEMENT_CONTINUATION_MIN_SCORE
+                            for value in continuation_values
+                        ),
+                        "unresolved_sample_count": sum(
+                            value < cls.ENLARGEMENT_CONTINUATION_MIN_SCORE
+                            for value in continuation_values
+                        ),
+                        "edge_coherence_score": selected_profile["edge_coherence_score"],
+                        "edge_span_support": selected_profile["edge_span_support"],
+                        "edge_mean_strength": selected_profile["edge_mean_strength"],
+                        "edge_orientation_score": selected_profile["edge_orientation_score"],
+                        "edge_distance": None,
+                        "edge_found": False,
+                        "structure_persistence": selected_profile["structure_persistence"],
+                        "background_takeover_score": cls._clamp01(
+                            selected_profile["background_stability"]
+                            * (1.0 - selected_profile["structure_persistence"])
+                        ),
                     }
 
             raw_growth = dict(growth)
@@ -1108,7 +1301,7 @@ class FocusResolver:
                 "extent_horizontal_balance": horizontal_balance,
                 "extent_vertical_balance": vertical_balance,
                 "extent_symmetry": math.sqrt(max(0.0, horizontal_balance * vertical_balance)),
-                "extent_boundary_method": "boundary_or_continuation_v5_4",
+                "extent_boundary_method": "edge_coherent_boundary_or_continuation_v5_4_1",
                 "extent_boundary_left_found": boundary_debug["left"]["found"],
                 "extent_boundary_right_found": boundary_debug["right"]["found"],
                 "extent_boundary_top_found": boundary_debug["top"]["found"],
@@ -1137,6 +1330,37 @@ class FocusResolver:
                 "extent_right_continuation_confidence": boundary_debug["right"]["continuation_confidence"],
                 "extent_top_continuation_confidence": boundary_debug["top"]["continuation_confidence"],
                 "extent_bottom_continuation_confidence": boundary_debug["bottom"]["continuation_confidence"],
+                "extent_left_edge_coherence_score": boundary_debug["left"]["edge_coherence_score"],
+                "extent_right_edge_coherence_score": boundary_debug["right"]["edge_coherence_score"],
+                "extent_top_edge_coherence_score": boundary_debug["top"]["edge_coherence_score"],
+                "extent_bottom_edge_coherence_score": boundary_debug["bottom"]["edge_coherence_score"],
+                "extent_left_edge_span_support": boundary_debug["left"]["edge_span_support"],
+                "extent_right_edge_span_support": boundary_debug["right"]["edge_span_support"],
+                "extent_top_edge_span_support": boundary_debug["top"]["edge_span_support"],
+                "extent_bottom_edge_span_support": boundary_debug["bottom"]["edge_span_support"],
+                "extent_left_edge_mean_strength": boundary_debug["left"]["edge_mean_strength"],
+                "extent_right_edge_mean_strength": boundary_debug["right"]["edge_mean_strength"],
+                "extent_top_edge_mean_strength": boundary_debug["top"]["edge_mean_strength"],
+                "extent_bottom_edge_mean_strength": boundary_debug["bottom"]["edge_mean_strength"],
+                "extent_left_edge_distance": boundary_debug["left"]["edge_distance"],
+                "extent_right_edge_distance": boundary_debug["right"]["edge_distance"],
+                "extent_top_edge_distance": boundary_debug["top"]["edge_distance"],
+                "extent_bottom_edge_distance": boundary_debug["bottom"]["edge_distance"],
+                "extent_left_edge_found": boundary_debug["left"]["edge_found"],
+                "extent_right_edge_found": boundary_debug["right"]["edge_found"],
+                "extent_top_edge_found": boundary_debug["top"]["edge_found"],
+                "extent_bottom_edge_found": boundary_debug["bottom"]["edge_found"],
+                "extent_left_edge_orientation_score": boundary_debug["left"]["edge_orientation_score"],
+                "extent_right_edge_orientation_score": boundary_debug["right"]["edge_orientation_score"],
+                "extent_top_edge_orientation_score": boundary_debug["top"]["edge_orientation_score"],
+                "extent_bottom_edge_orientation_score": boundary_debug["bottom"]["edge_orientation_score"],
+                "extent_edge_coherent_side_count": sum(
+                    entry["edge_found"] for entry in boundary_debug.values()
+                ),
+                "extent_mean_edge_coherence": sum(
+                    entry["edge_coherence_score"]
+                    for entry in boundary_debug.values()
+                ) / len(boundary_debug),
                 "extent_left_censored": boundary_debug["left"]["censored"],
                 "extent_right_censored": boundary_debug["right"]["censored"],
                 "extent_top_censored": boundary_debug["top"]["censored"],
@@ -1869,6 +2093,16 @@ class FocusResolver:
                 "enlargement_extent_reason": item.get("enlargement_extent_reason"),
                 "extent_reliable": item.get("extent_reliable"),
                 "extent_truncated": item.get("extent_truncated"),
+                "extent_horizontal_state": item.get("extent_horizontal_state"),
+                "extent_vertical_state": item.get("extent_vertical_state"),
+                "extent_censored_side_count": item.get("extent_censored_side_count"),
+                "extent_has_censored_measurement": item.get("extent_has_censored_measurement"),
+                "extent_fully_measured": item.get("extent_fully_measured"),
+                "extent_width_is_lower_bound": item.get("extent_width_is_lower_bound"),
+                "extent_height_is_lower_bound": item.get("extent_height_is_lower_bound"),
+                "extent_area_is_lower_bound": item.get("extent_area_is_lower_bound"),
+                "extent_edge_coherent_side_count": item.get("extent_edge_coherent_side_count"),
+                "extent_mean_edge_coherence": item.get("extent_mean_edge_coherence"),
                 "extent_obs_boundary_hit_count": item.get("extent_obs_boundary_hit_count"),
                 "extent_boundary_debug": item.get("extent_boundary_debug"),
             })

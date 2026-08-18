@@ -5,7 +5,7 @@
 #1 DONE 0.0s
 
 #2 [internal] load metadata for docker.io/nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
-#2 DONE 1.2s
+#2 DONE 1.3s
 
 #3 [internal] load .dockerignore
 #3 transferring context: 151B done
@@ -15,23 +15,23 @@
 #4 DONE 0.0s
 
 #5 [internal] load build context
-#5 transferring context: 162.97kB done
+#5 transferring context: 178.84kB done
 #5 DONE 0.0s
 
-#6 [ 2/10] RUN apt-get update     && apt-get install -y --no-install-recommends        software-properties-common ca-certificates curl build-essential     && add-apt-repository ppa:deadsnakes/ppa     && apt-get update     && apt-get install -y --no-install-recommends        python3.11 python3.11-dev python3.11-venv libgl1 libglib2.0-0     && rm -rf /var/lib/apt/lists/*
+#6 [ 3/10] WORKDIR /app
 #6 CACHED
 
-#7 [ 4/10] COPY requirements-runtime.lock /app/requirements-runtime.lock
+#7 [ 2/10] RUN apt-get update     && apt-get install -y --no-install-recommends        software-properties-common ca-certificates curl build-essential     && add-apt-repository ppa:deadsnakes/ppa     && apt-get update     && apt-get install -y --no-install-recommends        python3.11 python3.11-dev python3.11-venv libgl1 libglib2.0-0     && rm -rf /var/lib/apt/lists/*
 #7 CACHED
 
-#8 [ 3/10] WORKDIR /app
+#8 [ 4/10] COPY requirements-runtime.lock /app/requirements-runtime.lock
 #8 CACHED
 
 #9 [ 5/10] RUN python3.11 -m ensurepip --upgrade     && python3.11 -m pip install --no-cache-dir --upgrade pip     && python3.11 -m pip install --no-cache-dir        --index-url https://download.pytorch.org/whl/cu124        torch==2.6.0 torchvision==0.21.0     && python3.11 -m pip install --no-cache-dir -r /app/requirements-runtime.lock
 #9 CACHED
 
 #10 [ 6/10] COPY app/ /app/
-#10 DONE 0.0s
+#10 DONE 0.1s
 
 #11 [ 7/10] COPY config/ /config/
 #11 DONE 0.0s
@@ -47,7 +47,7 @@
 
 #15 exporting to image
 #15 exporting layers 0.1s done
-#15 writing image sha256:c8cb24fee7efe102e37f9cf65d3dba1d38d6f28655bbb1522ab0181f87ab3198 done
+#15 writing image sha256:bbc3b2c04d00e304faf14f5c27d9f76e1acbeb30eb580322c4658663f39fbe8c done
 #15 naming to docker.io/library/vlm-online-dbild-runtime:1.2.0 done
 #15 DONE 0.1s
 image=vlm-online-dbild-runtime:1.2.0
