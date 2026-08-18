@@ -161,6 +161,12 @@ class FocusResolver:
     NATURAL_CONTAINER_MIN_INTERIOR_PERSISTENCE = 0.55
     NATURAL_CONTAINER_MIN_EXTERIOR_SEPARATION = 0.20
     NATURAL_CONTAINER_MIN_ENCLOSING_SCORE = 0.55
+    NATURAL_CONTAINER_MAX_SIDE_CANDIDATES = 4
+    NATURAL_CONTAINER_CORNER_RADIUS_PX = 6
+    NATURAL_CONTAINER_MIN_JOINT_SIDE_CONFIDENCE = 0.55
+    NATURAL_CONTAINER_MIN_JOINT_CORNER_SUPPORT = 0.30
+    NATURAL_CONTAINER_MIN_JOINT_INTERIOR_CONSISTENCY = 0.40
+    NATURAL_CONTAINER_MIN_JOINT_SCORE = 0.50
     ENLARGEMENT_COMPLETION_MIN_RETAINED_RATIO = 0.70
     ENLARGEMENT_MIRRORED_CONFIDENCE_FACTOR = 0.75
     ENLARGEMENT_CARD_CELL_OUTER_X = 0.30
@@ -2003,6 +2009,7 @@ class FocusResolver:
                     "recovered_current_container_valid": False,
                     "recovered_current_container_confidence": 0.0,
                     "recovered_current_container_source": "unavailable",
+                    "recovered_current_container_reason": reason,
                     "recovered_container_left": None,
                     "recovered_container_right": None,
                     "recovered_container_top": None,
@@ -2068,6 +2075,24 @@ class FocusResolver:
                         )
                     },
                     "natural_container_dense_boundary_side_count": 0,
+                    **{
+                        f"natural_container_{side}_candidates": []
+                        for side in ("left", "right", "top", "bottom")
+                    },
+                    "natural_container_joint_hypothesis_count": 0,
+                    "natural_container_joint_valid_hypothesis_count": 0,
+                    "natural_container_joint_valid": False,
+                    "natural_container_joint_score": 0.0,
+                    "natural_container_joint_side_confidence": 0.0,
+                    "natural_container_joint_corner_support": 0.0,
+                    "natural_container_joint_interior_consistency": 0.0,
+                    "natural_container_joint_compactness": 0.0,
+                    "natural_container_joint_total_outward_distance": None,
+                    "natural_container_joint_selected_left_candidate_rank": None,
+                    "natural_container_joint_selected_right_candidate_rank": None,
+                    "natural_container_joint_selected_top_candidate_rank": None,
+                    "natural_container_joint_selected_bottom_candidate_rank": None,
+                    "natural_container_joint_rejection_counts": {},
                 })
 
             if semantic is None or observation is None:
@@ -2326,15 +2351,16 @@ class FocusResolver:
                     "enclosing_score": enclosing_score,
                 }
 
-            sibling_centers = [
-                (
-                    (box[0] + box[2]) / 2.0,
-                    (box[1] + box[3]) / 2.0,
-                )
+            sibling_boxes = [
+                box
                 for sibling in siblings
                 if sibling is not item
                 for box in [clipped_box(sibling.get("prepared_bbox"))]
                 if box is not None
+            ]
+            sibling_centers = [
+                ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0)
+                for box in sibling_boxes
             ]
             protected_cores = [
                 core for field in (
@@ -2345,6 +2371,31 @@ class FocusResolver:
                 )
                 for core in [clipped_box(item.get(field))]
                 if core is not None
+            ]
+
+            def sibling_protected_core(
+                sibling_box: tuple[float, float, float, float],
+            ) -> tuple[float, float, float, float]:
+                sibling_left, sibling_top, sibling_right, sibling_bottom = sibling_box
+                horizontal_inset = (
+                    0.5
+                    * (1.0 - cls.ENLARGEMENT_SIBLING_PROTECTED_CORE_X)
+                    * (sibling_right - sibling_left)
+                )
+                vertical_inset = (
+                    0.5
+                    * (1.0 - cls.ENLARGEMENT_SIBLING_PROTECTED_CORE_Y)
+                    * (sibling_bottom - sibling_top)
+                )
+                return (
+                    sibling_left + horizontal_inset,
+                    sibling_top + vertical_inset,
+                    sibling_right - horizontal_inset,
+                    sibling_bottom - vertical_inset,
+                )
+
+            sibling_protected_cores = [
+                sibling_protected_core(box) for box in sibling_boxes
             ]
             device_edges = {
                 "left": item.get("prepared_device_left"),
@@ -2364,7 +2415,224 @@ class FocusResolver:
                 "top": item.get("source_device_top_confidence"),
                 "bottom": item.get("source_device_bottom_confidence"),
             }
+
+            def within_search(x: int, y: int) -> bool:
+                return (
+                    int(search[0]) <= x < int(search[2])
+                    and int(search[1]) <= y < int(search[3])
+                )
+
+            def side_offset(
+                side: str,
+                x: int,
+                y: int,
+                depth: int,
+                inward: bool,
+            ) -> tuple[int, int]:
+                direction = 1 if inward else -1
+                if side == "left":
+                    return x + direction * depth, y
+                if side == "right":
+                    return x - direction * depth, y
+                if side == "top":
+                    return x, y + direction * depth
+                return x, y - direction * depth
+
+            def color_similarity(
+                first: tuple[int, int, int],
+                second: tuple[int, int, int],
+            ) -> float:
+                luma_distance = abs(luminance(first) - luminance(second))
+                rgb_distance = math.sqrt(sum(
+                    ((first[channel] - second[channel]) / 255.0) ** 2
+                    for channel in range(3)
+                ) / 3.0)
+                return cls._clamp01(
+                    1.0
+                    - 0.5 * cls._clamp01(
+                        luma_distance
+                        / cls.ENLARGEMENT_EDGE_COHERENCE_LUMINANCE_NORMALIZER
+                    )
+                    - 0.5 * cls._clamp01(
+                        rgb_distance
+                        / cls.ENLARGEMENT_EDGE_COHERENCE_COLOR_NORMALIZER
+                    )
+                )
+
+            def edge_neighborhood_support(
+                side: str,
+                coordinate: float,
+                parallel_center: float,
+            ) -> float:
+                values: list[float] = []
+                radius = cls.NATURAL_CONTAINER_CORNER_RADIUS_PX
+                for parallel_offset in (-radius, 0, radius):
+                    if side in ("left", "right"):
+                        x, y = int(round(coordinate)), int(round(parallel_center + parallel_offset))
+                        normal_first = side_offset(side, x, y, gradient_radius, inward=True)
+                        normal_second = side_offset(side, x, y, gradient_radius, inward=False)
+                        tangent_first, tangent_second = (x, y - gradient_radius), (x, y + gradient_radius)
+                    else:
+                        x, y = int(round(parallel_center + parallel_offset)), int(round(coordinate))
+                        normal_first = side_offset(side, x, y, gradient_radius, inward=True)
+                        normal_second = side_offset(side, x, y, gradient_radius, inward=False)
+                        tangent_first, tangent_second = (x - gradient_radius, y), (x + gradient_radius, y)
+                    if not all(
+                        within_search(sample_x, sample_y)
+                        for sample_x, sample_y in (
+                            normal_first,
+                            normal_second,
+                            tangent_first,
+                            tangent_second,
+                        )
+                    ):
+                        continue
+                    normal = oriented_strength(
+                        pixel_at(*normal_first),
+                        pixel_at(*normal_second),
+                    )
+                    tangent = oriented_strength(
+                        pixel_at(*tangent_first),
+                        pixel_at(*tangent_second),
+                    )
+                    values.append(normal * normal / max(normal + tangent, 1e-6))
+                return sum(values) / max(len(values), 1)
+
+            def side_interior_stability(candidate: dict[str, Any]) -> float:
+                side = candidate["side"]
+                coordinate = candidate["coordinate"]
+                values: list[float] = []
+                inset = cls.ENLARGEMENT_EDGE_SAMPLE_INSET
+                for sample_index in range(
+                    cls.NATURAL_CONTAINER_ENCLOSING_SAMPLE_COUNT
+                ):
+                    fraction = inset + (1.0 - 2.0 * inset) * (
+                        (sample_index + 0.5)
+                        / cls.NATURAL_CONTAINER_ENCLOSING_SAMPLE_COUNT
+                    )
+                    if side in ("left", "right"):
+                        x, y = int(round(coordinate)), int(round(top + fraction * height))
+                    else:
+                        x, y = int(round(left + fraction * width)), int(round(coordinate))
+                    near = side_offset(side, x, y, 4, inward=True)
+                    far = side_offset(side, x, y, 8, inward=True)
+                    if within_search(*near) and within_search(*far):
+                        values.append(color_similarity(pixel_at(*near), pixel_at(*far)))
+                return sum(values) / max(len(values), 1)
+
+            def positive_intersection(
+                first: tuple[float, float, float, float],
+                second: tuple[float, float, float, float],
+            ) -> bool:
+                return (
+                    max(first[0], second[0]) < min(first[2], second[2])
+                    and max(first[1], second[1]) < min(first[3], second[3])
+                )
+
+            def validate_joint_container_hypothesis(
+                side_candidates: dict[str, dict[str, Any]],
+            ) -> dict[str, Any]:
+                bbox = (
+                    float(side_candidates["left"]["coordinate"]),
+                    float(side_candidates["top"]["coordinate"]),
+                    float(side_candidates["right"]["coordinate"]),
+                    float(side_candidates["bottom"]["coordinate"]),
+                )
+                if not (
+                    bbox[0] < left < right < bbox[2]
+                    and bbox[1] < top < bottom < bbox[3]
+                ):
+                    return {"valid": False, "reason": "invalid_geometry"}
+                if not (
+                    search[0] <= bbox[0] and search[1] <= bbox[1]
+                    and bbox[2] <= search[2] and bbox[3] <= search[3]
+                ):
+                    return {"valid": False, "reason": "observation_violation"}
+                if any(
+                    bbox[0] < sibling_center_x < bbox[2]
+                    and bbox[1] < sibling_center_y < bbox[3]
+                    for sibling_center_x, sibling_center_y in sibling_centers
+                ) or any(
+                    positive_intersection(bbox, core)
+                    for core in sibling_protected_cores
+                ):
+                    return {"valid": False, "reason": "sibling_ownership"}
+                side_confidence = min(
+                    float(candidate["enclosing_score"])
+                    for candidate in side_candidates.values()
+                )
+                if side_confidence < cls.NATURAL_CONTAINER_MIN_JOINT_SIDE_CONFIDENCE:
+                    return {"valid": False, "reason": "insufficient_side_confidence"}
+                corner_values = [
+                    math.sqrt(max(
+                        0.0,
+                        edge_neighborhood_support("left", bbox[0], bbox[1])
+                        * edge_neighborhood_support("top", bbox[1], bbox[0]),
+                    )),
+                    math.sqrt(max(
+                        0.0,
+                        edge_neighborhood_support("right", bbox[2], bbox[1])
+                        * edge_neighborhood_support("top", bbox[1], bbox[2]),
+                    )),
+                    math.sqrt(max(
+                        0.0,
+                        edge_neighborhood_support("left", bbox[0], bbox[3])
+                        * edge_neighborhood_support("bottom", bbox[3], bbox[0]),
+                    )),
+                    math.sqrt(max(
+                        0.0,
+                        edge_neighborhood_support("right", bbox[2], bbox[3])
+                        * edge_neighborhood_support("bottom", bbox[3], bbox[2]),
+                    )),
+                ]
+                corner_support = sum(corner_values) / len(corner_values)
+                if corner_support < cls.NATURAL_CONTAINER_MIN_JOINT_CORNER_SUPPORT:
+                    return {"valid": False, "reason": "insufficient_corner_support"}
+                interior_consistency = min(
+                    side_interior_stability(candidate)
+                    for candidate in side_candidates.values()
+                )
+                if (
+                    interior_consistency
+                    < cls.NATURAL_CONTAINER_MIN_JOINT_INTERIOR_CONSISTENCY
+                ):
+                    return {"valid": False, "reason": "insufficient_interior_consistency"}
+                expansion_x = (bbox[2] - bbox[0] - width) / width
+                expansion_y = (bbox[3] - bbox[1] - height) / height
+                compactness = math.exp(
+                    -0.5 * (max(expansion_x, 0.0) + max(expansion_y, 0.0))
+                )
+                joint_score = cls._clamp01(
+                    0.40 * side_confidence
+                    + 0.30 * corner_support
+                    + 0.20 * interior_consistency
+                    + 0.10 * compactness
+                )
+                if joint_score < cls.NATURAL_CONTAINER_MIN_JOINT_SCORE:
+                    return {"valid": False, "reason": "insufficient_joint_score"}
+                return {
+                    "valid": True,
+                    "reason": "joint_container_boundary",
+                    "bbox": bbox,
+                    "side_confidence": side_confidence,
+                    "corner_support": corner_support,
+                    "interior_consistency": interior_consistency,
+                    "compactness": compactness,
+                    "joint_score": joint_score,
+                    "total_outward_distance": sum(
+                        float(candidate["distance"])
+                        for candidate in side_candidates.values()
+                    ),
+                    "side_distances": (
+                        float(side_candidates["left"]["distance"]),
+                        float(side_candidates["right"]["distance"]),
+                        float(side_candidates["top"]["distance"]),
+                        float(side_candidates["bottom"]["distance"]),
+                    ),
+                }
+
             side_results: dict[str, dict[str, Any]] = {}
+            side_candidate_lists: dict[str, list[dict[str, Any]]] = {}
             for side in ("left", "right", "top", "bottom"):
                 maximum = int(round(
                     left - search[0] if side == "left"
@@ -2382,6 +2650,7 @@ class FocusResolver:
                     if outward_distance >= 0.0:
                         maximum = min(maximum, int(round(outward_distance)))
                 if maximum < 1:
+                    side_candidate_lists[side] = []
                     side_results[side] = {
                         "state": "unresolved", "reason": "insufficient_scan_space",
                         "score": 0.0, "distance": None, "coordinate": None,
@@ -2422,7 +2691,7 @@ class FocusResolver:
                         profiles[distance] = profile(side, distance)
                     return profiles[distance]
 
-                selected: tuple[int, dict[str, float], dict[str, Any]] | None = None
+                side_candidates: list[dict[str, Any]] = []
                 edge_candidate_count = 0
                 enclosing_rejection_count = 0
                 last_rejected: dict[str, Any] = {
@@ -2504,9 +2773,32 @@ class FocusResolver:
                         if core_overlap or beyond_sibling_center:
                             last_geometry_rejection = "sibling_ownership_rejected"
                             continue
-                        selected = (distance, current, enclosing)
-                        break
-                if selected is None:
+                        side_candidates.append({
+                            "side": side,
+                            "distance": float(distance),
+                            "coordinate": float(coordinate),
+                            "edge_score": current["score"],
+                            "span_support": current["span_support"],
+                            "mean_oriented_strength": current["mean_strength"],
+                            "inside_outside_contrast": current["inside_outside_contrast"],
+                            "interior_persistence": enclosing["interior_persistence"],
+                            "exterior_separation": enclosing["exterior_separation"],
+                            "enclosing_score": enclosing["enclosing_score"],
+                            "scan_mode": (
+                                "dense"
+                                if distance <= cls.NATURAL_CONTAINER_DENSE_SCAN_RADIUS_PX
+                                else "coarse"
+                            ),
+                            "selected_scan_step": (
+                                1
+                                if distance <= cls.NATURAL_CONTAINER_DENSE_SCAN_RADIUS_PX
+                                else coarse_step
+                            ),
+                        })
+                        if len(side_candidates) >= cls.NATURAL_CONTAINER_MAX_SIDE_CANDIDATES:
+                            break
+                side_candidate_lists[side] = side_candidates
+                if not side_candidates:
                     if last_geometry_rejection is not None:
                         reason = last_geometry_rejection
                     elif edge_candidate_count:
@@ -2530,30 +2822,21 @@ class FocusResolver:
                         "last_rejected_reason": last_rejected["reason"],
                     }
                     continue
-                distance, selected_profile, enclosing = selected
-                coordinate = semantic_edge - distance if side in ("left", "top") else semantic_edge + distance
+                selected_candidate = side_candidates[0]
                 side_results[side] = {
                     "state": "container_boundary",
-                    "reason": "first_enclosing_container_boundary",
-                    "score": selected_profile["score"],
-                    "distance": float(distance),
-                    "coordinate": float(coordinate),
-                    "scan_mode": (
-                        "dense"
-                        if distance <= cls.NATURAL_CONTAINER_DENSE_SCAN_RADIUS_PX
-                        else "coarse"
-                    ),
-                    "selected_scan_step": (
-                        1
-                        if distance <= cls.NATURAL_CONTAINER_DENSE_SCAN_RADIUS_PX
-                        else coarse_step
-                    ),
-                    "span_support": selected_profile["span_support"],
-                    "mean_strength": selected_profile["mean_strength"],
-                    "inside_outside_contrast": selected_profile["inside_outside_contrast"],
-                    "interior_persistence": enclosing["interior_persistence"],
-                    "exterior_separation": enclosing["exterior_separation"],
-                    "enclosing_score": enclosing["enclosing_score"],
+                    "reason": "enclosing_container_candidate",
+                    "score": selected_candidate["edge_score"],
+                    "distance": selected_candidate["distance"],
+                    "coordinate": selected_candidate["coordinate"],
+                    "scan_mode": selected_candidate["scan_mode"],
+                    "selected_scan_step": selected_candidate["selected_scan_step"],
+                    "span_support": selected_candidate["span_support"],
+                    "mean_strength": selected_candidate["mean_oriented_strength"],
+                    "inside_outside_contrast": selected_candidate["inside_outside_contrast"],
+                    "interior_persistence": selected_candidate["interior_persistence"],
+                    "exterior_separation": selected_candidate["exterior_separation"],
+                    "enclosing_score": selected_candidate["enclosing_score"],
                     "edge_candidate_count": edge_candidate_count,
                     "enclosing_rejection_count": enclosing_rejection_count,
                     "last_rejected_distance": last_rejected["distance"],
@@ -2562,21 +2845,89 @@ class FocusResolver:
                     "last_rejected_reason": last_rejected["reason"],
                 }
 
-            valid = all(
-                side_results[side]["state"] == "container_boundary"
-                for side in ("left", "right", "top", "bottom")
-            )
-            recovered = (
-                side_results["left"]["coordinate"],
-                side_results["top"]["coordinate"],
-                side_results["right"]["coordinate"],
-                side_results["bottom"]["coordinate"],
-            ) if valid else None
+            joint_rejection_counts = {
+                "invalid_geometry": 0,
+                "observation_violation": 0,
+                "sibling_ownership": 0,
+                "insufficient_side_confidence": 0,
+                "insufficient_corner_support": 0,
+                "insufficient_interior_consistency": 0,
+                "insufficient_joint_score": 0,
+            }
+            joint_hypothesis_count = 0
+            valid_joint_hypotheses: list[tuple[dict[str, Any], dict[str, int]]] = []
+            if all(side_candidate_lists.get(side) for side in ("left", "right", "top", "bottom")):
+                for left_rank, left_candidate in enumerate(side_candidate_lists["left"]):
+                    for right_rank, right_candidate in enumerate(side_candidate_lists["right"]):
+                        for top_rank, top_candidate in enumerate(side_candidate_lists["top"]):
+                            for bottom_rank, bottom_candidate in enumerate(side_candidate_lists["bottom"]):
+                                joint_hypothesis_count += 1
+                                joint = validate_joint_container_hypothesis({
+                                    "left": left_candidate,
+                                    "right": right_candidate,
+                                    "top": top_candidate,
+                                    "bottom": bottom_candidate,
+                                })
+                                if joint["valid"]:
+                                    valid_joint_hypotheses.append((joint, {
+                                        "left": left_rank,
+                                        "right": right_rank,
+                                        "top": top_rank,
+                                        "bottom": bottom_rank,
+                                    }))
+                                else:
+                                    joint_rejection_counts[joint["reason"]] += 1
+
+            selected_joint: dict[str, Any] | None = None
+            selected_ranks: dict[str, int] | None = None
+            if valid_joint_hypotheses:
+                selected_joint, selected_ranks = min(
+                    valid_joint_hypotheses,
+                    key=lambda value: (
+                        value[0]["total_outward_distance"],
+                        -value[0]["joint_score"],
+                        -value[0]["side_confidence"],
+                        value[0]["side_distances"],
+                    ),
+                )
+                for side, rank in selected_ranks.items():
+                    candidate = side_candidate_lists[side][rank]
+                    side_results[side].update({
+                        "state": "container_boundary",
+                        "reason": "joint_container_boundary",
+                        "score": candidate["edge_score"],
+                        "distance": candidate["distance"],
+                        "coordinate": candidate["coordinate"],
+                        "scan_mode": candidate["scan_mode"],
+                        "selected_scan_step": candidate["selected_scan_step"],
+                        "span_support": candidate["span_support"],
+                        "mean_strength": candidate["mean_oriented_strength"],
+                        "inside_outside_contrast": candidate["inside_outside_contrast"],
+                        "interior_persistence": candidate["interior_persistence"],
+                        "exterior_separation": candidate["exterior_separation"],
+                        "enclosing_score": candidate["enclosing_score"],
+                    })
+                valid = True
+                recovered = selected_joint["bbox"]
+                recovered_reason = "joint_container_boundary"
+                confidence = selected_joint["joint_score"]
+            else:
+                valid = False
+                recovered = None
+                recovered_reason = (
+                    "insufficient_joint_side_candidates"
+                    if any(
+                        not side_candidate_lists.get(side)
+                        for side in ("left", "right", "top", "bottom")
+                    )
+                    else "no_valid_joint_container"
+                )
+                confidence = 0.0
+                for side_result in side_results.values():
+                    side_result["state"] = "unresolved"
+                    side_result["reason"] = recovered_reason
             recovered_width = recovered[2] - recovered[0] if recovered else None
             recovered_height = recovered[3] - recovered[1] if recovered else None
-            confidence = min(
-                side_results[side]["score"] for side in ("left", "right", "top", "bottom")
-            ) if valid else 0.0
             item.update({
                 "recovered_current_container_bbox": [round(value, 2) for value in recovered] if recovered else None,
                 "recovered_current_container_width": recovered_width,
@@ -2584,7 +2935,8 @@ class FocusResolver:
                 "recovered_current_container_area": recovered_width * recovered_height if recovered_width is not None and recovered_height is not None else None,
                 "recovered_current_container_valid": valid,
                 "recovered_current_container_confidence": confidence,
-                "recovered_current_container_source": "independent_enclosing_pixel_boundary_v5_5_3" if valid else "unavailable",
+                "recovered_current_container_source": "joint_independent_pixel_container_v5_5_4" if valid else "unavailable",
+                "recovered_current_container_reason": recovered_reason,
                 "recovered_container_left": recovered[0] if recovered else None,
                 "recovered_container_right": recovered[2] if recovered else None,
                 "recovered_container_top": recovered[1] if recovered else None,
@@ -2666,6 +3018,43 @@ class FocusResolver:
                     and side_results[side]["scan_mode"] == "dense"
                     for side in side_results
                 ),
+                **{
+                    f"natural_container_{side}_candidates": [
+                        {
+                            key: candidate[key]
+                            for key in (
+                                "side",
+                                "distance",
+                                "coordinate",
+                                "edge_score",
+                                "span_support",
+                                "mean_oriented_strength",
+                                "inside_outside_contrast",
+                                "interior_persistence",
+                                "exterior_separation",
+                                "enclosing_score",
+                                "scan_mode",
+                                "selected_scan_step",
+                            )
+                        }
+                        for candidate in side_candidate_lists[side]
+                    ]
+                    for side in ("left", "right", "top", "bottom")
+                },
+                "natural_container_joint_hypothesis_count": joint_hypothesis_count,
+                "natural_container_joint_valid_hypothesis_count": len(valid_joint_hypotheses),
+                "natural_container_joint_valid": selected_joint is not None,
+                "natural_container_joint_score": selected_joint["joint_score"] if selected_joint else 0.0,
+                "natural_container_joint_side_confidence": selected_joint["side_confidence"] if selected_joint else 0.0,
+                "natural_container_joint_corner_support": selected_joint["corner_support"] if selected_joint else 0.0,
+                "natural_container_joint_interior_consistency": selected_joint["interior_consistency"] if selected_joint else 0.0,
+                "natural_container_joint_compactness": selected_joint["compactness"] if selected_joint else 0.0,
+                "natural_container_joint_total_outward_distance": selected_joint["total_outward_distance"] if selected_joint else None,
+                "natural_container_joint_selected_left_candidate_rank": selected_ranks["left"] if selected_ranks else None,
+                "natural_container_joint_selected_right_candidate_rank": selected_ranks["right"] if selected_ranks else None,
+                "natural_container_joint_selected_top_candidate_rank": selected_ranks["top"] if selected_ranks else None,
+                "natural_container_joint_selected_bottom_candidate_rank": selected_ranks["bottom"] if selected_ranks else None,
+                "natural_container_joint_rejection_counts": joint_rejection_counts,
             })
 
         for sibling_set in sibling_sets:
@@ -3328,6 +3717,7 @@ class FocusResolver:
                 "recovered_current_container_valid": item.get("recovered_current_container_valid"),
                 "recovered_current_container_confidence": item.get("recovered_current_container_confidence"),
                 "recovered_current_container_source": item.get("recovered_current_container_source"),
+                "recovered_current_container_reason": item.get("recovered_current_container_reason"),
                 "recovered_container_left": item.get("recovered_container_left"),
                 "recovered_container_right": item.get("recovered_container_right"),
                 "recovered_container_top": item.get("recovered_container_top"),
@@ -3405,6 +3795,24 @@ class FocusResolver:
                 "natural_container_top_last_rejected_reason": item.get("natural_container_top_last_rejected_reason"),
                 "natural_container_bottom_last_rejected_reason": item.get("natural_container_bottom_last_rejected_reason"),
                 "natural_container_dense_boundary_side_count": item.get("natural_container_dense_boundary_side_count"),
+                "natural_container_left_candidates": item.get("natural_container_left_candidates"),
+                "natural_container_right_candidates": item.get("natural_container_right_candidates"),
+                "natural_container_top_candidates": item.get("natural_container_top_candidates"),
+                "natural_container_bottom_candidates": item.get("natural_container_bottom_candidates"),
+                "natural_container_joint_hypothesis_count": item.get("natural_container_joint_hypothesis_count"),
+                "natural_container_joint_valid_hypothesis_count": item.get("natural_container_joint_valid_hypothesis_count"),
+                "natural_container_joint_valid": item.get("natural_container_joint_valid"),
+                "natural_container_joint_score": item.get("natural_container_joint_score"),
+                "natural_container_joint_side_confidence": item.get("natural_container_joint_side_confidence"),
+                "natural_container_joint_corner_support": item.get("natural_container_joint_corner_support"),
+                "natural_container_joint_interior_consistency": item.get("natural_container_joint_interior_consistency"),
+                "natural_container_joint_compactness": item.get("natural_container_joint_compactness"),
+                "natural_container_joint_total_outward_distance": item.get("natural_container_joint_total_outward_distance"),
+                "natural_container_joint_selected_left_candidate_rank": item.get("natural_container_joint_selected_left_candidate_rank"),
+                "natural_container_joint_selected_right_candidate_rank": item.get("natural_container_joint_selected_right_candidate_rank"),
+                "natural_container_joint_selected_top_candidate_rank": item.get("natural_container_joint_selected_top_candidate_rank"),
+                "natural_container_joint_selected_bottom_candidate_rank": item.get("natural_container_joint_selected_bottom_candidate_rank"),
+                "natural_container_joint_rejection_counts": item.get("natural_container_joint_rejection_counts"),
                 "recovered_container_left_padding_ratio": item.get("recovered_container_left_padding_ratio"),
                 "recovered_container_right_padding_ratio": item.get("recovered_container_right_padding_ratio"),
                 "recovered_container_top_padding_ratio": item.get("recovered_container_top_padding_ratio"),
