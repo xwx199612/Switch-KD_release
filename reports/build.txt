@@ -5,7 +5,7 @@
 #1 DONE 0.0s
 
 #2 [internal] load metadata for docker.io/nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
-#2 DONE 8.3s
+#2 DONE 9.2s
 
 #3 [internal] load .dockerignore
 #3 transferring context: 151B done
@@ -15,7 +15,7 @@
 #4 DONE 0.0s
 
 #5 [internal] load build context
-#5 transferring context: 269.93kB done
+#5 transferring context: 276.43kB done
 #5 DONE 0.0s
 
 #6 [ 2/10] RUN apt-get update     && apt-get install -y --no-install-recommends        software-properties-common ca-certificates curl build-essential     && add-apt-repository ppa:deadsnakes/ppa     && apt-get update     && apt-get install -y --no-install-recommends        python3.11 python3.11-dev python3.11-venv libgl1 libglib2.0-0     && rm -rf /var/lib/apt/lists/*
@@ -47,7 +47,7 @@
 
 #15 exporting to image
 #15 exporting layers 0.1s done
-#15 writing image sha256:8ef40e52dfa343b161475c74baa21fee25af64fcbd3469dd7c1e66f0275c3569 done
+#15 writing image sha256:4a6a0a29064815f98eb98984c3f6127223f7c82103a1b72ce6665f11e16f8eb3 done
 #15 naming to docker.io/library/vlm-online-dbild-runtime:1.2.0 done
 #15 DONE 0.1s
 image=vlm-online-dbild-runtime:1.2.0

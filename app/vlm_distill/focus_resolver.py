@@ -2165,6 +2165,7 @@ class FocusResolver:
                     ),
                     "span_support": span_support,
                     "mean_strength": mean_strength,
+                    "inside_outside_contrast": inside_outside_contrast,
                     "orientation": sum(orientations) / max(len(orientations), 1),
                 }
 
