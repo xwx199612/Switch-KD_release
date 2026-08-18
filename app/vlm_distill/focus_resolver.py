@@ -167,6 +167,9 @@ class FocusResolver:
     NATURAL_CONTAINER_MIN_JOINT_CORNER_SUPPORT = 0.30
     NATURAL_CONTAINER_MIN_JOINT_INTERIOR_CONSISTENCY = 0.40
     NATURAL_CONTAINER_MIN_JOINT_SCORE = 0.50
+    NATURAL_CONTAINER_CORNER_CONTINUITY_OFFSETS_PX = (4, 8, 12)
+    NATURAL_CONTAINER_MIN_CORNER_SIDE_CONTINUITY = 0.30
+    NATURAL_CONTAINER_CORNER_MIN_VALID_SAMPLES = 2
     ENLARGEMENT_COMPLETION_MIN_RETAINED_RATIO = 0.70
     ENLARGEMENT_MIRRORED_CONFIDENCE_FACTOR = 0.75
     ENLARGEMENT_CARD_CELL_OUTER_X = 0.30
@@ -2093,6 +2096,49 @@ class FocusResolver:
                     "natural_container_joint_selected_top_candidate_rank": None,
                     "natural_container_joint_selected_bottom_candidate_rank": None,
                     "natural_container_joint_rejection_counts": {},
+                    **{
+                        f"natural_container_joint_corner_{corner}_support": 0.0
+                        for corner in ("tl", "tr", "bl", "br")
+                    },
+                    **{
+                        f"natural_container_joint_corner_{key}_{metric}": 0.0
+                        for key, metric in (
+                            ("tl_top", "continuity"),
+                            ("tl_left", "continuity"),
+                            ("tr_top", "continuity"),
+                            ("tr_right", "continuity"),
+                            ("bl_bottom", "continuity"),
+                            ("bl_left", "continuity"),
+                            ("br_bottom", "continuity"),
+                            ("br_right", "continuity"),
+                        )
+                    },
+                    **{
+                        f"natural_container_joint_corner_{key}_sample_count": 0
+                        for key in (
+                            "tl_top",
+                            "tl_left",
+                            "tr_top",
+                            "tr_right",
+                            "bl_bottom",
+                            "bl_left",
+                            "br_bottom",
+                            "br_right",
+                        )
+                    },
+                    **{
+                        f"natural_container_joint_corner_{key}_sample_values": []
+                        for key in (
+                            "tl_top",
+                            "tl_left",
+                            "tr_top",
+                            "tr_right",
+                            "bl_bottom",
+                            "bl_left",
+                            "br_bottom",
+                            "br_right",
+                        )
+                    },
                 })
 
             if semantic is None or observation is None:
@@ -2498,6 +2544,74 @@ class FocusResolver:
                     values.append(normal * normal / max(normal + tangent, 1e-6))
                 return sum(values) / max(len(values), 1)
 
+            def corner_side_continuity(
+                side: str,
+                side_coordinate: float,
+                corner_parallel_coordinate: float,
+                direction_into_side: int,
+                side_length: float,
+            ) -> dict[str, Any]:
+                values: list[float] = []
+                for offset in cls.NATURAL_CONTAINER_CORNER_CONTINUITY_OFFSETS_PX:
+                    if offset >= side_length:
+                        continue
+                    parallel_coordinate = (
+                        corner_parallel_coordinate
+                        + direction_into_side * offset
+                    )
+                    if side in ("left", "right"):
+                        x, y = int(round(side_coordinate)), int(round(parallel_coordinate))
+                        tangent_first = (x, y - gradient_radius)
+                        tangent_second = (x, y + gradient_radius)
+                    else:
+                        x, y = int(round(parallel_coordinate)), int(round(side_coordinate))
+                        tangent_first = (x - gradient_radius, y)
+                        tangent_second = (x + gradient_radius, y)
+                    normal_first = side_offset(
+                        side,
+                        x,
+                        y,
+                        gradient_radius,
+                        inward=True,
+                    )
+                    normal_second = side_offset(
+                        side,
+                        x,
+                        y,
+                        gradient_radius,
+                        inward=False,
+                    )
+                    if not all(
+                        within_search(sample_x, sample_y)
+                        for sample_x, sample_y in (
+                            normal_first,
+                            normal_second,
+                            tangent_first,
+                            tangent_second,
+                        )
+                    ):
+                        continue
+                    normal = oriented_strength(
+                        pixel_at(*normal_first),
+                        pixel_at(*normal_second),
+                    )
+                    tangent = oriented_strength(
+                        pixel_at(*tangent_first),
+                        pixel_at(*tangent_second),
+                    )
+                    values.append(normal * normal / max(normal + tangent, 1e-6))
+                if len(values) < cls.NATURAL_CONTAINER_CORNER_MIN_VALID_SAMPLES:
+                    score = 0.0
+                else:
+                    score = sum(sorted(values, reverse=True)[:2]) / min(2, len(values))
+                    if score < cls.NATURAL_CONTAINER_MIN_CORNER_SIDE_CONTINUITY:
+                        score = 0.0
+                return {
+                    "score": score,
+                    "sample_count": len(values),
+                    "sample_values": [round(value, 4) for value in values],
+                }
+
             def side_interior_stability(candidate: dict[str, Any]) -> float:
                 side = candidate["side"]
                 coordinate = candidate["coordinate"]
@@ -2563,31 +2677,73 @@ class FocusResolver:
                 )
                 if side_confidence < cls.NATURAL_CONTAINER_MIN_JOINT_SIDE_CONFIDENCE:
                     return {"valid": False, "reason": "insufficient_side_confidence"}
-                corner_values = [
-                    math.sqrt(max(
-                        0.0,
-                        edge_neighborhood_support("left", bbox[0], bbox[1])
-                        * edge_neighborhood_support("top", bbox[1], bbox[0]),
-                    )),
-                    math.sqrt(max(
-                        0.0,
-                        edge_neighborhood_support("right", bbox[2], bbox[1])
-                        * edge_neighborhood_support("top", bbox[1], bbox[2]),
-                    )),
-                    math.sqrt(max(
-                        0.0,
-                        edge_neighborhood_support("left", bbox[0], bbox[3])
-                        * edge_neighborhood_support("bottom", bbox[3], bbox[0]),
-                    )),
-                    math.sqrt(max(
-                        0.0,
-                        edge_neighborhood_support("right", bbox[2], bbox[3])
-                        * edge_neighborhood_support("bottom", bbox[3], bbox[2]),
-                    )),
-                ]
-                corner_support = sum(corner_values) / len(corner_values)
+                corner_continuities = {
+                    "tl_top": corner_side_continuity(
+                        "top", bbox[1], bbox[0], 1, bbox[2] - bbox[0],
+                    ),
+                    "tl_left": corner_side_continuity(
+                        "left", bbox[0], bbox[1], 1, bbox[3] - bbox[1],
+                    ),
+                    "tr_top": corner_side_continuity(
+                        "top", bbox[1], bbox[2], -1, bbox[2] - bbox[0],
+                    ),
+                    "tr_right": corner_side_continuity(
+                        "right", bbox[2], bbox[1], 1, bbox[3] - bbox[1],
+                    ),
+                    "bl_bottom": corner_side_continuity(
+                        "bottom", bbox[3], bbox[0], 1, bbox[2] - bbox[0],
+                    ),
+                    "bl_left": corner_side_continuity(
+                        "left", bbox[0], bbox[3], -1, bbox[3] - bbox[1],
+                    ),
+                    "br_bottom": corner_side_continuity(
+                        "bottom", bbox[3], bbox[2], -1, bbox[2] - bbox[0],
+                    ),
+                    "br_right": corner_side_continuity(
+                        "right", bbox[2], bbox[3], -1, bbox[3] - bbox[1],
+                    ),
+                }
+                corner_supports = {
+                    "tl": math.sqrt(
+                        corner_continuities["tl_top"]["score"]
+                        * corner_continuities["tl_left"]["score"]
+                    ),
+                    "tr": math.sqrt(
+                        corner_continuities["tr_top"]["score"]
+                        * corner_continuities["tr_right"]["score"]
+                    ),
+                    "bl": math.sqrt(
+                        corner_continuities["bl_bottom"]["score"]
+                        * corner_continuities["bl_left"]["score"]
+                    ),
+                    "br": math.sqrt(
+                        corner_continuities["br_bottom"]["score"]
+                        * corner_continuities["br_right"]["score"]
+                    ),
+                }
+                corner_support = sum(corner_supports.values()) / len(corner_supports)
+                corner_diagnostics = {
+                    "corner_support": corner_support,
+                    "corner_supports": corner_supports,
+                    "corner_continuities": {
+                        key: value["score"]
+                        for key, value in corner_continuities.items()
+                    },
+                    "corner_sample_counts": {
+                        key: value["sample_count"]
+                        for key, value in corner_continuities.items()
+                    },
+                    "corner_sample_values": {
+                        key: value["sample_values"]
+                        for key, value in corner_continuities.items()
+                    },
+                }
                 if corner_support < cls.NATURAL_CONTAINER_MIN_JOINT_CORNER_SUPPORT:
-                    return {"valid": False, "reason": "insufficient_corner_support"}
+                    return {
+                        "valid": False,
+                        "reason": "insufficient_corner_support",
+                        **corner_diagnostics,
+                    }
                 interior_consistency = min(
                     side_interior_stability(candidate)
                     for candidate in side_candidates.values()
@@ -2613,6 +2769,7 @@ class FocusResolver:
                 return {
                     "valid": True,
                     "reason": "joint_container_boundary",
+                    **corner_diagnostics,
                     "bbox": bbox,
                     "side_confidence": side_confidence,
                     "corner_support": corner_support,
@@ -2856,6 +3013,7 @@ class FocusResolver:
             }
             joint_hypothesis_count = 0
             valid_joint_hypotheses: list[tuple[dict[str, Any], dict[str, int]]] = []
+            best_rejected_joint: dict[str, Any] | None = None
             if all(side_candidate_lists.get(side) for side in ("left", "right", "top", "bottom")):
                 for left_rank, left_candidate in enumerate(side_candidate_lists["left"]):
                     for right_rank, right_candidate in enumerate(side_candidate_lists["right"]):
@@ -2877,6 +3035,12 @@ class FocusResolver:
                                     }))
                                 else:
                                     joint_rejection_counts[joint["reason"]] += 1
+                                    if "corner_support" in joint and (
+                                        best_rejected_joint is None
+                                        or joint["corner_support"]
+                                        > best_rejected_joint["corner_support"]
+                                    ):
+                                        best_rejected_joint = joint
 
             selected_joint: dict[str, Any] | None = None
             selected_ranks: dict[str, int] | None = None
@@ -2926,6 +3090,11 @@ class FocusResolver:
                 for side_result in side_results.values():
                     side_result["state"] = "unresolved"
                     side_result["reason"] = recovered_reason
+            joint_debug = selected_joint or best_rejected_joint or {}
+            corner_supports = joint_debug.get("corner_supports", {})
+            corner_continuities = joint_debug.get("corner_continuities", {})
+            corner_sample_counts = joint_debug.get("corner_sample_counts", {})
+            corner_sample_values = joint_debug.get("corner_sample_values", {})
             recovered_width = recovered[2] - recovered[0] if recovered else None
             recovered_height = recovered[3] - recovered[1] if recovered else None
             item.update({
@@ -3055,6 +3224,26 @@ class FocusResolver:
                 "natural_container_joint_selected_top_candidate_rank": selected_ranks["top"] if selected_ranks else None,
                 "natural_container_joint_selected_bottom_candidate_rank": selected_ranks["bottom"] if selected_ranks else None,
                 "natural_container_joint_rejection_counts": joint_rejection_counts,
+                "natural_container_joint_corner_tl_support": corner_supports.get("tl", 0.0),
+                "natural_container_joint_corner_tr_support": corner_supports.get("tr", 0.0),
+                "natural_container_joint_corner_bl_support": corner_supports.get("bl", 0.0),
+                "natural_container_joint_corner_br_support": corner_supports.get("br", 0.0),
+                "natural_container_joint_corner_tl_top_continuity": corner_continuities.get("tl_top", 0.0),
+                "natural_container_joint_corner_tl_left_continuity": corner_continuities.get("tl_left", 0.0),
+                "natural_container_joint_corner_tr_top_continuity": corner_continuities.get("tr_top", 0.0),
+                "natural_container_joint_corner_tr_right_continuity": corner_continuities.get("tr_right", 0.0),
+                "natural_container_joint_corner_bl_bottom_continuity": corner_continuities.get("bl_bottom", 0.0),
+                "natural_container_joint_corner_bl_left_continuity": corner_continuities.get("bl_left", 0.0),
+                "natural_container_joint_corner_br_bottom_continuity": corner_continuities.get("br_bottom", 0.0),
+                "natural_container_joint_corner_br_right_continuity": corner_continuities.get("br_right", 0.0),
+                **{
+                    f"natural_container_joint_corner_{key}_sample_count": value
+                    for key, value in corner_sample_counts.items()
+                },
+                **{
+                    f"natural_container_joint_corner_{key}_sample_values": value
+                    for key, value in corner_sample_values.items()
+                },
             })
 
         for sibling_set in sibling_sets:
@@ -3813,6 +4002,34 @@ class FocusResolver:
                 "natural_container_joint_selected_top_candidate_rank": item.get("natural_container_joint_selected_top_candidate_rank"),
                 "natural_container_joint_selected_bottom_candidate_rank": item.get("natural_container_joint_selected_bottom_candidate_rank"),
                 "natural_container_joint_rejection_counts": item.get("natural_container_joint_rejection_counts"),
+                "natural_container_joint_corner_tl_support": item.get("natural_container_joint_corner_tl_support"),
+                "natural_container_joint_corner_tr_support": item.get("natural_container_joint_corner_tr_support"),
+                "natural_container_joint_corner_bl_support": item.get("natural_container_joint_corner_bl_support"),
+                "natural_container_joint_corner_br_support": item.get("natural_container_joint_corner_br_support"),
+                "natural_container_joint_corner_tl_top_continuity": item.get("natural_container_joint_corner_tl_top_continuity"),
+                "natural_container_joint_corner_tl_left_continuity": item.get("natural_container_joint_corner_tl_left_continuity"),
+                "natural_container_joint_corner_tr_top_continuity": item.get("natural_container_joint_corner_tr_top_continuity"),
+                "natural_container_joint_corner_tr_right_continuity": item.get("natural_container_joint_corner_tr_right_continuity"),
+                "natural_container_joint_corner_bl_bottom_continuity": item.get("natural_container_joint_corner_bl_bottom_continuity"),
+                "natural_container_joint_corner_bl_left_continuity": item.get("natural_container_joint_corner_bl_left_continuity"),
+                "natural_container_joint_corner_br_bottom_continuity": item.get("natural_container_joint_corner_br_bottom_continuity"),
+                "natural_container_joint_corner_br_right_continuity": item.get("natural_container_joint_corner_br_right_continuity"),
+                "natural_container_joint_corner_tl_top_sample_count": item.get("natural_container_joint_corner_tl_top_sample_count"),
+                "natural_container_joint_corner_tl_left_sample_count": item.get("natural_container_joint_corner_tl_left_sample_count"),
+                "natural_container_joint_corner_tr_top_sample_count": item.get("natural_container_joint_corner_tr_top_sample_count"),
+                "natural_container_joint_corner_tr_right_sample_count": item.get("natural_container_joint_corner_tr_right_sample_count"),
+                "natural_container_joint_corner_bl_bottom_sample_count": item.get("natural_container_joint_corner_bl_bottom_sample_count"),
+                "natural_container_joint_corner_bl_left_sample_count": item.get("natural_container_joint_corner_bl_left_sample_count"),
+                "natural_container_joint_corner_br_bottom_sample_count": item.get("natural_container_joint_corner_br_bottom_sample_count"),
+                "natural_container_joint_corner_br_right_sample_count": item.get("natural_container_joint_corner_br_right_sample_count"),
+                "natural_container_joint_corner_tl_top_sample_values": item.get("natural_container_joint_corner_tl_top_sample_values"),
+                "natural_container_joint_corner_tl_left_sample_values": item.get("natural_container_joint_corner_tl_left_sample_values"),
+                "natural_container_joint_corner_tr_top_sample_values": item.get("natural_container_joint_corner_tr_top_sample_values"),
+                "natural_container_joint_corner_tr_right_sample_values": item.get("natural_container_joint_corner_tr_right_sample_values"),
+                "natural_container_joint_corner_bl_bottom_sample_values": item.get("natural_container_joint_corner_bl_bottom_sample_values"),
+                "natural_container_joint_corner_bl_left_sample_values": item.get("natural_container_joint_corner_bl_left_sample_values"),
+                "natural_container_joint_corner_br_bottom_sample_values": item.get("natural_container_joint_corner_br_bottom_sample_values"),
+                "natural_container_joint_corner_br_right_sample_values": item.get("natural_container_joint_corner_br_right_sample_values"),
                 "recovered_container_left_padding_ratio": item.get("recovered_container_left_padding_ratio"),
                 "recovered_container_right_padding_ratio": item.get("recovered_container_right_padding_ratio"),
                 "recovered_container_top_padding_ratio": item.get("recovered_container_top_padding_ratio"),

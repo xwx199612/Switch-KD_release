@@ -15,7 +15,7 @@
 #4 DONE 0.0s
 
 #5 [internal] load build context
-#5 transferring context: 292.60kB done
+#5 transferring context: 315.41kB done
 #5 DONE 0.0s
 
 #6 [ 2/10] RUN apt-get update     && apt-get install -y --no-install-recommends        software-properties-common ca-certificates curl build-essential     && add-apt-repository ppa:deadsnakes/ppa     && apt-get update     && apt-get install -y --no-install-recommends        python3.11 python3.11-dev python3.11-venv libgl1 libglib2.0-0     && rm -rf /var/lib/apt/lists/*
@@ -31,7 +31,7 @@
 #9 CACHED
 
 #10 [ 6/10] COPY app/ /app/
-#10 DONE 0.0s
+#10 DONE 0.1s
 
 #11 [ 7/10] COPY config/ /config/
 #11 DONE 0.0s
@@ -47,7 +47,7 @@
 
 #15 exporting to image
 #15 exporting layers 0.1s done
-#15 writing image sha256:72136f27232d3840a1c6386769838368681e8ea6b6c20452bff3862ac2190b0e done
+#15 writing image sha256:a6b6a82700de5ff8538ffffb351b8db37ebae3a49407aa4e7a55eeb54f2bbb7f done
 #15 naming to docker.io/library/vlm-online-dbild-runtime:1.2.0 done
 #15 DONE 0.1s
 image=vlm-online-dbild-runtime:1.2.0
