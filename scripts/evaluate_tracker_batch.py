@@ -312,6 +312,17 @@ def _extract_result_base(response: dict, image_path: Path) -> dict:
             "scale_isotropy_score": item.get("scale_isotropy_score"),
             "scale_measure_agreement_score": item.get("scale_measure_agreement_score"),
             "scale_peer_reliability": item.get("scale_peer_reliability"),
+            "semantic_scale_signature_score": item.get("semantic_scale_signature_score"),
+            "semantic_scale_linear_ratio": item.get("semantic_scale_linear_ratio"),
+            "semantic_scale_isotropy_score": item.get("semantic_scale_isotropy_score"),
+            "semantic_scale_peer_reliability": item.get("semantic_scale_peer_reliability"),
+            "visual_scale_geometry_source": item.get("visual_scale_geometry_source"),
+            "visual_scale_signature_score": item.get("visual_scale_signature_score"),
+            "visual_scale_linear_ratio": item.get("visual_scale_linear_ratio"),
+            "visual_scale_isotropy_score": item.get("visual_scale_isotropy_score"),
+            "visual_scale_peer_reliability": item.get("visual_scale_peer_reliability"),
+            "scale_space_signature_delta": item.get("scale_space_signature_delta"),
+            "scale_space_relation": item.get("scale_space_relation"),
         })
     return {
         "image": image_path.name,
@@ -432,7 +443,16 @@ def print_result(position: int, total: int, result: dict) -> None:
             f"sa={_format_float(item.get('scale_area_ratio'))} "
             f"iso={_format_float(item.get('scale_isotropy_score'))} "
             f"agree={_format_float(item.get('scale_measure_agreement_score'))} "
-            f"peer_rel={_format_float(item.get('scale_peer_reliability'))}{marker}"
+            f"peer_rel={_format_float(item.get('scale_peer_reliability'))}"
+            f" sem_sig={_format_float(item.get('semantic_scale_signature_score'))}"
+            f" sem_s={_format_float(item.get('semantic_scale_linear_ratio'))}"
+            f" vis_sig={_format_float(item.get('visual_scale_signature_score'))}"
+            f" vis_s={_format_float(item.get('visual_scale_linear_ratio'))}"
+            f" vis_iso={_format_float(item.get('visual_scale_isotropy_score'))}"
+            f" vis_rel={_format_float(item.get('visual_scale_peer_reliability'))}"
+            f" d_sig={_format_signed_float(item.get('scale_space_signature_delta'))}"
+            f" rel={item.get('scale_space_relation') or '-'}"
+            f" src={item.get('visual_scale_geometry_source') or '-'}{marker}"
         )
     print(f"\nEvidence space:\n  {result.get('focus_visual_evidence_space')}")
     print("\nElements:")
@@ -644,6 +664,15 @@ def _format_float(value: object) -> str:
         return "-"
     try:
         return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _format_signed_float(value: object) -> str:
+    if value is None:
+        return "-"
+    try:
+        return f"{float(value):+.2f}"
     except (TypeError, ValueError):
         return "-"
 

@@ -185,7 +185,7 @@ class FocusResolver:
     HIGHLIGHT_V5_MIN_SCORE = 0.60
     HIGHLIGHT_V5_MIN_MARGIN = 0.18
     CONTAINER_PROPOSAL_EXPANSIONS = (0.0, 0.05, 0.10, 0.20)
-    SCALE_SIGNATURE_VERSION = "v6.0-diagnostic"
+    SCALE_SIGNATURE_VERSION = "v6.1-dual-space-diagnostic"
     SCALE_SIGNATURE_FULL_GROWTH = 0.25
     SCALE_SIGNATURE_LOG_TOLERANCE = 0.20
     SCALE_SIGNATURE_SINGLE_PEER_RELIABILITY = 0.50
@@ -660,19 +660,37 @@ class FocusResolver:
             "method": "central_difference_rgb_luma_v1",
         }
 
-    @classmethod
-    def _scale_signature_diagnostic(
-        cls,
-        item: dict[str, Any],
-        peer_items: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        """Compute the experimental V6.0 geometry-only scale signature.
+    @staticmethod
+    def _scale_signature_geometry(source: Any) -> tuple[float, float, float, float] | None:
+        if not isinstance(source, (list, tuple)) or len(source) < 4:
+            return None
+        try:
+            left, top, right, bottom = [float(value) for value in source[:4]]
+        except (TypeError, ValueError):
+            return None
+        width = right - left
+        height = bottom - top
+        if not (
+            math.isfinite(width)
+            and math.isfinite(height)
+            and width > 0.0
+            and height > 0.0
+        ):
+            return None
+        return width, height, width * height, width / height
 
-        This helper only returns diagnostic fields.  Its result is deliberately
-        not consumed by any V5 score, gate, cascade, or focus decision.
+    @classmethod
+    def _scale_signature_from_geometries(
+        cls,
+        candidate_geometry: tuple[float, float, float, float] | None,
+        other_geometries: list[tuple[float, float, float, float]],
+    ) -> dict[str, Any]:
+        """Shared V6 scale mathematics for semantic and visual spaces.
+
+        This is diagnostic-only.  The formulas are the original V6.0 formulas;
+        V6.1 supplies a second geometry space without changing their constants.
         """
         fields = {
-            "focus_scale_signature_version": cls.SCALE_SIGNATURE_VERSION,
             "scale_signature_score": 0.0,
             "scale_width_ratio": 0.0,
             "scale_height_ratio": 0.0,
@@ -692,39 +710,6 @@ class FocusResolver:
             "scale_peer_median_area": 0.0,
             "scale_peer_median_aspect_ratio": 0.0,
         }
-
-        def geometry(source: dict[str, Any]) -> tuple[float, float, float, float] | None:
-            box = source.get("prepared_bbox")
-            if not isinstance(box, (list, tuple)) or len(box) < 4:
-                return None
-            try:
-                left, top, right, bottom = [float(value) for value in box[:4]]
-            except (TypeError, ValueError):
-                return None
-            width = right - left
-            height = bottom - top
-            if not (
-                math.isfinite(width)
-                and math.isfinite(height)
-                and width > 0.0
-                and height > 0.0
-            ):
-                return None
-            return width, height, width * height, width / height
-
-        candidate_geometry = geometry(item)
-        candidate_index = item.get("index")
-        other_geometries = [
-            value
-            for peer in peer_items
-            if peer is not item
-            and not (
-                isinstance(candidate_index, int)
-                and peer.get("index") == candidate_index
-            )
-            for value in [geometry(peer)]
-            if value is not None
-        ]
         fields["scale_peer_count"] = len(other_geometries)
         if candidate_geometry is None or not other_geometries:
             return fields
@@ -806,6 +791,114 @@ class FocusResolver:
             "scale_measure_agreement_score": cls._clamp01(agreement),
             "scale_peer_reliability": peer_reliability,
         })
+        return fields
+
+    @classmethod
+    def _visual_scale_geometry(cls, item: dict[str, Any]) -> tuple[Any, str]:
+        """Select one prepared-space rendered geometry for V6.1 diagnostics."""
+        candidates = (
+            ("recovered_current_container_bbox", "recovered_current_container_valid"),
+            ("visual_extent_bbox", "extent_valid"),
+            ("selected_container_bbox", None),
+        )
+        for field, validity_field in candidates:
+            if validity_field is not None and not bool(item.get(validity_field)):
+                continue
+            bbox = item.get(field)
+            if cls._scale_signature_geometry(bbox) is not None:
+                try:
+                    return [float(value) for value in bbox[:4]], field
+                except (TypeError, ValueError):
+                    continue
+        return None, "unavailable"
+
+    @classmethod
+    def _scale_signature_diagnostic(
+        cls,
+        item: dict[str, Any],
+        peer_items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Compute the V6.0 semantic-space signature, unchanged in meaning."""
+        candidate_bbox = item.get("prepared_bbox")
+        candidate_geometry = cls._scale_signature_geometry(candidate_bbox)
+        candidate_index = item.get("index")
+        other_geometries = [
+            value
+            for peer in peer_items
+            if peer is not item
+            and not (
+                isinstance(candidate_index, int)
+                and peer.get("index") == candidate_index
+            )
+            for value in [cls._scale_signature_geometry(peer.get("prepared_bbox"))]
+            if value is not None
+        ]
+        fields = {
+            "focus_scale_signature_version": cls.SCALE_SIGNATURE_VERSION,
+            "semantic_scale_bbox": list(candidate_bbox[:4])
+            if isinstance(candidate_bbox, (list, tuple)) and len(candidate_bbox) >= 4
+            else None,
+        }
+        fields.update(cls._scale_signature_from_geometries(candidate_geometry, other_geometries))
+        aliases = {
+            key: value
+            for key, value in fields.items()
+            if key.startswith("scale_")
+        }
+        fields.update({f"semantic_{key}": value for key, value in aliases.items()})
+        return fields
+
+    @classmethod
+    def _scale_signature_dual_diagnostic(
+        cls,
+        item: dict[str, Any],
+        peer_items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Compute V6.1 semantic and rendered-space diagnostics only."""
+        fields = cls._scale_signature_diagnostic(item, peer_items)
+        candidate_geometry = cls._scale_signature_geometry(item.get("prepared_bbox"))
+        visual_bbox, visual_source = cls._visual_scale_geometry(item)
+        visual_geometry = cls._scale_signature_geometry(visual_bbox)
+        visual_peer_geometries = []
+        for peer in peer_items:
+            peer_bbox, _ = cls._visual_scale_geometry(peer)
+            peer_geometry = cls._scale_signature_geometry(peer_bbox)
+            if peer is not item and peer.get("index") != item.get("index") and peer_geometry is not None:
+                visual_peer_geometries.append(peer_geometry)
+        visual_values = cls._scale_signature_from_geometries(
+            visual_geometry,
+            visual_peer_geometries,
+        )
+        fields["visual_scale_geometry_source"] = visual_source
+        fields["visual_scale_bbox"] = visual_bbox
+        fields.update({f"visual_{key}": value for key, value in visual_values.items()})
+
+        semantic_score = float(fields.get("semantic_scale_signature_score", 0.0) or 0.0)
+        visual_score = float(fields.get("visual_scale_signature_score", 0.0) or 0.0)
+        semantic_linear = float(fields.get("semantic_scale_linear_ratio", 0.0) or 0.0)
+        visual_linear = float(fields.get("visual_scale_linear_ratio", 0.0) or 0.0)
+        fields["scale_space_signature_delta"] = visual_score - semantic_score
+        fields["scale_space_linear_ratio_delta"] = visual_linear - semantic_linear
+
+        semantic_available = bool(fields.get("semantic_scale_peer_count", 0)) and candidate_geometry is not None
+        visual_available = visual_source != "unavailable" and bool(fields.get("visual_scale_peer_count", 0))
+        low = 0.05
+        difference = fields["scale_space_signature_delta"]
+        if not semantic_available and not visual_available:
+            relation = "both_unavailable"
+        elif semantic_available and not visual_available:
+            relation = "semantic_only"
+        elif visual_available and not semantic_available:
+            relation = "visual_only"
+        elif semantic_score <= low and visual_score <= low:
+            relation = "both_low"
+        elif difference >= 0.10:
+            relation = "visual_stronger"
+        elif difference <= -0.10:
+            relation = "semantic_stronger"
+        else:
+            relation = "similar"
+        fields["scale_space_relation"] = relation
         return fields
 
     @classmethod
@@ -4855,7 +4948,9 @@ class FocusResolver:
         for item in evidence:
             peer_set = v6_peer_indices.get(int(item["index"]), [])
             peer_items = [by_index[index] for index in peer_set if index in by_index]
-            item.update(cls._scale_signature_diagnostic(item, peer_items))
+            # V6.1 is an experimental dual-space diagnostic branch only.  It
+            # does not participate in V5 scoring, cascade, or focus choice.
+            item.update(cls._scale_signature_dual_diagnostic(item, peer_items))
 
         return {"sibling_sets": sibling_sets, "sibling_group_by_index": sibling_group_by_index}
 
@@ -5104,6 +5199,48 @@ class FocusResolver:
                         "scale_peer_median_height",
                         "scale_peer_median_area",
                         "scale_peer_median_aspect_ratio",
+                        "semantic_scale_bbox",
+                        "semantic_scale_signature_score",
+                        "semantic_scale_width_ratio",
+                        "semantic_scale_height_ratio",
+                        "semantic_scale_area_ratio",
+                        "semantic_scale_area_linear_ratio",
+                        "semantic_scale_linear_ratio",
+                        "semantic_scale_positive_magnitude",
+                        "semantic_scale_isotropy_score",
+                        "semantic_scale_axis_log_delta",
+                        "semantic_scale_aspect_preservation_score",
+                        "semantic_scale_aspect_log_delta",
+                        "semantic_scale_measure_agreement_score",
+                        "semantic_scale_peer_reliability",
+                        "semantic_scale_peer_count",
+                        "semantic_scale_peer_median_width",
+                        "semantic_scale_peer_median_height",
+                        "semantic_scale_peer_median_area",
+                        "semantic_scale_peer_median_aspect_ratio",
+                        "visual_scale_geometry_source",
+                        "visual_scale_bbox",
+                        "visual_scale_signature_score",
+                        "visual_scale_width_ratio",
+                        "visual_scale_height_ratio",
+                        "visual_scale_area_ratio",
+                        "visual_scale_area_linear_ratio",
+                        "visual_scale_linear_ratio",
+                        "visual_scale_positive_magnitude",
+                        "visual_scale_isotropy_score",
+                        "visual_scale_axis_log_delta",
+                        "visual_scale_aspect_preservation_score",
+                        "visual_scale_aspect_log_delta",
+                        "visual_scale_measure_agreement_score",
+                        "visual_scale_peer_reliability",
+                        "visual_scale_peer_count",
+                        "visual_scale_peer_median_width",
+                        "visual_scale_peer_median_height",
+                        "visual_scale_peer_median_area",
+                        "visual_scale_peer_median_aspect_ratio",
+                        "scale_space_signature_delta",
+                        "scale_space_linear_ratio_delta",
+                        "scale_space_relation",
                     )
                 },
                 "prepared_montage_tile_bbox": item.get("prepared_montage_tile_bbox"),
