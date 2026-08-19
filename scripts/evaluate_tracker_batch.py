@@ -18,6 +18,8 @@ from urllib.request import Request, urlopen
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+HOST_OUTPUT_MOUNT_ROOT = REPOSITORY_ROOT / "output"
 
 
 class RequestFailure(Exception):
@@ -175,6 +177,16 @@ def _effective_debug_dir(output_path: Path, debug_dir: Path | None) -> Path:
     return (debug_dir if debug_dir is not None else output_path.parent / "debug").resolve()
 
 
+def _effective_debug_dir_for_run(
+    output_path: Path,
+    debug_dir: Path | None,
+    docker_container: str | None,
+) -> Path:
+    if docker_container and debug_dir is None:
+        return (HOST_OUTPUT_MOUNT_ROOT / output_path.stem / "debug").resolve()
+    return _effective_debug_dir(output_path, debug_dir)
+
+
 def _container_debug_output_dir(
     host_dir: Path,
     host_output_root: Path,
@@ -188,12 +200,14 @@ def _container_debug_output_dir(
     try:
         suffix = resolved.relative_to(output_root)
     except ValueError:
-        suffix = None
-    if suffix is not None:
-        return Path("/output") / suffix
-    # A caller-supplied non-mounted path cannot be made visible by the evaluator;
-    # preserve it so the service returns a clear file error rather than writing /tmp.
-    return resolved
+        raise ValueError(
+            f"Docker debug directory {resolved} is outside the mounted host output "
+            f"directory {output_root}"
+        )
+    mapped = Path("/output") / suffix
+    # The mapping is deliberately derived from the known bind pair only:
+    # <repository>/output -> /output.
+    return mapped
 
 
 GRADIENT_DEBUG_SUFFIXES = (
@@ -653,17 +667,22 @@ def main() -> int:
         images = images[:max(0, args.limit)]
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    effective_debug_dir = _effective_debug_dir(args.output, args.debug_dir)
+    effective_debug_dir = _effective_debug_dir_for_run(
+        args.output,
+        args.debug_dir,
+        args.docker_container,
+    )
     effective_debug_dir.mkdir(parents=True, exist_ok=True)
-    service_debug_dir = (
-        _container_debug_output_dir(
+    try:
+        service_debug_dir = _container_debug_output_dir(
             effective_debug_dir,
-            args.output.parent,
+            HOST_OUTPUT_MOUNT_ROOT,
             args.docker_container,
         )
-    )
-    print(f"Debug artifacts: {effective_debug_dir}")
-    print(f"Container debug path: {service_debug_dir}")
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(f"Debug artifacts (host): {effective_debug_dir}")
+    print(f"Debug artifacts (container): {service_debug_dir}")
     review_handle = None
     review_writer = None
     if args.review_file:
