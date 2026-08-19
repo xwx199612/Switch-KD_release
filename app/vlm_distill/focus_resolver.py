@@ -172,6 +172,8 @@ class FocusResolver:
     NATURAL_CONTAINER_CORNER_MIN_VALID_SAMPLES = 2
     NATURAL_CONTAINER_MIN_BOUNDARY_LIMITED_SCORE = 0.60
     NATURAL_CONTAINER_BOUNDARY_LIMITED_CONFIDENCE_FACTOR = 0.75
+    NATURAL_CONTAINER_GRADIENT_BAND_RADIUS_PX = 2
+    NATURAL_CONTAINER_GRADIENT_BAND_MAX_MAD_PX = 1.5
     ENLARGEMENT_COMPLETION_MIN_RETAINED_RATIO = 0.70
     ENLARGEMENT_MIRRORED_CONFIDENCE_FACTOR = 0.75
     ENLARGEMENT_CARD_CELL_OUTER_X = 0.30
@@ -263,6 +265,8 @@ class FocusResolver:
         except (OSError, ValueError):
             pass
 
+        global_gradient_field = self._build_global_gradient_field(unannotated_image)
+
         visual_evidence = self._visual_focus_evidence(
             unannotated_image,
             candidates,
@@ -278,6 +282,7 @@ class FocusResolver:
             source_device_geometry,
             prepared_device_geometry_by_index,
             prepared_montage_tiles_by_index,
+            global_gradient_field=global_gradient_field,
         )
         cv_debug_paths: dict[str, str | None] = {
             "focus_cv_prepared_image_path": self.DEBUG_CV_PREPARED_IMAGE_PATH,
@@ -547,6 +552,111 @@ class FocusResolver:
         }
 
     @classmethod
+    def _build_global_gradient_field(cls, image: Image.Image) -> dict[str, Any]:
+        """Build prepared-image directional gradient maps once per CV pass."""
+        pixels = image.convert("RGB")
+        pixel_data = pixels.load()
+        image_width, image_height = pixels.size
+        rgb_rows = [
+            [
+                (red / 255.0, green / 255.0, blue / 255.0)
+                for red, green, blue in (
+                    pixel_data[x, y] for x in range(image_width)
+                )
+            ]
+            for y in range(image_height)
+        ]
+        luma = [
+            [
+                0.2126 * color[0]
+                + 0.7152 * color[1]
+                + 0.0722 * color[2]
+                for color in row
+            ]
+            for row in rgb_rows
+        ]
+        luma_gx = [[0.0] * image_width for _ in range(image_height)]
+        luma_gy = [[0.0] * image_width for _ in range(image_height)]
+        rgb_gx = [[0.0] * image_width for _ in range(image_height)]
+        rgb_gy = [[0.0] * image_width for _ in range(image_height)]
+        for y in range(image_height):
+            for x in range(image_width):
+                if image_width > 1:
+                    left_x = max(0, x - 1)
+                    right_x = min(image_width - 1, x + 1)
+                    divisor_x = 2.0 if 0 < x < image_width - 1 else 1.0
+                    luma_gx[y][x] = abs(
+                        luma[y][right_x] - luma[y][left_x]
+                    ) / divisor_x
+                    rgb_gx[y][x] = math.sqrt(sum(
+                        (rgb_rows[y][right_x][channel]
+                         - rgb_rows[y][left_x][channel]) ** 2
+                        for channel in range(3)
+                    ) / 3.0) / divisor_x
+                if image_height > 1:
+                    top_y = max(0, y - 1)
+                    bottom_y = min(image_height - 1, y + 1)
+                    divisor_y = 2.0 if 0 < y < image_height - 1 else 1.0
+                    luma_gy[y][x] = abs(
+                        luma[bottom_y][x] - luma[top_y][x]
+                    ) / divisor_y
+                    rgb_gy[y][x] = math.sqrt(sum(
+                        (rgb_rows[bottom_y][x][channel]
+                         - rgb_rows[top_y][x][channel]) ** 2
+                        for channel in range(3)
+                    ) / 3.0) / divisor_y
+
+        def fused(luma_gradient: float, color_gradient: float) -> float:
+            return cls._clamp01(
+                0.5 * cls._clamp01(
+                    luma_gradient
+                    / cls.ENLARGEMENT_EDGE_COHERENCE_LUMINANCE_NORMALIZER
+                )
+                + 0.5 * cls._clamp01(
+                    color_gradient
+                    / cls.ENLARGEMENT_EDGE_COHERENCE_COLOR_NORMALIZER
+                )
+            )
+
+        global_gx = [
+            [fused(luma_gx[y][x], rgb_gx[y][x]) for x in range(image_width)]
+            for y in range(image_height)
+        ]
+        global_gy = [
+            [fused(luma_gy[y][x], rgb_gy[y][x]) for x in range(image_width)]
+            for y in range(image_height)
+        ]
+        vertical_edge_map = [
+            [
+                cls._clamp01(
+                    global_gx[y][x] * global_gx[y][x]
+                    / max(global_gx[y][x] + global_gy[y][x], 1e-6)
+                )
+                for x in range(image_width)
+            ]
+            for y in range(image_height)
+        ]
+        horizontal_edge_map = [
+            [
+                cls._clamp01(
+                    global_gy[y][x] * global_gy[y][x]
+                    / max(global_gy[y][x] + global_gx[y][x], 1e-6)
+                )
+                for x in range(image_width)
+            ]
+            for y in range(image_height)
+        ]
+        return {
+            "global_gx": global_gx,
+            "global_gy": global_gy,
+            "vertical_edge_map": vertical_edge_map,
+            "horizontal_edge_map": horizontal_edge_map,
+            "width": image_width,
+            "height": image_height,
+            "method": "central_difference_rgb_luma_v1",
+        }
+
+    @classmethod
     def _apply_v5_peer_evidence(
         cls,
         evidence: list[dict[str, Any]],
@@ -555,6 +665,7 @@ class FocusResolver:
         source_device_geometry: dict[str, Any] | None = None,
         prepared_device_geometry_by_index: dict[int, dict[str, Any]] | None = None,
         prepared_montage_tiles_by_index: dict[int, list[int]] | None = None,
+        global_gradient_field: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Rebase diagnostic channel comparisons on V5 comparable peers."""
         by_index = {int(item["index"]): item for item in evidence}
@@ -602,6 +713,121 @@ class FocusResolver:
         pixels = image.convert("RGB")
         pixel_data = pixels.load()
         image_width, image_height = pixels.size
+
+        def build_global_gradient_field() -> dict[str, Any]:
+            """Build the shared prepared-image gradient maps once."""
+            rgb_rows = [
+                [
+                    (
+                        red / 255.0,
+                        green / 255.0,
+                        blue / 255.0,
+                    )
+                    for red, green, blue in (
+                        pixel_data[x, y] for x in range(image_width)
+                    )
+                ]
+                for y in range(image_height)
+            ]
+            luma = [
+                [
+                    0.2126 * color[0]
+                    + 0.7152 * color[1]
+                    + 0.0722 * color[2]
+                    for color in row
+                ]
+                for row in rgb_rows
+            ]
+            luma_gx = [[0.0] * image_width for _ in range(image_height)]
+            luma_gy = [[0.0] * image_width for _ in range(image_height)]
+            rgb_gx = [[0.0] * image_width for _ in range(image_height)]
+            rgb_gy = [[0.0] * image_width for _ in range(image_height)]
+            for y in range(image_height):
+                for x in range(image_width):
+                    if image_width > 1:
+                        left_x = max(0, x - 1)
+                        right_x = min(image_width - 1, x + 1)
+                        divisor_x = 2.0 if 0 < x < image_width - 1 else 1.0
+                        luma_gx[y][x] = abs(
+                            luma[y][right_x] - luma[y][left_x]
+                        ) / divisor_x
+                        rgb_gx[y][x] = math.sqrt(sum(
+                            (rgb_rows[y][right_x][channel]
+                             - rgb_rows[y][left_x][channel]) ** 2
+                            for channel in range(3)
+                        ) / 3.0) / divisor_x
+                    if image_height > 1:
+                        top_y = max(0, y - 1)
+                        bottom_y = min(image_height - 1, y + 1)
+                        divisor_y = 2.0 if 0 < y < image_height - 1 else 1.0
+                        luma_gy[y][x] = abs(
+                            luma[bottom_y][x] - luma[top_y][x]
+                        ) / divisor_y
+                        rgb_gy[y][x] = math.sqrt(sum(
+                            (rgb_rows[bottom_y][x][channel]
+                             - rgb_rows[top_y][x][channel]) ** 2
+                            for channel in range(3)
+                        ) / 3.0) / divisor_y
+
+            def fused(luma_gradient: float, color_gradient: float) -> float:
+                return cls._clamp01(
+                    0.5 * cls._clamp01(
+                        luma_gradient
+                        / cls.ENLARGEMENT_EDGE_COHERENCE_LUMINANCE_NORMALIZER
+                    )
+                    + 0.5 * cls._clamp01(
+                        color_gradient
+                        / cls.ENLARGEMENT_EDGE_COHERENCE_COLOR_NORMALIZER
+                    )
+                )
+
+            global_gx = [
+                [fused(luma_gx[y][x], rgb_gx[y][x]) for x in range(image_width)]
+                for y in range(image_height)
+            ]
+            global_gy = [
+                [fused(luma_gy[y][x], rgb_gy[y][x]) for x in range(image_width)]
+                for y in range(image_height)
+            ]
+            vertical_edge_map = [
+                [
+                    cls._clamp01(
+                        global_gx[y][x] * global_gx[y][x]
+                        / max(global_gx[y][x] + global_gy[y][x], 1e-6)
+                    )
+                    for x in range(image_width)
+                ]
+                for y in range(image_height)
+            ]
+            horizontal_edge_map = [
+                [
+                    cls._clamp01(
+                        global_gy[y][x] * global_gy[y][x]
+                        / max(global_gy[y][x] + global_gx[y][x], 1e-6)
+                    )
+                    for x in range(image_width)
+                ]
+                for y in range(image_height)
+            ]
+            return {
+                "global_gx": global_gx,
+                "global_gy": global_gy,
+                "vertical_edge_map": vertical_edge_map,
+                "horizontal_edge_map": horizontal_edge_map,
+                "width": image_width,
+                "height": image_height,
+                "method": "central_difference_rgb_luma_v1",
+            }
+
+        global_gradient_field = global_gradient_field or build_global_gradient_field()
+        global_gradient_summary = {
+            "global_gradient_field_enabled": True,
+            "global_gradient_field_width": image_width,
+            "global_gradient_field_height": image_height,
+            "global_gradient_field_method": global_gradient_field["method"],
+        }
+        for item in evidence:
+            item.update(global_gradient_summary)
 
         def clipped_box(box: Any) -> tuple[float, float, float, float] | None:
             if not isinstance(box, (list, tuple)) or len(box) < 4:
@@ -2095,6 +2321,20 @@ class FocusResolver:
                             ("enclosing_truncation_count", 0),
                             ("last_truncation_distance", None),
                             ("last_truncation_source", None),
+                            ("edge_measurement_source", None),
+                            ("gradient_band_nominal_coordinate", None),
+                            ("gradient_band_selected_coordinate", None),
+                            ("gradient_band_radius", None),
+                            ("gradient_band_span_support", None),
+                            ("gradient_band_mean_strength", None),
+                            ("gradient_band_coordinate_mad", None),
+                            ("gradient_band_supported_sample_count", 0),
+                            ("gradient_band_valid_sample_count", 0),
+                            ("gradient_band_edge_score", None),
+                            ("legacy_candidate_count", 0),
+                            ("gradient_band_candidate_count", 0),
+                            ("gradient_band_best_score", 0.0),
+                            ("gradient_band_best_coordinate", None),
                         )
                     },
                     "natural_container_dense_boundary_side_count": 0,
@@ -2228,20 +2468,41 @@ class FocusResolver:
                     )
                 )
 
-            def point(side: str, distance: int, fraction: float) -> tuple[int, int]:
+            def point(
+                side: str,
+                distance: float,
+                fraction: float,
+                coordinate_override: float | None = None,
+            ) -> tuple[int, int]:
                 if side == "left":
-                    coordinate = left - distance
+                    coordinate = (
+                        coordinate_override
+                        if coordinate_override is not None
+                        else left - distance
+                    )
                     parallel = top + fraction * height
                     return int(round(coordinate)), int(round(parallel))
                 if side == "right":
-                    coordinate = right + distance
+                    coordinate = (
+                        coordinate_override
+                        if coordinate_override is not None
+                        else right + distance
+                    )
                     parallel = top + fraction * height
                     return int(round(coordinate)), int(round(parallel))
                 if side == "top":
-                    coordinate = top - distance
+                    coordinate = (
+                        coordinate_override
+                        if coordinate_override is not None
+                        else top - distance
+                    )
                     parallel = left + fraction * width
                     return int(round(parallel)), int(round(coordinate))
-                coordinate = bottom + distance
+                coordinate = (
+                    coordinate_override
+                    if coordinate_override is not None
+                    else bottom + distance
+                )
                 parallel = left + fraction * width
                 return int(round(parallel)), int(round(coordinate))
 
@@ -2291,7 +2552,8 @@ class FocusResolver:
 
             def validate_enclosing_container_boundary(
                 side: str,
-                distance: int,
+                distance: float,
+                coordinate_override: float | None = None,
             ) -> dict[str, Any]:
                 interior_similarities: list[float] = []
                 exterior_separations: list[float] = []
@@ -2339,7 +2601,12 @@ class FocusResolver:
                         (sample_index + 0.5)
                         / cls.NATURAL_CONTAINER_ENCLOSING_SAMPLE_COUNT
                     )
-                    x, y = point(side, distance, fraction)
+                    x, y = point(
+                        side,
+                        distance,
+                        fraction,
+                        coordinate_override,
+                    )
                     interior_near = offset(x, y, near_depth, inward=True)
                     interior_far = offset(x, y, far_depth, inward=True)
                     exterior_near = offset(x, y, near_depth, inward=False)
@@ -2898,6 +3165,20 @@ class FocusResolver:
                         "last_rejected_edge_score": None,
                         "last_rejected_enclosing_score": None,
                         "last_rejected_reason": None,
+                        "edge_measurement_source": None,
+                        "gradient_band_nominal_coordinate": None,
+                        "gradient_band_selected_coordinate": None,
+                        "gradient_band_radius": None,
+                        "gradient_band_span_support": None,
+                        "gradient_band_mean_strength": None,
+                        "gradient_band_coordinate_mad": None,
+                        "gradient_band_supported_sample_count": 0,
+                        "gradient_band_valid_sample_count": 0,
+                        "gradient_band_edge_score": None,
+                        "legacy_candidate_count": 0,
+                        "gradient_band_candidate_count": 0,
+                        "gradient_band_best_score": 0.0,
+                        "gradient_band_best_coordinate": None,
                     }
                     continue
                 dense_limit = min(
@@ -2923,16 +3204,133 @@ class FocusResolver:
                         profiles[distance] = profile(side, distance)
                     return profiles[distance]
 
+                def gradient_band_profile(
+                    distance: int,
+                ) -> dict[str, Any] | None:
+                    edge_map = global_gradient_field[
+                        "vertical_edge_map"
+                        if side in ("left", "right")
+                        else "horizontal_edge_map"
+                    ]
+                    peak_coordinates: list[float] = []
+                    peak_strengths: list[float] = []
+                    valid_sample_count = 0
+                    supported_sample_count = 0
+                    radius = cls.NATURAL_CONTAINER_GRADIENT_BAND_RADIUS_PX
+                    inset = cls.ENLARGEMENT_EDGE_SAMPLE_INSET
+                    for sample_index in range(sample_count):
+                        fraction = inset + (1.0 - 2.0 * inset) * (
+                            (sample_index + 0.5) / sample_count
+                        )
+                        nominal_x, nominal_y = point(side, distance, fraction)
+                        if side in ("left", "right"):
+                            parallel = nominal_y
+                            center_coordinate = nominal_x
+                            if not (int(search[1]) <= parallel < int(search[3])):
+                                continue
+                            band_coordinates = range(
+                                max(int(search[0]), center_coordinate - radius),
+                                min(int(search[2]), center_coordinate + radius + 1),
+                            )
+                            values = [
+                                edge_map[parallel][coordinate]
+                                for coordinate in band_coordinates
+                                if 0 <= parallel < image_height
+                                and 0 <= coordinate < image_width
+                            ]
+                            coordinate_axis = list(band_coordinates)
+                        else:
+                            parallel = nominal_x
+                            center_coordinate = nominal_y
+                            if not (int(search[0]) <= parallel < int(search[2])):
+                                continue
+                            band_coordinates = range(
+                                max(int(search[1]), center_coordinate - radius),
+                                min(int(search[3]), center_coordinate + radius + 1),
+                            )
+                            values = [
+                                edge_map[coordinate][parallel]
+                                for coordinate in band_coordinates
+                                if 0 <= coordinate < image_height
+                                and 0 <= parallel < image_width
+                            ]
+                            coordinate_axis = list(band_coordinates)
+                        if not values:
+                            continue
+                        valid_sample_count += 1
+                        peak_index = max(
+                            range(len(values)), key=lambda index: values[index]
+                        )
+                        peak_strength = float(values[peak_index])
+                        peak_coordinate = float(coordinate_axis[peak_index])
+                        peak_strengths.append(peak_strength)
+                        if peak_strength >= cls.NATURAL_CONTAINER_MIN_ORIENTED_STRENGTH:
+                            supported_sample_count += 1
+                            peak_coordinates.append(peak_coordinate)
+                    if not peak_strengths or not peak_coordinates:
+                        return None
+                    span_support = supported_sample_count / max(valid_sample_count, 1)
+                    mean_strength = sum(peak_strengths) / len(peak_strengths)
+                    ordered_coordinates = sorted(peak_coordinates)
+                    middle = len(ordered_coordinates) // 2
+                    median_coordinate = (
+                        ordered_coordinates[middle]
+                        if len(ordered_coordinates) % 2
+                        else (
+                            ordered_coordinates[middle - 1]
+                            + ordered_coordinates[middle]
+                        ) / 2.0
+                    coordinate_mad = sorted(
+                        abs(coordinate - median_coordinate)
+                        for coordinate in peak_coordinates
+                    )
+                    mad_middle = len(coordinate_mad) // 2
+                    coordinate_mad_value = (
+                        coordinate_mad[mad_middle]
+                        if len(coordinate_mad) % 2
+                        else (
+                            coordinate_mad[mad_middle - 1]
+                            + coordinate_mad[mad_middle]
+                        ) / 2.0
+                    )
+                    edge_score = cls._clamp01(
+                        0.55 * span_support + 0.45 * mean_strength
+                    )
+                    return {
+                        "score": edge_score,
+                        "span_support": span_support,
+                        "mean_strength": mean_strength,
+                        "inside_outside_contrast": 0.0,
+                        "orientation": 1.0,
+                        "coordinate": median_coordinate,
+                        "coordinate_mad": coordinate_mad_value,
+                        "supported_sample_count": supported_sample_count,
+                        "valid_sample_count": valid_sample_count,
+                        "nominal_coordinate": (
+                            left - distance
+                            if side == "left"
+                            else right + distance
+                            if side == "right"
+                            else top - distance
+                            if side == "top"
+                            else bottom + distance
+                        ),
+                    }
+
                 def build_side_candidate(
                     distance: int,
-                    current: dict[str, float],
+                    current: dict[str, Any],
                     enclosing: dict[str, Any],
                     measurement_type: str,
                     boundary_limited_score: float = 0.0,
                     boundary_limit_distance: int | None = None,
+                    coordinate_override: float | None = None,
+                    edge_measurement_source: str = "legacy_local",
                 ) -> tuple[dict[str, Any] | None, str | None]:
                     coordinate = (
-                        semantic_edge - distance
+                        coordinate_override
+                        if coordinate_override is not None
+                        else semantic_edge - distance
                         if side in ("left", "top")
                         else semantic_edge + distance
                     )
@@ -3014,6 +3412,36 @@ class FocusResolver:
                             if boundary_limit_distance is not None
                             else None
                         ),
+                        "edge_measurement_source": edge_measurement_source,
+                        "gradient_band_nominal_coordinate": current.get(
+                            "nominal_coordinate"
+                        ),
+                        "gradient_band_selected_coordinate": current.get(
+                            "coordinate"
+                        ),
+                        "gradient_band_radius": (
+                            cls.NATURAL_CONTAINER_GRADIENT_BAND_RADIUS_PX
+                            if edge_measurement_source == "global_gradient_band"
+                            else None
+                        ),
+                        "gradient_band_span_support": current.get(
+                            "span_support"
+                        ) if edge_measurement_source == "global_gradient_band" else None,
+                        "gradient_band_mean_strength": current.get(
+                            "mean_strength"
+                        ) if edge_measurement_source == "global_gradient_band" else None,
+                        "gradient_band_coordinate_mad": current.get(
+                            "coordinate_mad"
+                        ) if edge_measurement_source == "global_gradient_band" else None,
+                        "gradient_band_supported_sample_count": current.get(
+                            "supported_sample_count"
+                        ) if edge_measurement_source == "global_gradient_band" else None,
+                        "gradient_band_valid_sample_count": current.get(
+                            "valid_sample_count"
+                        ) if edge_measurement_source == "global_gradient_band" else None,
+                        "gradient_band_edge_score": current.get(
+                            "score"
+                        ) if edge_measurement_source == "global_gradient_band" else None,
                         "scan_mode": (
                             "dense"
                             if distance <= cls.NATURAL_CONTAINER_DENSE_SCAN_RADIUS_PX
@@ -3036,6 +3464,10 @@ class FocusResolver:
                 terminal_candidate_evaluated = False
                 terminal_candidate_accepted = False
                 terminal_edge_candidate_seen = False
+                legacy_candidate_count = 0
+                gradient_band_candidate_count = 0
+                gradient_band_best_score = 0.0
+                gradient_band_best_coordinate: float | None = None
                 last_rejected: dict[str, Any] = {
                     "distance": None,
                     "edge_score": None,
@@ -3043,6 +3475,149 @@ class FocusResolver:
                     "reason": None,
                 }
                 last_geometry_rejection: str | None = None
+
+                def append_candidate(candidate: dict[str, Any]) -> None:
+                    """Keep one compact entry per physical side boundary."""
+                    for index, existing in enumerate(side_candidates):
+                        if abs(
+                            float(existing["coordinate"])
+                            - float(candidate["coordinate"])
+                        ) <= 1.0:
+                            existing_source = existing.get(
+                                "edge_measurement_source", "legacy_local"
+                            )
+                            candidate_source = candidate.get(
+                                "edge_measurement_source", "legacy_local"
+                            )
+                            replace = (
+                                float(candidate["effective_enclosing_score"])
+                                > float(existing["effective_enclosing_score"])
+                                or (
+                                    float(candidate["effective_enclosing_score"])
+                                    == float(existing["effective_enclosing_score"])
+                                    and existing_source != "legacy_local"
+                                    and candidate_source == "legacy_local"
+                                )
+                            )
+                            if replace:
+                                side_candidates[index] = candidate
+                                side_candidates.sort(
+                                    key=lambda entry: float(entry["distance"])
+                                )
+                            return
+                    side_candidates.append(candidate)
+                    side_candidates.sort(
+                        key=lambda entry: float(entry["distance"])
+                    )
+
+                def evaluate_profile_candidate(
+                    nominal_distance: int,
+                    current: dict[str, Any],
+                    source: str,
+                    coordinate_override: float | None = None,
+                    terminal: bool = False,
+                ) -> bool:
+                    nonlocal edge_candidate_count
+                    nonlocal enclosing_rejection_count
+                    nonlocal boundary_limited_candidate_count
+                    nonlocal enclosing_truncation_count
+                    nonlocal last_truncation_distance
+                    nonlocal last_truncation_source
+                    nonlocal last_rejected
+                    nonlocal last_geometry_rejection
+                    nonlocal terminal_candidate_accepted
+                    nonlocal legacy_candidate_count
+                    nonlocal gradient_band_candidate_count
+                    nonlocal gradient_band_best_score
+                    nonlocal gradient_band_best_coordinate
+                    edge_candidate_count += 1
+                    if source == "legacy_local":
+                        legacy_candidate_count += 1
+                    else:
+                        gradient_band_candidate_count += 1
+                        if current["score"] > gradient_band_best_score:
+                            gradient_band_best_score = current["score"]
+                            gradient_band_best_coordinate = current.get(
+                                "coordinate", coordinate_override
+                            )
+                    candidate_distance = abs(
+                        float(
+                            coordinate_override
+                            if coordinate_override is not None
+                            else semantic_edge - nominal_distance
+                            if side in ("left", "top")
+                            else semantic_edge + nominal_distance
+                        ) - float(semantic_edge)
+                    )
+                    enclosing = validate_enclosing_container_boundary(
+                        side,
+                        candidate_distance,
+                        coordinate_override,
+                    )
+                    if not enclosing["valid"]:
+                        if enclosing.get("outward_context_truncated"):
+                            enclosing_truncation_count += 1
+                            last_truncation_distance = candidate_distance
+                            last_truncation_source = boundary_limit_source(
+                                side,
+                                semantic_edge - maximum
+                                if side in ("left", "top")
+                                else semantic_edge + maximum,
+                            )
+                            boundary_limited_score = cls._clamp01(
+                                0.60 * current["score"]
+                                + 0.40 * enclosing["interior_persistence"]
+                            )
+                            if (
+                                enclosing["inward_sample_count"] >= 2
+                                and enclosing["interior_persistence"]
+                                >= cls.NATURAL_CONTAINER_MIN_INTERIOR_PERSISTENCE
+                                and current["score"]
+                                >= cls.NATURAL_CONTAINER_MIN_EDGE_SCORE
+                                and boundary_limited_score
+                                >= cls.NATURAL_CONTAINER_MIN_BOUNDARY_LIMITED_SCORE
+                            ):
+                                candidate, rejection_reason = build_side_candidate(
+                                    candidate_distance,
+                                    current,
+                                    enclosing,
+                                    "boundary_limited",
+                                    boundary_limited_score,
+                                    maximum,
+                                    coordinate_override,
+                                    source,
+                                )
+                                if candidate is not None:
+                                    append_candidate(candidate)
+                                    boundary_limited_candidate_count += 1
+                                    if terminal:
+                                        terminal_candidate_accepted = True
+                                    return True
+                                last_geometry_rejection = rejection_reason
+                        enclosing_rejection_count += 1
+                        last_rejected = {
+                            "distance": candidate_distance,
+                            "edge_score": current["score"],
+                            "enclosing_score": enclosing["enclosing_score"],
+                            "reason": enclosing["reason"],
+                        }
+                        return False
+                    candidate, rejection_reason = build_side_candidate(
+                        candidate_distance,
+                        current,
+                        enclosing,
+                        "measured",
+                        coordinate_override=coordinate_override,
+                        edge_measurement_source=source,
+                    )
+                    if candidate is None:
+                        last_geometry_rejection = rejection_reason
+                        return False
+                    append_candidate(candidate)
+                    if terminal:
+                        terminal_candidate_accepted = True
+                    return True
+
                 for position, distance in enumerate(distances):
                     current = at(distance)
                     adjacent = [
@@ -3061,73 +3636,32 @@ class FocusResolver:
                     ):
                         if distance == distances[-1]:
                             terminal_edge_candidate_seen = True
-                        edge_candidate_count += 1
-                        enclosing = validate_enclosing_container_boundary(
-                            side,
-                            distance,
-                        )
-                        if not enclosing["valid"]:
-                            if enclosing.get("outward_context_truncated"):
-                                enclosing_truncation_count += 1
-                                last_truncation_distance = float(distance)
-                                last_truncation_source = boundary_limit_source(
-                                    side,
-                                    semantic_edge - maximum
-                                    if side in ("left", "top")
-                                    else semantic_edge + maximum,
-                                )
-                                boundary_limited_score = cls._clamp01(
-                                    0.60 * current["score"]
-                                    + 0.40 * enclosing["interior_persistence"]
-                                )
-                                if (
-                                    enclosing["inward_sample_count"] >= 2
-                                    and enclosing["interior_persistence"]
-                                    >= cls.NATURAL_CONTAINER_MIN_INTERIOR_PERSISTENCE
-                                    and current["score"]
-                                    >= cls.NATURAL_CONTAINER_MIN_EDGE_SCORE
-                                    and boundary_limited_score
-                                    >= cls.NATURAL_CONTAINER_MIN_BOUNDARY_LIMITED_SCORE
-                                ):
-                                    candidate, rejection_reason = build_side_candidate(
-                                        distance,
-                                        current,
-                                        enclosing,
-                                        "boundary_limited",
-                                        boundary_limited_score,
-                                        maximum,
-                                    )
-                                    if candidate is not None:
-                                        side_candidates.append(candidate)
-                                        boundary_limited_candidate_count += 1
-                                        if distance == distances[-1]:
-                                            terminal_candidate_accepted = True
-                                        if len(side_candidates) >= cls.NATURAL_CONTAINER_MAX_SIDE_CANDIDATES:
-                                            break
-                                        continue
-                                    last_geometry_rejection = rejection_reason
-                            enclosing_rejection_count += 1
-                            last_rejected = {
-                                "distance": float(distance),
-                                "edge_score": current["score"],
-                                "enclosing_score": enclosing["enclosing_score"],
-                                "reason": enclosing["reason"],
-                            }
-                            continue
-                        candidate, rejection_reason = build_side_candidate(
+                        evaluate_profile_candidate(
                             distance,
                             current,
-                            enclosing,
-                            "measured",
+                            "legacy_local",
+                            terminal=distance == distances[-1],
                         )
-                        if candidate is None:
-                            last_geometry_rejection = rejection_reason
-                            continue
-                        side_candidates.append(candidate)
-                        if distance == distances[-1]:
-                            terminal_candidate_accepted = True
-                        if len(side_candidates) >= cls.NATURAL_CONTAINER_MAX_SIDE_CANDIDATES:
-                            break
+                    band = gradient_band_profile(distance)
+                    if (
+                        band is not None
+                        and band["span_support"]
+                        >= cls.NATURAL_CONTAINER_MIN_SPAN_SUPPORT
+                        and band["mean_strength"]
+                        >= cls.NATURAL_CONTAINER_MIN_ORIENTED_STRENGTH
+                        and band["score"] >= cls.NATURAL_CONTAINER_MIN_EDGE_SCORE
+                        and band["coordinate_mad"]
+                        <= cls.NATURAL_CONTAINER_GRADIENT_BAND_MAX_MAD_PX
+                    ):
+                        evaluate_profile_candidate(
+                            distance,
+                            band,
+                            "global_gradient_band",
+                            coordinate_override=band["coordinate"],
+                            terminal=distance == distances[-1],
+                        )
+                    if len(side_candidates) >= cls.NATURAL_CONTAINER_MAX_SIDE_CANDIDATES:
+                        break
                 if len(side_candidates) < cls.NATURAL_CONTAINER_MAX_SIDE_CANDIDATES:
                     terminal_candidate_evaluated = True
                     terminal_distance = distances[-1]
@@ -3200,7 +3734,7 @@ class FocusResolver:
                                     if candidate is not None:
                                         boundary_limited_candidate_count += 1
                             if candidate is not None:
-                                side_candidates.append(candidate)
+                                append_candidate(candidate)
                                 terminal_candidate_accepted = True
                             else:
                                 if rejection_reason is not None:
@@ -3214,6 +3748,12 @@ class FocusResolver:
                                         "reason": enclosing["reason"],
                                     }
                 side_candidate_lists[side] = side_candidates
+                side_gradient_debug = {
+                    "legacy_candidate_count": legacy_candidate_count,
+                    "gradient_band_candidate_count": gradient_band_candidate_count,
+                    "gradient_band_best_score": gradient_band_best_score,
+                    "gradient_band_best_coordinate": gradient_band_best_coordinate,
+                }
                 if not side_candidates:
                     if last_geometry_rejection is not None:
                         reason = last_geometry_rejection
@@ -3248,6 +3788,17 @@ class FocusResolver:
                         "last_rejected_edge_score": last_rejected["edge_score"],
                         "last_rejected_enclosing_score": last_rejected["enclosing_score"],
                         "last_rejected_reason": last_rejected["reason"],
+                        "edge_measurement_source": None,
+                        "gradient_band_nominal_coordinate": None,
+                        "gradient_band_selected_coordinate": None,
+                        "gradient_band_radius": None,
+                        "gradient_band_span_support": None,
+                        "gradient_band_mean_strength": None,
+                        "gradient_band_coordinate_mad": None,
+                        "gradient_band_supported_sample_count": 0,
+                        "gradient_band_valid_sample_count": 0,
+                        "gradient_band_edge_score": None,
+                        **side_gradient_debug,
                     }
                     continue
                 selected_candidate = side_candidates[0]
@@ -3283,6 +3834,37 @@ class FocusResolver:
                     "last_rejected_edge_score": last_rejected["edge_score"],
                     "last_rejected_enclosing_score": last_rejected["enclosing_score"],
                     "last_rejected_reason": last_rejected["reason"],
+                    "edge_measurement_source": selected_candidate.get(
+                        "edge_measurement_source"
+                    ),
+                    "gradient_band_nominal_coordinate": selected_candidate.get(
+                        "gradient_band_nominal_coordinate"
+                    ),
+                    "gradient_band_selected_coordinate": selected_candidate.get(
+                        "gradient_band_selected_coordinate"
+                    ),
+                    "gradient_band_radius": selected_candidate.get(
+                        "gradient_band_radius"
+                    ),
+                    "gradient_band_span_support": selected_candidate.get(
+                        "gradient_band_span_support"
+                    ),
+                    "gradient_band_mean_strength": selected_candidate.get(
+                        "gradient_band_mean_strength"
+                    ),
+                    "gradient_band_coordinate_mad": selected_candidate.get(
+                        "gradient_band_coordinate_mad"
+                    ),
+                    "gradient_band_supported_sample_count": selected_candidate.get(
+                        "gradient_band_supported_sample_count", 0
+                    ),
+                    "gradient_band_valid_sample_count": selected_candidate.get(
+                        "gradient_band_valid_sample_count", 0
+                    ),
+                    "gradient_band_edge_score": selected_candidate.get(
+                        "gradient_band_edge_score"
+                    ),
+                    **side_gradient_debug,
                 }
 
             joint_rejection_counts = {
@@ -3359,6 +3941,36 @@ class FocusResolver:
                         "exterior_separation_censored": candidate["exterior_separation_censored"],
                         "boundary_limit_distance": candidate["boundary_limit_distance"],
                         "boundary_limit_source": candidate["boundary_limit_source"],
+                        "edge_measurement_source": candidate.get(
+                            "edge_measurement_source"
+                        ),
+                        "gradient_band_nominal_coordinate": candidate.get(
+                            "gradient_band_nominal_coordinate"
+                        ),
+                        "gradient_band_selected_coordinate": candidate.get(
+                            "gradient_band_selected_coordinate"
+                        ),
+                        "gradient_band_radius": candidate.get(
+                            "gradient_band_radius"
+                        ),
+                        "gradient_band_span_support": candidate.get(
+                            "gradient_band_span_support"
+                        ),
+                        "gradient_band_mean_strength": candidate.get(
+                            "gradient_band_mean_strength"
+                        ),
+                        "gradient_band_coordinate_mad": candidate.get(
+                            "gradient_band_coordinate_mad"
+                        ),
+                        "gradient_band_supported_sample_count": candidate.get(
+                            "gradient_band_supported_sample_count", 0
+                        ),
+                        "gradient_band_valid_sample_count": candidate.get(
+                            "gradient_band_valid_sample_count", 0
+                        ),
+                        "gradient_band_edge_score": candidate.get(
+                            "gradient_band_edge_score"
+                        ),
                     })
                 valid = True
                 recovered = selected_joint["bbox"]
@@ -3493,6 +4105,20 @@ class FocusResolver:
                         "enclosing_truncation_count",
                         "last_truncation_distance",
                         "last_truncation_source",
+                        "edge_measurement_source",
+                        "gradient_band_nominal_coordinate",
+                        "gradient_band_selected_coordinate",
+                        "gradient_band_radius",
+                        "gradient_band_span_support",
+                        "gradient_band_mean_strength",
+                        "gradient_band_coordinate_mad",
+                        "gradient_band_supported_sample_count",
+                        "gradient_band_valid_sample_count",
+                        "gradient_band_edge_score",
+                        "legacy_candidate_count",
+                        "gradient_band_candidate_count",
+                        "gradient_band_best_score",
+                        "gradient_band_best_coordinate",
                     )
                 },
                 "natural_container_dense_boundary_side_count": sum(
@@ -3521,6 +4147,16 @@ class FocusResolver:
                                 "exterior_separation_censored",
                                 "boundary_limit_distance",
                                 "boundary_limit_source",
+                                "edge_measurement_source",
+                                "gradient_band_nominal_coordinate",
+                                "gradient_band_selected_coordinate",
+                                "gradient_band_radius",
+                                "gradient_band_span_support",
+                                "gradient_band_mean_strength",
+                                "gradient_band_coordinate_mad",
+                                "gradient_band_supported_sample_count",
+                                "gradient_band_valid_sample_count",
+                                "gradient_band_edge_score",
                                 "scan_mode",
                                 "selected_scan_step",
                             )
@@ -4196,6 +4832,10 @@ class FocusResolver:
                 "prepared_bbox": bbox,
                 "prepared_candidate_width": item.get("prepared_candidate_width"),
                 "prepared_candidate_height": item.get("prepared_candidate_height"),
+                "global_gradient_field_enabled": item.get("global_gradient_field_enabled"),
+                "global_gradient_field_width": item.get("global_gradient_field_width"),
+                "global_gradient_field_height": item.get("global_gradient_field_height"),
+                "global_gradient_field_method": item.get("global_gradient_field_method"),
                 "prepared_montage_tile_bbox": item.get("prepared_montage_tile_bbox"),
                 "source_device_viewport_bbox": item.get("source_device_viewport_bbox"),
                 "source_device_viewport_valid": item.get("source_device_viewport_valid"),
@@ -4334,6 +4974,28 @@ class FocusResolver:
                 "natural_container_right_boundary_limit_source": item.get("natural_container_right_boundary_limit_source"),
                 "natural_container_top_boundary_limit_source": item.get("natural_container_top_boundary_limit_source"),
                 "natural_container_bottom_boundary_limit_source": item.get("natural_container_bottom_boundary_limit_source"),
+                **{
+                    f"natural_container_{side}_{metric}": item.get(
+                        f"natural_container_{side}_{metric}"
+                    )
+                    for side in ("left", "right", "top", "bottom")
+                    for metric in (
+                        "edge_measurement_source",
+                        "gradient_band_nominal_coordinate",
+                        "gradient_band_selected_coordinate",
+                        "gradient_band_radius",
+                        "gradient_band_span_support",
+                        "gradient_band_mean_strength",
+                        "gradient_band_coordinate_mad",
+                        "gradient_band_supported_sample_count",
+                        "gradient_band_valid_sample_count",
+                        "gradient_band_edge_score",
+                        "legacy_candidate_count",
+                        "gradient_band_candidate_count",
+                        "gradient_band_best_score",
+                        "gradient_band_best_coordinate",
+                    )
+                },
                 "natural_container_left_boundary_limited_candidate_count": item.get("natural_container_left_boundary_limited_candidate_count"),
                 "natural_container_right_boundary_limited_candidate_count": item.get("natural_container_right_boundary_limited_candidate_count"),
                 "natural_container_top_boundary_limited_candidate_count": item.get("natural_container_top_boundary_limited_candidate_count"),
