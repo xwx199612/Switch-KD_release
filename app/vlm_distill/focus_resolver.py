@@ -189,6 +189,17 @@ class FocusResolver:
     SCALE_SIGNATURE_FULL_GROWTH = 0.25
     SCALE_SIGNATURE_LOG_TOLERANCE = 0.20
     SCALE_SIGNATURE_SINGLE_PEER_RELIABILITY = 0.50
+    FOCUS_BOUNDARY_RECOVERY_VERSION = "v7.0-global-gradient-boundary-diagnostic"
+    V7_BOUNDARY_MIN_RESPONSE = 0.18
+    V7_BOUNDARY_MIN_SPAN_SUPPORT = 0.45
+    V7_BOUNDARY_MIN_SCORE = 0.42
+    V7_BOUNDARY_SEARCH_INWARD_FRACTION = 0.20
+    V7_BOUNDARY_SEARCH_OUTWARD_FRACTION = 0.40
+    V7_BOUNDARY_SEARCH_MIN_PX = 6.0
+    V7_BOUNDARY_SEARCH_MAX_PX = 64.0
+    V7_BOUNDARY_TOP_CANDIDATES = 4
+    V7_BOUNDARY_EDGE_OFFSET_PX = 3
+    V7_BOUNDARY_MIN_JOINT_SCORE = 0.40
 
     def __init__(self, engine: Any) -> None:
         self.engine = engine
@@ -287,6 +298,13 @@ class FocusResolver:
             prepared_device_geometry_by_index,
             prepared_montage_tiles_by_index,
             global_gradient_field=global_gradient_field,
+        )
+        # V7 is diagnostic-only and intentionally runs after V5 evidence
+        # without feeding any recovered geometry into the focus cascade.
+        self._apply_v7_boundary_recovery(
+            visual_evidence,
+            unannotated_image,
+            global_gradient_field,
         )
         cv_debug_paths: dict[str, str | None] = {
             "focus_cv_prepared_image_path": self.DEBUG_CV_PREPARED_IMAGE_PATH,
@@ -404,6 +422,7 @@ class FocusResolver:
             "focus_debug_image_path": focus_debug_image_path,
             "focus_debug_unannotated_image_path": focus_debug_unannotated_image_path,
             "focus_visual_evidence_space": "prepared",
+            "focus_boundary_recovery_version": self.FOCUS_BOUNDARY_RECOVERY_VERSION,
             "focus_peer_debug_image_path": focus_peer_debug_image_path,
             **cv_debug_paths,
             "focus_peer_groups": peer_analysis["peer_sets"],
@@ -660,6 +679,298 @@ class FocusResolver:
             "method": "central_difference_rgb_luma_v1",
         }
 
+    @classmethod
+    def _apply_v7_boundary_recovery(
+        cls,
+        evidence: list[dict[str, Any]],
+        image: Image.Image,
+        global_gradient_field: dict[str, Any],
+    ) -> None:
+        """Compute focus-agnostic rendered-boundary diagnostics.
+
+        V7 is deliberately isolated from V5/V6 evidence.  It only writes
+        ``recovered_visual_*`` fields and never changes a production score or
+        selection result.
+        """
+        pixels = image.convert("RGB")
+        pixel_data = pixels.load()
+        image_width, image_height = pixels.size
+        vertical_map = global_gradient_field.get("vertical_edge_map") or []
+        horizontal_map = global_gradient_field.get("horizontal_edge_map") or []
+
+        def finite_box(value: Any) -> tuple[float, float, float, float] | None:
+            if not isinstance(value, (list, tuple)) or len(value) < 4:
+                return None
+            try:
+                box = tuple(float(value[index]) for index in range(4))
+            except (TypeError, ValueError):
+                return None
+            if not all(math.isfinite(v) for v in box):
+                return None
+            return box if box[2] > box[0] and box[3] > box[1] else None
+
+        def clipped(value: Any) -> tuple[float, float, float, float] | None:
+            box = finite_box(value)
+            if box is None:
+                return None
+            left, top, right, bottom = box
+            left = max(0.0, min(float(image_width), left))
+            top = max(0.0, min(float(image_height), top))
+            right = max(0.0, min(float(image_width), right))
+            bottom = max(0.0, min(float(image_height), bottom))
+            return (left, top, right, bottom) if right > left and bottom > top else None
+
+        def pixel(x: float, y: float) -> tuple[int, int, int]:
+            return pixel_data[
+                max(0, min(image_width - 1, int(round(x)))),
+                max(0, min(image_height - 1, int(round(y)))),
+            ]
+
+        def color_distance(first: tuple[int, int, int], second: tuple[int, int, int]) -> float:
+            return cls._clamp01(
+                math.sqrt(sum(
+                    ((first[channel] - second[channel]) / 255.0) ** 2
+                    for channel in range(3)
+                ) / 3.0) / max(cls.ENLARGEMENT_EDGE_COHERENCE_COLOR_NORMALIZER, 1e-6)
+            )
+
+        def luma(color: tuple[int, int, int]) -> float:
+            return (0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]) / 255.0
+
+        def side_defaults(item: dict[str, Any]) -> None:
+            item.update({
+                "focus_boundary_recovery_version": cls.FOCUS_BOUNDARY_RECOVERY_VERSION,
+                "recovered_visual_bbox": None,
+                "recovered_visual_bbox_valid": False,
+                "recovered_visual_bbox_confidence": 0.0,
+                "recovered_visual_bbox_reason": "unavailable",
+                "recovered_visual_left_delta": None,
+                "recovered_visual_right_delta": None,
+                "recovered_visual_top_delta": None,
+                "recovered_visual_bottom_delta": None,
+                "recovered_visual_width_ratio": None,
+                "recovered_visual_height_ratio": None,
+                "recovered_visual_area_ratio": None,
+                "recovered_boundary_side_count": 0,
+                "recovered_boundary_measured_side_count": 0,
+                "recovered_boundary_limited_side_count": 0,
+                "recovered_boundary_mean_side_score": 0.0,
+                "recovered_boundary_min_side_score": 0.0,
+                "recovered_boundary_continuity": 0.0,
+                "recovered_boundary_corner_support": 0.0,
+                "recovered_visual_search_bands": {},
+                "recovered_visual_joint_hypothesis_count": 0,
+                "recovered_visual_joint_valid_hypothesis_count": 0,
+                "recovered_visual_joint_score": 0.0,
+                "recovered_visual_joint_rejection_reason": None,
+            })
+            for side in ("left", "right", "top", "bottom"):
+                item[f"recovered_visual_{side}_state"] = "unresolved"
+                item[f"recovered_visual_{side}_reason"] = "unavailable"
+                item[f"recovered_visual_{side}_score"] = 0.0
+                item[f"recovered_visual_{side}_span_support"] = 0.0
+                item[f"recovered_visual_{side}_mean_oriented_strength"] = 0.0
+                item[f"recovered_visual_{side}_inside_outside_contrast"] = 0.0
+                item[f"recovered_visual_{side}_coordinate_mad"] = None
+                item[f"recovered_visual_{side}_continuity"] = 0.0
+                item[f"recovered_visual_{side}_selected_coordinate"] = None
+                item[f"recovered_visual_{side}_distance"] = None
+                item[f"recovered_visual_{side}_candidates"] = []
+
+        for item in evidence:
+            side_defaults(item)
+            semantic = clipped(item.get("prepared_bbox"))
+            cell = clipped(item.get("visual_cell_bbox"))
+            if cell is None and semantic is not None:
+                width = semantic[2] - semantic[0]
+                height = semantic[3] - semantic[1]
+                cell = clipped((
+                    semantic[0] - width * 0.35,
+                    semantic[1] - height * 0.35,
+                    semantic[2] + width * 0.35,
+                    semantic[3] + height * 0.35,
+                ))
+            if semantic is None or cell is None:
+                item["recovered_visual_bbox_reason"] = "invalid_geometry"
+                continue
+            left, top, right, bottom = semantic
+            width = right - left
+            height = bottom - top
+            if not (cell[0] <= left <= right <= cell[2] and cell[1] <= top <= bottom <= cell[3]):
+                item["recovered_visual_bbox_reason"] = "semantic_outside_visual_cell"
+                continue
+
+            search_bands: dict[str, list[float]] = {}
+            side_candidates: dict[str, list[dict[str, Any]]] = {}
+            side_specs = {
+                "left": (left, width, "vertical", -1.0, (top + 0.15 * height, top + 0.85 * height)),
+                "right": (right, width, "vertical", 1.0, (top + 0.15 * height, top + 0.85 * height)),
+                "top": (top, height, "horizontal", -1.0, (left + 0.15 * width, left + 0.85 * width)),
+                "bottom": (bottom, height, "horizontal", 1.0, (left + 0.15 * width, left + 0.85 * width)),
+            }
+            for side, (semantic_coordinate, dimension, orientation, outward, span) in side_specs.items():
+                inward = min(cls.V7_BOUNDARY_SEARCH_MAX_PX, max(cls.V7_BOUNDARY_SEARCH_MIN_PX, dimension * cls.V7_BOUNDARY_SEARCH_INWARD_FRACTION))
+                outward_distance = min(cls.V7_BOUNDARY_SEARCH_MAX_PX, max(cls.V7_BOUNDARY_SEARCH_MIN_PX, dimension * cls.V7_BOUNDARY_SEARCH_OUTWARD_FRACTION))
+                low = semantic_coordinate - outward_distance if outward > 0 else semantic_coordinate - inward
+                high = semantic_coordinate + inward if outward > 0 else semantic_coordinate + outward_distance
+                if side in ("left", "right"):
+                    low = max(low, cell[0], 0.0)
+                    high = min(high, cell[2], float(image_width))
+                else:
+                    low = max(low, cell[1], 0.0)
+                    high = min(high, cell[3], float(image_height))
+                if high < low:
+                    continue
+                coordinates = list(range(int(math.ceil(low)), int(math.floor(high)) + 1))
+                search_bands[side] = [float(low), float(high)]
+                edge_map = vertical_map if orientation == "vertical" else horizontal_map
+                candidates: list[dict[str, Any]] = []
+                span_start, span_end = span
+                span_samples = max(7, min(25, int(round((span_end - span_start) / 8.0))))
+                for coordinate in coordinates:
+                    responses: list[float] = []
+                    contrasts: list[float] = []
+                    valid_samples = 0
+                    for sample_index in range(span_samples):
+                        fraction = (sample_index + 0.5) / span_samples
+                        parallel = span_start + fraction * (span_end - span_start)
+                        x = coordinate if orientation == "vertical" else parallel
+                        y = parallel if orientation == "vertical" else coordinate
+                        try:
+                            response = max(
+                                float(edge_map[int(round(y))][int(round(x))]),
+                                float(edge_map[max(0, int(round(y)) - 1)][max(0, int(round(x)) - 1)]),
+                            )
+                        except (IndexError, TypeError, ValueError):
+                            continue
+                        inside_sign = 1.0 if side in ("left", "top") else -1.0
+                        if orientation == "vertical":
+                            inside = pixel(x + inside_sign * cls.V7_BOUNDARY_EDGE_OFFSET_PX, y)
+                            outside = pixel(x - inside_sign * cls.V7_BOUNDARY_EDGE_OFFSET_PX, y)
+                        else:
+                            inside = pixel(x, y + inside_sign * cls.V7_BOUNDARY_EDGE_OFFSET_PX)
+                            outside = pixel(x, y - inside_sign * cls.V7_BOUNDARY_EDGE_OFFSET_PX)
+                        contrasts.append(0.5 * cls._clamp01(abs(luma(inside) - luma(outside)) / 0.20) + 0.5 * color_distance(inside, outside))
+                        responses.append(cls._clamp01(response))
+                        valid_samples += 1
+                    if not responses:
+                        continue
+                    support = sum(value >= cls.V7_BOUNDARY_MIN_RESPONSE for value in responses) / len(responses)
+                    mean_strength = sum(responses) / len(responses)
+                    contrast = sum(contrasts) / max(len(contrasts), 1)
+                    continuity = cls._clamp01(1.0 - (sum(abs(value - mean_strength) for value in responses) / max(len(responses), 1)))
+                    distance = (coordinate - semantic_coordinate) * outward
+                    perimeter_preference = cls._clamp01(1.0 - max(0.0, -distance) / max(inward, 1.0))
+                    score = cls._clamp01(
+                        0.40 * support
+                        + 0.25 * mean_strength
+                        + 0.20 * contrast
+                        + 0.10 * continuity
+                        + 0.05 * perimeter_preference
+                    )
+                    if support < cls.V7_BOUNDARY_MIN_SPAN_SUPPORT or mean_strength < cls.V7_BOUNDARY_MIN_RESPONSE or score < cls.V7_BOUNDARY_MIN_SCORE:
+                        continue
+                    limited = abs(coordinate - low) <= 1.0 or abs(coordinate - high) <= 1.0
+                    candidates.append({
+                        "coordinate": float(coordinate),
+                        "distance_from_semantic_side": float(distance),
+                        "direction": "outward" if distance >= 0 else "inward",
+                        "score": score,
+                        "span_support": support,
+                        "mean_oriented_strength": mean_strength,
+                        "inside_outside_contrast": contrast,
+                        "coordinate_mad": 0.0,
+                        "continuity": continuity,
+                        "state": "boundary_limited" if limited else "measured_boundary",
+                    })
+                candidates.sort(key=lambda value: (-value["score"], abs(value["distance_from_semantic_side"]), value["coordinate"]))
+                side_candidates[side] = candidates[:cls.V7_BOUNDARY_TOP_CANDIDATES]
+                item[f"recovered_visual_{side}_candidates"] = side_candidates[side]
+
+            item["recovered_visual_search_bands"] = search_bands
+            if any(not side_candidates.get(side) for side in ("left", "right", "top", "bottom")):
+                item["recovered_visual_bbox_reason"] = "insufficient_side_candidates"
+                continue
+
+            hypotheses: list[dict[str, Any]] = []
+            for left_candidate in side_candidates["left"]:
+                for right_candidate in side_candidates["right"]:
+                    for top_candidate in side_candidates["top"]:
+                        for bottom_candidate in side_candidates["bottom"]:
+                            recovered = (
+                                left_candidate["coordinate"],
+                                top_candidate["coordinate"],
+                                right_candidate["coordinate"],
+                                bottom_candidate["coordinate"],
+                            )
+                            if not (recovered[0] < recovered[2] and recovered[1] < recovered[3]):
+                                continue
+                            if not (cell[0] <= recovered[0] <= recovered[2] <= cell[2] and cell[1] <= recovered[1] <= recovered[3] <= cell[3]):
+                                continue
+                            if not (recovered[0] <= (left + right) / 2.0 <= recovered[2] and recovered[1] <= (top + bottom) / 2.0 <= recovered[3]):
+                                continue
+                            side_score = min(value["score"] for value in (left_candidate, right_candidate, top_candidate, bottom_candidate))
+                            mean_score = sum(value["score"] for value in (left_candidate, right_candidate, top_candidate, bottom_candidate)) / 4.0
+                            width_ratio = (recovered[2] - recovered[0]) / max(width, 1e-6)
+                            height_ratio = (recovered[3] - recovered[1]) / max(height, 1e-6)
+                            plausibility = cls._clamp01(1.0 - 0.15 * max(0.0, width_ratio - 3.0) - 0.15 * max(0.0, height_ratio - 3.0))
+                            joint_score = cls._clamp01(0.65 * side_score + 0.25 * mean_score + 0.10 * plausibility)
+                            if joint_score >= cls.V7_BOUNDARY_MIN_JOINT_SCORE:
+                                hypotheses.append({
+                                    "bbox": recovered,
+                                    "joint_score": joint_score,
+                                    "sides": (left_candidate, right_candidate, top_candidate, bottom_candidate),
+                                })
+            hypotheses.sort(key=lambda value: (-value["joint_score"], sum(abs(side["distance_from_semantic_side"]) for side in value["sides"])))
+            item["recovered_visual_joint_hypothesis_count"] = len(hypotheses)
+            if not hypotheses:
+                item["recovered_visual_bbox_reason"] = "no_valid_joint_boundary"
+                continue
+            selected = hypotheses[0]
+            recovered = selected["bbox"]
+            sides = selected["sides"]
+            limited_count = sum(side["state"] == "boundary_limited" for side in sides)
+            corner_support = sum(
+                math.sqrt(max(first["score"], 0.0) * max(second["score"], 0.0))
+                for first, second in (
+                    (sides[0], sides[2]),
+                    (sides[1], sides[2]),
+                    (sides[0], sides[3]),
+                    (sides[1], sides[3]),
+                )
+            ) / 4.0
+            item.update({
+                "recovered_visual_bbox": [round(value, 2) for value in recovered],
+                "recovered_visual_bbox_valid": True,
+                "recovered_visual_bbox_confidence": selected["joint_score"] * (0.85 if limited_count else 1.0),
+                "recovered_visual_bbox_reason": "joint_boundary_recovered",
+                "recovered_boundary_side_count": 4,
+                "recovered_boundary_measured_side_count": 4 - limited_count,
+                "recovered_boundary_limited_side_count": limited_count,
+                "recovered_boundary_mean_side_score": sum(side["score"] for side in sides) / 4.0,
+                "recovered_boundary_min_side_score": min(side["score"] for side in sides),
+                "recovered_boundary_continuity": sum(side["continuity"] for side in sides) / 4.0,
+                "recovered_boundary_corner_support": corner_support,
+                "recovered_visual_joint_valid_hypothesis_count": len(hypotheses),
+                "recovered_visual_joint_score": selected["joint_score"],
+            })
+            for side_name, side_value in zip(("left", "right", "top", "bottom"), sides):
+                item[f"recovered_visual_{side_name}_state"] = side_value["state"]
+                item[f"recovered_visual_{side_name}_reason"] = "boundary_limited" if side_value["state"] == "boundary_limited" else "selected"
+                for metric in ("score", "span_support", "mean_oriented_strength", "inside_outside_contrast", "coordinate_mad", "continuity"):
+                    item[f"recovered_visual_{side_name}_{metric}"] = side_value[metric]
+                item[f"recovered_visual_{side_name}_selected_coordinate"] = side_value["coordinate"]
+                item[f"recovered_visual_{side_name}_distance"] = side_value["distance_from_semantic_side"]
+            item["recovered_visual_left_delta"] = left - recovered[0]
+            item["recovered_visual_right_delta"] = recovered[2] - right
+            item["recovered_visual_top_delta"] = top - recovered[1]
+            item["recovered_visual_bottom_delta"] = recovered[3] - bottom
+            recovered_width = recovered[2] - recovered[0]
+            recovered_height = recovered[3] - recovered[1]
+            item["recovered_visual_width_ratio"] = recovered_width / max(width, 1e-6)
+            item["recovered_visual_height_ratio"] = recovered_height / max(height, 1e-6)
+            item["recovered_visual_area_ratio"] = (recovered_width * recovered_height) / max(width * height, 1e-6)
+
     @staticmethod
     def _scale_signature_geometry(source: Any) -> tuple[float, float, float, float] | None:
         if not isinstance(source, (list, tuple)) or len(source) < 4:
@@ -835,6 +1146,7 @@ class FocusResolver:
         ]
         fields = {
             "focus_scale_signature_version": cls.SCALE_SIGNATURE_VERSION,
+            "focus_boundary_recovery_version": cls.FOCUS_BOUNDARY_RECOVERY_VERSION,
             "semantic_scale_bbox": list(candidate_bbox[:4])
             if isinstance(candidate_bbox, (list, tuple)) and len(candidate_bbox) >= 4
             else None,
@@ -5067,7 +5379,7 @@ class FocusResolver:
             draw.text((8, 24), f"ROI: {roi_bbox}  INPUT: {raw.width}x{raw.height}", fill=(255, 255, 255))
         else:
             draw.text((8, 24), "FULL IMAGE", fill=(255, 255, 255))
-        draw.text((8, 42), "BOX=semantic IC=current container NAT=legacy baseline CELL=ownership CARD=card cell OBS=card window EXT=visual extent", fill=(255, 255, 255))
+        draw.text((8, 42), "BOX=semantic V7=recovered visual IC=current container NAT=legacy baseline CELL=ownership CARD=card cell OBS=card window EXT=visual extent", fill=(255, 255, 255))
 
         montage_tile_bboxes = []
         if focus_image_mode == "group_montage" and isinstance(montage_tile_sizes, list):
@@ -5106,6 +5418,7 @@ class FocusResolver:
             sibling_id = sibling_by_index.get(int(index), -1)
             draw_box(bbox, (255, 255, 0), 2)
             draw_box(item.get("recovered_current_container_bbox"), (0, 220, 210), 2)
+            draw_box(item.get("recovered_visual_bbox"), (255, 80, 220), 3)
             draw_box(item.get("natural_container_bbox"), (190, 120, 255), 2)
             draw_box(item.get("visual_cell_bbox"), (0, 180, 255), 2)
             draw_box(item.get("enlargement_card_cell_bbox"), (255, 0, 255), 2)
@@ -5151,7 +5464,8 @@ class FocusResolver:
                     ("BD", "extent_bottom_device_boundary_contaminated"),
                 ) if item.get(field)
             )
-            label = f"#{index} P{peer_id}/S{sibling_id if sibling_id >= 0 else '-'} EXT:{extent_state} {hit_sides} {device_sides}".rstrip()
+            v7_state = "V7" if item.get("recovered_visual_bbox_valid") else "V7-"
+            label = f"#{index} P{peer_id}/S{sibling_id if sibling_id >= 0 else '-'} {v7_state} EXT:{extent_state} {hit_sides} {device_sides}".rstrip()
             try:
                 left = int(round(float(bbox[0])))
                 top = max(62, int(round(float(bbox[1]))) - 16)
@@ -5241,6 +5555,40 @@ class FocusResolver:
                         "scale_space_signature_delta",
                         "scale_space_linear_ratio_delta",
                         "scale_space_relation",
+                        "focus_boundary_recovery_version",
+                        "recovered_visual_bbox",
+                        "recovered_visual_bbox_valid",
+                        "recovered_visual_bbox_confidence",
+                        "recovered_visual_bbox_reason",
+                        "recovered_visual_left_delta",
+                        "recovered_visual_right_delta",
+                        "recovered_visual_top_delta",
+                        "recovered_visual_bottom_delta",
+                        "recovered_visual_width_ratio",
+                        "recovered_visual_height_ratio",
+                        "recovered_visual_area_ratio",
+                        "recovered_boundary_side_count",
+                        "recovered_boundary_measured_side_count",
+                        "recovered_boundary_limited_side_count",
+                        "recovered_boundary_mean_side_score",
+                        "recovered_boundary_min_side_score",
+                        "recovered_boundary_continuity",
+                        "recovered_boundary_corner_support",
+                        "recovered_visual_search_bands",
+                        "recovered_visual_joint_hypothesis_count",
+                        "recovered_visual_joint_valid_hypothesis_count",
+                        "recovered_visual_joint_score",
+                        "recovered_visual_joint_rejection_reason",
+                        *[
+                            f"recovered_visual_{side}_{metric}"
+                            for side in ("left", "right", "top", "bottom")
+                            for metric in (
+                                "state", "reason", "score", "span_support",
+                                "mean_oriented_strength", "inside_outside_contrast",
+                                "coordinate_mad", "continuity", "selected_coordinate",
+                                "distance", "candidates",
+                            )
+                        ],
                     )
                 },
                 "prepared_montage_tile_bbox": item.get("prepared_montage_tile_bbox"),

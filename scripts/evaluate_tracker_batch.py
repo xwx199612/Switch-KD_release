@@ -323,6 +323,15 @@ def _extract_result_base(response: dict, image_path: Path) -> dict:
             "visual_scale_peer_reliability": item.get("visual_scale_peer_reliability"),
             "scale_space_signature_delta": item.get("scale_space_signature_delta"),
             "scale_space_relation": item.get("scale_space_relation"),
+            "focus_boundary_recovery_version": item.get("focus_boundary_recovery_version"),
+            "recovered_visual_bbox_valid": item.get("recovered_visual_bbox_valid"),
+            "recovered_visual_bbox_confidence": item.get("recovered_visual_bbox_confidence"),
+            "recovered_visual_left_delta": item.get("recovered_visual_left_delta"),
+            "recovered_visual_right_delta": item.get("recovered_visual_right_delta"),
+            "recovered_visual_top_delta": item.get("recovered_visual_top_delta"),
+            "recovered_visual_bottom_delta": item.get("recovered_visual_bottom_delta"),
+            "recovered_boundary_side_count": item.get("recovered_boundary_side_count"),
+            "recovered_boundary_limited_side_count": item.get("recovered_boundary_limited_side_count"),
         })
     return {
         "image": image_path.name,
@@ -453,6 +462,14 @@ def print_result(position: int, total: int, result: dict) -> None:
             f" d_sig={_format_signed_float(item.get('scale_space_signature_delta'))}"
             f" rel={item.get('scale_space_relation') or '-'}"
             f" src={item.get('visual_scale_geometry_source') or '-'}{marker}"
+            f" rb={'1' if item.get('recovered_visual_bbox_valid') else '0'}"
+            f" conf={_format_float(item.get('recovered_visual_bbox_confidence'))}"
+            f" L={_format_signed_float(item.get('recovered_visual_left_delta'))}"
+            f" R={_format_signed_float(item.get('recovered_visual_right_delta'))}"
+            f" T={_format_signed_float(item.get('recovered_visual_top_delta'))}"
+            f" B={_format_signed_float(item.get('recovered_visual_bottom_delta'))}"
+            f" sides={item.get('recovered_boundary_side_count', 0)}"
+            f" lim={item.get('recovered_boundary_limited_side_count', 0)}"
         )
     print(f"\nEvidence space:\n  {result.get('focus_visual_evidence_space')}")
     print("\nElements:")
