@@ -170,19 +170,52 @@ def discover_images(image_dir: Path) -> list[Path]:
     )
 
 
-def _container_debug_output_dir(host_dir: Path, docker_container: str | None) -> Path:
+def _effective_debug_dir(output_path: Path, debug_dir: Path | None) -> Path:
+    """Use the explicit override or the output-adjacent default debug directory."""
+    return (debug_dir if debug_dir is not None else output_path.parent / "debug").resolve()
+
+
+def _container_debug_output_dir(
+    host_dir: Path,
+    host_output_root: Path,
+    docker_container: str | None,
+) -> Path:
     """Map the host output mount to the path visible inside the runtime container."""
     if not docker_container:
         return host_dir
     resolved = host_dir.resolve()
-    parts = resolved.parts
-    if "output" in parts:
-        output_position = len(parts) - 1 - tuple(reversed(parts)).index("output")
-        suffix = parts[output_position + 1:]
-        return Path("/output", *suffix)
+    output_root = host_output_root.resolve()
+    try:
+        suffix = resolved.relative_to(output_root)
+    except ValueError:
+        suffix = None
+    if suffix is not None:
+        return Path("/output") / suffix
     # A caller-supplied non-mounted path cannot be made visible by the evaluator;
     # preserve it so the service returns a clear file error rather than writing /tmp.
     return resolved
+
+
+GRADIENT_DEBUG_SUFFIXES = (
+    "_gradient_luma.jpg",
+    "_gradient_color.jpg",
+    "_gradient_vertical.jpg",
+    "_gradient_horizontal.jpg",
+    "_gradient_fused.jpg",
+    "_gradient_vertical_recovery_debug.jpg",
+    "_gradient_horizontal_recovery_debug.jpg",
+)
+
+
+def _verify_gradient_artifacts(debug_dir: Path, frame_stem: str) -> list[Path]:
+    missing = [
+        debug_dir / f"{frame_stem}{suffix}"
+        for suffix in GRADIENT_DEBUG_SUFFIXES
+        if not (debug_dir / f"{frame_stem}{suffix}").is_file()
+    ]
+    for path in missing:
+        print(f"[WARN] missing gradient artifact: {path}", file=sys.stderr)
+    return missing
 
 
 def _build_element_text_by_index(response: dict[str, Any], fallback_result: dict[str, Any] | None = None) -> dict[int, str]:
@@ -620,12 +653,17 @@ def main() -> int:
         images = images[:max(0, args.limit)]
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    if args.debug_dir is not None:
-        args.debug_dir.mkdir(parents=True, exist_ok=True)
+    effective_debug_dir = _effective_debug_dir(args.output, args.debug_dir)
+    effective_debug_dir.mkdir(parents=True, exist_ok=True)
     service_debug_dir = (
-        _container_debug_output_dir(args.debug_dir, args.docker_container)
-        if args.debug_dir is not None else None
+        _container_debug_output_dir(
+            effective_debug_dir,
+            args.output.parent,
+            args.docker_container,
+        )
     )
+    print(f"Debug artifacts: {effective_debug_dir}")
+    print(f"Container debug path: {service_debug_dir}")
     review_handle = None
     review_writer = None
     if args.review_file:
@@ -662,6 +700,7 @@ def main() -> int:
                         debug_output_dir=service_debug_dir,
                         debug_frame_stem=image_path.stem,
                     )
+                    _verify_gradient_artifacts(effective_debug_dir, image_path.stem)
 
                     if args.save_focus_images is not None:
                         try:
@@ -682,16 +721,12 @@ def main() -> int:
                                 file=sys.stderr,
                             )
 
-                    if args.debug_dir is not None:
-                        args.debug_dir.mkdir(
-                            parents=True,
-                            exist_ok=True,
-                        )
+                    if effective_debug_dir is not None:
                         try:
                             save_peer_debug_image(
                                 response,
                                 str(image_path),
-                                str(args.debug_dir),
+                                str(effective_debug_dir),
                                 args.docker_container,
                             )
                         except (
