@@ -2335,6 +2335,14 @@ class FocusResolver:
                             ("gradient_band_candidate_count", 0),
                             ("gradient_band_best_score", 0.0),
                             ("gradient_band_best_coordinate", None),
+                            ("gradient_band_best_profile_score", 0.0),
+                            ("gradient_band_best_profile_coordinate", None),
+                            ("gradient_band_best_profile_span_support", 0.0),
+                            ("gradient_band_best_profile_mean_strength", 0.0),
+                            ("gradient_band_best_profile_coordinate_mad", None),
+                            ("gradient_band_best_profile_supported_sample_count", 0),
+                            ("gradient_band_best_profile_valid_sample_count", 0),
+                            ("gradient_band_best_profile_rejection_reason", None),
                         )
                     },
                     "natural_container_dense_boundary_side_count": 0,
@@ -3179,6 +3187,14 @@ class FocusResolver:
                         "gradient_band_candidate_count": 0,
                         "gradient_band_best_score": 0.0,
                         "gradient_band_best_coordinate": None,
+                        "gradient_band_best_profile_score": 0.0,
+                        "gradient_band_best_profile_coordinate": None,
+                        "gradient_band_best_profile_span_support": 0.0,
+                        "gradient_band_best_profile_mean_strength": 0.0,
+                        "gradient_band_best_profile_coordinate_mad": None,
+                        "gradient_band_best_profile_supported_sample_count": 0,
+                        "gradient_band_best_profile_valid_sample_count": 0,
+                        "gradient_band_best_profile_rejection_reason": None,
                     }
                     continue
                 dense_limit = min(
@@ -3468,6 +3484,16 @@ class FocusResolver:
                 gradient_band_candidate_count = 0
                 gradient_band_best_score = 0.0
                 gradient_band_best_coordinate: float | None = None
+                gradient_band_best_profile: dict[str, Any] = {
+                    "score": 0.0,
+                    "coordinate": None,
+                    "span_support": 0.0,
+                    "mean_strength": 0.0,
+                    "coordinate_mad": None,
+                    "supported_sample_count": 0,
+                    "valid_sample_count": 0,
+                    "rejection_reason": None,
+                }
                 last_rejected: dict[str, Any] = {
                     "distance": None,
                     "edge_score": None,
@@ -3476,7 +3502,7 @@ class FocusResolver:
                 }
                 last_geometry_rejection: str | None = None
 
-                def append_candidate(candidate: dict[str, Any]) -> None:
+                def append_candidate(candidate: dict[str, Any]) -> str:
                     """Keep one compact entry per physical side boundary."""
                     for index, existing in enumerate(side_candidates):
                         if abs(
@@ -3504,11 +3530,13 @@ class FocusResolver:
                                 side_candidates.sort(
                                     key=lambda entry: float(entry["distance"])
                                 )
-                            return
+                                return "accepted_candidate"
+                            return "duplicate_of_legacy"
                     side_candidates.append(candidate)
                     side_candidates.sort(
                         key=lambda entry: float(entry["distance"])
                     )
+                    return "accepted_candidate"
 
                 def evaluate_profile_candidate(
                     nominal_distance: int,
@@ -3516,7 +3544,7 @@ class FocusResolver:
                     source: str,
                     coordinate_override: float | None = None,
                     terminal: bool = False,
-                ) -> bool:
+                ) -> str:
                     nonlocal edge_candidate_count
                     nonlocal enclosing_rejection_count
                     nonlocal boundary_limited_candidate_count
@@ -3588,11 +3616,11 @@ class FocusResolver:
                                     source,
                                 )
                                 if candidate is not None:
-                                    append_candidate(candidate)
+                                    append_result = append_candidate(candidate)
                                     boundary_limited_candidate_count += 1
                                     if terminal:
                                         terminal_candidate_accepted = True
-                                    return True
+                                    return append_result
                                 last_geometry_rejection = rejection_reason
                         enclosing_rejection_count += 1
                         last_rejected = {
@@ -3601,7 +3629,7 @@ class FocusResolver:
                             "enclosing_score": enclosing["enclosing_score"],
                             "reason": enclosing["reason"],
                         }
-                        return False
+                        return enclosing.get("reason", "enclosing_rejected")
                     candidate, rejection_reason = build_side_candidate(
                         candidate_distance,
                         current,
@@ -3612,11 +3640,36 @@ class FocusResolver:
                     )
                     if candidate is None:
                         last_geometry_rejection = rejection_reason
-                        return False
-                    append_candidate(candidate)
+                        return rejection_reason or "enclosing_rejected"
+                    append_result = append_candidate(candidate)
                     if terminal:
                         terminal_candidate_accepted = True
-                    return True
+                    return append_result
+
+                def record_gradient_band_profile(
+                    profile_value: dict[str, Any] | None,
+                    rejection_reason: str,
+                ) -> None:
+                    if profile_value is None:
+                        return
+                    if float(profile_value["score"]) <= float(
+                        gradient_band_best_profile["score"]
+                    ):
+                        return
+                    gradient_band_best_profile.update({
+                        "score": profile_value["score"],
+                        "coordinate": profile_value.get("coordinate"),
+                        "span_support": profile_value["span_support"],
+                        "mean_strength": profile_value["mean_strength"],
+                        "coordinate_mad": profile_value.get("coordinate_mad"),
+                        "supported_sample_count": profile_value.get(
+                            "supported_sample_count", 0
+                        ),
+                        "valid_sample_count": profile_value.get(
+                            "valid_sample_count", 0
+                        ),
+                        "rejection_reason": rejection_reason,
+                    })
 
                 for position, distance in enumerate(distances):
                     current = at(distance)
@@ -3643,23 +3696,31 @@ class FocusResolver:
                             terminal=distance == distances[-1],
                         )
                     band = gradient_band_profile(distance)
-                    if (
-                        band is not None
-                        and band["span_support"]
-                        >= cls.NATURAL_CONTAINER_MIN_SPAN_SUPPORT
-                        and band["mean_strength"]
-                        >= cls.NATURAL_CONTAINER_MIN_ORIENTED_STRENGTH
-                        and band["score"] >= cls.NATURAL_CONTAINER_MIN_EDGE_SCORE
-                        and band["coordinate_mad"]
-                        <= cls.NATURAL_CONTAINER_GRADIENT_BAND_MAX_MAD_PX
-                    ):
-                        evaluate_profile_candidate(
-                            distance,
-                            band,
-                            "global_gradient_band",
-                            coordinate_override=band["coordinate"],
-                            terminal=distance == distances[-1],
-                        )
+                    if band is not None:
+                        if band["span_support"] < cls.NATURAL_CONTAINER_MIN_SPAN_SUPPORT:
+                            band_reason = "insufficient_span_support"
+                        elif band["mean_strength"] < cls.NATURAL_CONTAINER_MIN_ORIENTED_STRENGTH:
+                            band_reason = "insufficient_mean_strength"
+                        elif band["score"] < cls.NATURAL_CONTAINER_MIN_EDGE_SCORE:
+                            band_reason = "insufficient_edge_score"
+                        elif band["coordinate_mad"] > cls.NATURAL_CONTAINER_GRADIENT_BAND_MAX_MAD_PX:
+                            band_reason = "excessive_coordinate_mad"
+                        else:
+                            band_reason = evaluate_profile_candidate(
+                                distance,
+                                band,
+                                "global_gradient_band",
+                                coordinate_override=band["coordinate"],
+                                terminal=distance == distances[-1],
+                            )
+                            if band_reason not in (
+                                "accepted_candidate",
+                                "duplicate_of_legacy",
+                                "device_boundary_contamination",
+                                "sibling_ownership_rejected",
+                            ):
+                                band_reason = "enclosing_rejected"
+                        record_gradient_band_profile(band, band_reason)
                     if len(side_candidates) >= cls.NATURAL_CONTAINER_MAX_SIDE_CANDIDATES:
                         break
                 if len(side_candidates) < cls.NATURAL_CONTAINER_MAX_SIDE_CANDIDATES:
@@ -3753,6 +3814,14 @@ class FocusResolver:
                     "gradient_band_candidate_count": gradient_band_candidate_count,
                     "gradient_band_best_score": gradient_band_best_score,
                     "gradient_band_best_coordinate": gradient_band_best_coordinate,
+                    "gradient_band_best_profile_score": gradient_band_best_profile["score"],
+                    "gradient_band_best_profile_coordinate": gradient_band_best_profile["coordinate"],
+                    "gradient_band_best_profile_span_support": gradient_band_best_profile["span_support"],
+                    "gradient_band_best_profile_mean_strength": gradient_band_best_profile["mean_strength"],
+                    "gradient_band_best_profile_coordinate_mad": gradient_band_best_profile["coordinate_mad"],
+                    "gradient_band_best_profile_supported_sample_count": gradient_band_best_profile["supported_sample_count"],
+                    "gradient_band_best_profile_valid_sample_count": gradient_band_best_profile["valid_sample_count"],
+                    "gradient_band_best_profile_rejection_reason": gradient_band_best_profile["rejection_reason"],
                 }
                 if not side_candidates:
                     if last_geometry_rejection is not None:
@@ -4119,6 +4188,14 @@ class FocusResolver:
                         "gradient_band_candidate_count",
                         "gradient_band_best_score",
                         "gradient_band_best_coordinate",
+                        "gradient_band_best_profile_score",
+                        "gradient_band_best_profile_coordinate",
+                        "gradient_band_best_profile_span_support",
+                        "gradient_band_best_profile_mean_strength",
+                        "gradient_band_best_profile_coordinate_mad",
+                        "gradient_band_best_profile_supported_sample_count",
+                        "gradient_band_best_profile_valid_sample_count",
+                        "gradient_band_best_profile_rejection_reason",
                     )
                 },
                 "natural_container_dense_boundary_side_count": sum(
@@ -4994,6 +5071,14 @@ class FocusResolver:
                         "gradient_band_candidate_count",
                         "gradient_band_best_score",
                         "gradient_band_best_coordinate",
+                        "gradient_band_best_profile_score",
+                        "gradient_band_best_profile_coordinate",
+                        "gradient_band_best_profile_span_support",
+                        "gradient_band_best_profile_mean_strength",
+                        "gradient_band_best_profile_coordinate_mad",
+                        "gradient_band_best_profile_supported_sample_count",
+                        "gradient_band_best_profile_valid_sample_count",
+                        "gradient_band_best_profile_rejection_reason",
                     )
                 },
                 "natural_container_left_boundary_limited_candidate_count": item.get("natural_container_left_boundary_limited_candidate_count"),
@@ -5174,6 +5259,37 @@ class FocusResolver:
             "image_name": None,
             "focus_image_mode": focus_image_mode,
             "prepared_size": [raw.width, raw.height],
+            "global_gradient_field_enabled": bool(
+                evidence_by_index
+                and any(
+                    item.get("global_gradient_field_enabled")
+                    for item in evidence_by_index.values()
+                )
+            ),
+            "global_gradient_field_width": next(
+                (
+                    item.get("global_gradient_field_width")
+                    for item in evidence_by_index.values()
+                    if item.get("global_gradient_field_width") is not None
+                ),
+                raw.width,
+            ),
+            "global_gradient_field_height": next(
+                (
+                    item.get("global_gradient_field_height")
+                    for item in evidence_by_index.values()
+                    if item.get("global_gradient_field_height") is not None
+                ),
+                raw.height,
+            ),
+            "global_gradient_field_method": next(
+                (
+                    item.get("global_gradient_field_method")
+                    for item in evidence_by_index.values()
+                    if item.get("global_gradient_field_method")
+                ),
+                None,
+            ),
             "roi_bbox_pixels": roi_bbox,
             "source_device_viewport": source_device_geometry or {},
             "montage_grid": montage_grid,
