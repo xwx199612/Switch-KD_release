@@ -342,6 +342,25 @@ def _extract_result_base(response: dict, image_path: Path) -> dict:
             "recovered_outline_score": item.get("recovered_outline_score"),
             "recovered_highlight_score": item.get("recovered_highlight_score"),
             "recovered_enlargement_score": item.get("recovered_enlargement_score"),
+            "focus_tri_channel_arbitration_version": item.get("focus_tri_channel_arbitration_version"),
+            "recovered_focus_candidate_class": item.get("recovered_focus_candidate_class"),
+            "recovered_focus_peer_group_id": item.get("recovered_focus_peer_group_id"),
+            "recovered_focus_arbitration_source": item.get("recovered_focus_arbitration_source"),
+            "recovered_focus_arbitration_candidate_index": item.get("recovered_focus_arbitration_candidate_index"),
+            "recovered_focus_arbitration_score": item.get("recovered_focus_arbitration_score"),
+            "recovered_focus_arbitration_channels": item.get("recovered_focus_arbitration_channels"),
+            "recovered_group_focus_candidate_index": item.get("recovered_group_focus_candidate_index"),
+            "recovered_group_focus_support": item.get("recovered_group_focus_support"),
+            "recovered_group_focus_channels": item.get("recovered_group_focus_channels"),
+            "recovered_group_outline_peer_median": item.get("recovered_group_outline_peer_median"),
+            "recovered_group_outline_delta": item.get("recovered_group_outline_delta"),
+            "recovered_group_outline_margin": item.get("recovered_group_outline_margin"),
+            "recovered_group_highlight_peer_median": item.get("recovered_group_highlight_peer_median"),
+            "recovered_group_highlight_delta": item.get("recovered_group_highlight_delta"),
+            "recovered_group_highlight_margin": item.get("recovered_group_highlight_margin"),
+            "recovered_group_enlargement_peer_median": item.get("recovered_group_enlargement_peer_median"),
+            "recovered_group_enlargement_delta": item.get("recovered_group_enlargement_delta"),
+            "recovered_group_enlargement_margin": item.get("recovered_group_enlargement_margin"),
             "recovered_outline_ring_continuity": item.get("recovered_outline_ring_continuity"),
             "recovered_outline_uniqueness": item.get("recovered_outline_uniqueness"),
             "recovered_highlight_luma_delta": item.get("recovered_highlight_luma_delta"),
@@ -350,6 +369,7 @@ def _extract_result_base(response: dict, image_path: Path) -> dict:
             "recovered_scale_isotropy_score": item.get("recovered_scale_isotropy_score"),
             "recovered_scale_peer_reliability": item.get("recovered_scale_peer_reliability"),
         })
+    arbitration_item = next(iter(evidence_by_index.values()), {})
     return {
         "image": image_path.name,
         "focused_index": focused_index,
@@ -364,6 +384,10 @@ def _extract_result_base(response: dict, image_path: Path) -> dict:
         "is_new": response.get("is_new"),
         "score": response.get("score"),
         "visual_evidence_top": evidence_top,
+        "recovered_focus_arbitration_source": arbitration_item.get("recovered_focus_arbitration_source"),
+        "recovered_focus_arbitration_candidate_index": arbitration_item.get("recovered_focus_arbitration_candidate_index"),
+        "recovered_focus_arbitration_score": arbitration_item.get("recovered_focus_arbitration_score"),
+        "recovered_focus_arbitration_channels": arbitration_item.get("recovered_focus_arbitration_channels"),
     }
 
 
@@ -495,8 +519,19 @@ def print_result(position: int, total: int, result: dict) -> None:
             f" O={_format_float(item.get('recovered_outline_score'))}"
             f" H={_format_float(item.get('recovered_highlight_score'))}"
             f" E={_format_float(item.get('recovered_enlargement_score'))}"
+            f" class={item.get('recovered_focus_candidate_class') or '-'}"
+            f" grp={item.get('recovered_focus_peer_group_id') if item.get('recovered_focus_peer_group_id') is not None else '-'}"
+            f" arb={item.get('recovered_focus_arbitration_source') or '-'}"
+            f" GW={'Y' if item.get('recovered_focus_arbitration_candidate_index') == item.get('index') and item.get('recovered_focus_arbitration_source') == 'peer_group' else 'N'}"
         )
     print(f"\nEvidence space:\n  {result.get('focus_visual_evidence_space')}")
+    print(
+        "\nArbitration:"
+        f"\n  source  : {result.get('recovered_focus_arbitration_source') or '-'}"
+        f"\n  index   : {result.get('recovered_focus_arbitration_candidate_index') if result.get('recovered_focus_arbitration_candidate_index') is not None else '-'}"
+        f"\n  support : {_format_float(result.get('recovered_focus_arbitration_score'))}"
+        f"\n  channels: {','.join(result.get('recovered_focus_arbitration_channels') or []) or '-'}"
+    )
     print("\nElements:")
     for index, text in enumerate(result.get("elements", [])):
         marker = "  <-- FOCUS" if index == result.get("focused_index") else ""

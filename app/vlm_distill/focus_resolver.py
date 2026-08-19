@@ -198,6 +198,13 @@ class FocusResolver:
     V8_HIGHLIGHT_GRID_SIZE = 4
     V8_HIGHLIGHT_SUPPORT_DISTANCE = 0.16
     V8_DIAGNOSTIC_ACTIVE_THRESHOLD = 0.35
+    FOCUS_TRI_CHANNEL_ARBITRATION_VERSION = "v8.1-group-first-trichannel-arbitration-diagnostic"
+    V8_GROUP_OUTLINE_MIN_SCORE = 0.50
+    V8_GROUP_HIGHLIGHT_MIN_SCORE = 0.50
+    V8_GROUP_ENLARGEMENT_MIN_SCORE = 0.35
+    V8_GROUP_MIN_MARGIN = 0.10
+    V8_ISOLATED_MIN_SCORE = 0.75
+    V8_ISOLATED_MIN_MARGIN = 0.10
     V7_BOUNDARY_MIN_RESPONSE = 0.18
     V7_BOUNDARY_MIN_SPAN_SUPPORT = 0.45
     V7_BOUNDARY_MIN_SCORE = 0.42
@@ -322,6 +329,10 @@ class FocusResolver:
             unannotated_image,
             global_gradient_field,
         )
+        self._apply_v8_1_group_first_arbitration(
+            visual_evidence,
+            peer_analysis["peer_sets"],
+        )
         cv_debug_paths: dict[str, str | None] = {
             "focus_cv_prepared_image_path": self.DEBUG_CV_PREPARED_IMAGE_PATH,
             "focus_cv_prepared_debug_image_path": None,
@@ -440,6 +451,7 @@ class FocusResolver:
             "focus_visual_evidence_space": "prepared",
             "focus_boundary_recovery_version": self.FOCUS_BOUNDARY_RECOVERY_VERSION,
             "focus_tri_channel_version": self.FOCUS_TRI_CHANNEL_VERSION,
+            "focus_tri_channel_arbitration_version": self.FOCUS_TRI_CHANNEL_ARBITRATION_VERSION,
             "focus_peer_debug_image_path": focus_peer_debug_image_path,
             **cv_debug_paths,
             "focus_peer_groups": peer_analysis["peer_sets"],
@@ -1438,6 +1450,233 @@ class FocusResolver:
                 channel for channel, score in scores.items()
                 if score >= cls.V8_DIAGNOSTIC_ACTIVE_THRESHOLD
             ]
+
+    @classmethod
+    def _apply_v8_1_group_first_arbitration(
+        cls,
+        evidence: list[dict[str, Any]],
+        peer_sets: list[list[int]],
+    ) -> None:
+        """Arbitrate V8 channels group-first, diagnostic-only.
+
+        Static native controls can have strong local O/H evidence.  Meaningful
+        peer groups are therefore evaluated first; isolated candidates are a
+        fallback only when no grouped phenotype is credible.
+        """
+        by_index = {int(item["index"]): item for item in evidence}
+        valid_groups = {
+            group_id: [index for index in group if index in by_index]
+            for group_id, group in enumerate(peer_sets)
+            if len([index for index in group if index in by_index]) >= cls.MIN_COMPARABLE_PEERS + 1
+        }
+        grouped_indices = {index for group in valid_groups.values() for index in group}
+        channel_names = ("outline", "highlight", "enlargement")
+        score_fields = {
+            "outline": "recovered_outline_score",
+            "highlight": "recovered_highlight_score",
+            "enlargement": "recovered_enlargement_score",
+        }
+        available_fields = {
+            "outline": "recovered_outline_available",
+            "highlight": "recovered_highlight_available",
+            "enlargement": "recovered_enlargement_available",
+        }
+        minimums = {
+            "outline": cls.V8_GROUP_OUTLINE_MIN_SCORE,
+            "highlight": cls.V8_GROUP_HIGHLIGHT_MIN_SCORE,
+            "enlargement": cls.V8_GROUP_ENLARGEMENT_MIN_SCORE,
+        }
+
+        for item in evidence:
+            index = int(item["index"])
+            group_id = next((gid for gid, members in valid_groups.items() if index in members), None)
+            item["focus_tri_channel_arbitration_version"] = cls.FOCUS_TRI_CHANNEL_ARBITRATION_VERSION
+            item["recovered_focus_candidate_class"] = "grouped" if group_id is not None else "isolated"
+            item["recovered_focus_peer_group_id"] = group_id
+            item["recovered_group_channel_votes"] = {channel: None for channel in channel_names}
+            for channel in channel_names:
+                item[f"recovered_group_{channel}_peer_median"] = 0.0
+                item[f"recovered_group_{channel}_delta"] = 0.0
+                item[f"recovered_group_{channel}_margin"] = 0.0
+                item[f"recovered_group_{channel}_winner"] = False
+
+        group_results: list[dict[str, Any]] = []
+        for group_id, members in valid_groups.items():
+            votes: dict[str, int | None] = {channel: None for channel in channel_names}
+            channel_results: dict[str, dict[str, Any]] = {}
+            for channel in channel_names:
+                candidates = [
+                    by_index[index]
+                    for index in members
+                    if by_index[index].get(available_fields[channel])
+                ]
+                ranked = sorted(
+                    candidates,
+                    key=lambda candidate: (-float(candidate.get(score_fields[channel], 0.0)), int(candidate["index"])),
+                )
+                if not ranked:
+                    channel_results[channel] = {
+                        "best_index": None,
+                        "best_score": 0.0,
+                        "runner_up_score": 0.0,
+                        "margin": 0.0,
+                        "peer_median": 0.0,
+                        "delta": 0.0,
+                        "valid": False,
+                    }
+                    continue
+                best = ranked[0]
+                best_score = float(best.get(score_fields[channel], 0.0))
+                runner_score = float(ranked[1].get(score_fields[channel], 0.0)) if len(ranked) > 1 else 0.0
+                other_scores = [float(candidate.get(score_fields[channel], 0.0)) for candidate in ranked[1:]]
+                peer_median = sorted(other_scores)[len(other_scores) // 2] if other_scores else 0.0
+                if other_scores and len(other_scores) % 2 == 0:
+                    middle = len(other_scores) // 2
+                    peer_median = (sorted(other_scores)[middle - 1] + sorted(other_scores)[middle]) / 2.0
+                margin = best_score - runner_score
+                delta = best_score - peer_median
+                valid = best_score >= minimums[channel] and margin >= cls.V8_GROUP_MIN_MARGIN
+                channel_results[channel] = {
+                    "best_index": int(best["index"]),
+                    "best_score": best_score,
+                    "runner_up_score": runner_score,
+                    "margin": margin,
+                    "peer_median": peer_median,
+                    "delta": delta,
+                    "valid": valid,
+                }
+                for member in members:
+                    member_item = by_index[member]
+                    member_score = float(member_item.get(score_fields[channel], 0.0))
+                    member_other_scores = [
+                        float(by_index[other].get(score_fields[channel], 0.0))
+                        for other in members
+                        if other != member and by_index[other].get(available_fields[channel])
+                    ]
+                    member_other_scores.sort()
+                    member_peer_median = (
+                        member_other_scores[len(member_other_scores) // 2]
+                        if len(member_other_scores) % 2
+                        else (member_other_scores[len(member_other_scores) // 2 - 1] + member_other_scores[len(member_other_scores) // 2]) / 2.0
+                    ) if member_other_scores else 0.0
+                    member_runner = max(member_other_scores) if member_other_scores else 0.0
+                    member_item[f"recovered_group_{channel}_peer_median"] = member_peer_median
+                    member_item[f"recovered_group_{channel}_delta"] = member_score - member_peer_median
+                    member_item[f"recovered_group_{channel}_margin"] = member_score - member_runner
+                if valid:
+                    votes[channel] = int(best["index"])
+                    by_index[int(best["index"])][f"recovered_group_{channel}_winner"] = True
+
+            valid_channels = [channel for channel in channel_names if channel_results[channel]["valid"]]
+            candidate_support: dict[int, float] = {}
+            candidate_channels: dict[int, list[str]] = {}
+            for channel in valid_channels:
+                result = channel_results[channel]
+                candidate_index = int(result["best_index"])
+                absolute_support = max(0.0, min(1.0, (result["best_score"] - minimums[channel]) / max(1.0 - minimums[channel], 1e-6)))
+                margin_support = max(0.0, min(1.0, result["margin"] / 0.25))
+                support = 0.60 * absolute_support + 0.40 * margin_support
+                candidate_support[candidate_index] = max(candidate_support.get(candidate_index, 0.0), support)
+                candidate_channels.setdefault(candidate_index, []).append(channel)
+            if candidate_support:
+                winner_index, support = max(candidate_support.items(), key=lambda value: (value[1], -value[0]))
+                group_results.append({
+                    "peer_group_id": group_id,
+                    "candidate_index": winner_index,
+                    "support": support,
+                    "channels": candidate_channels[winner_index],
+                    "channel_results": channel_results,
+                    "channel_votes": votes,
+                    "matched": True,
+                    "reason": "credible_group_channel_winner",
+                })
+            else:
+                group_results.append({
+                    "peer_group_id": group_id,
+                    "candidate_index": None,
+                    "support": 0.0,
+                    "channels": [],
+                    "channel_results": channel_results,
+                    "channel_votes": votes,
+                    "matched": False,
+                    "reason": "no_credible_group_channel_winner",
+                })
+
+        grouped_winners = [result for result in group_results if result["matched"]]
+        if grouped_winners:
+            grouped_winner = max(grouped_winners, key=lambda result: (result["support"], -result["peer_group_id"], -result["candidate_index"]))
+            grouped_arbitration = {
+                "executed": True,
+                "matched": True,
+                "candidate_index": grouped_winner["candidate_index"],
+                "peer_group_id": grouped_winner["peer_group_id"],
+                "support": grouped_winner["support"],
+                "channels": grouped_winner["channels"],
+                "reason": "credible_group_winner",
+            }
+        else:
+            grouped_arbitration = {
+                "executed": bool(valid_groups),
+                "matched": False,
+                "candidate_index": None,
+                "peer_group_id": None,
+                "support": 0.0,
+                "channels": [],
+                "reason": "no_credible_group_winner" if valid_groups else "no_valid_peer_group",
+            }
+
+        isolated_indices = [int(item["index"]) for item in evidence if int(item["index"]) not in grouped_indices]
+        if grouped_arbitration["matched"]:
+            isolated_arbitration = {
+                "executed": False,
+                "matched": False,
+                "candidate_index": None,
+                "score": 0.0,
+                "channel": None,
+                "reason": "blocked_by_grouped_focus",
+            }
+        else:
+            isolated_candidates = []
+            for index in isolated_indices:
+                item = by_index[index]
+                available = [(channel, float(item.get(score_fields[channel], 0.0))) for channel in channel_names if item.get(available_fields[channel])]
+                if available:
+                    channel, score = max(available, key=lambda value: (value[1], value[0]))
+                    isolated_candidates.append((score, index, channel))
+            isolated_candidates.sort(key=lambda value: (-value[0], value[1]))
+            if not isolated_candidates:
+                isolated_arbitration = {"executed": True, "matched": False, "candidate_index": None, "score": 0.0, "channel": None, "reason": "no_isolated_evidence"}
+            else:
+                best = isolated_candidates[0]
+                runner = isolated_candidates[1][0] if len(isolated_candidates) > 1 else 0.0
+                margin = best[0] - runner
+                matched = best[0] >= cls.V8_ISOLATED_MIN_SCORE and (len(isolated_candidates) == 1 or margin >= cls.V8_ISOLATED_MIN_MARGIN)
+                isolated_arbitration = {
+                    "executed": True,
+                    "matched": matched,
+                    "candidate_index": best[1] if matched else None,
+                    "score": best[0],
+                    "channel": best[2] if matched else None,
+                    "reason": "credible_isolated_fallback" if matched else "ambiguous_isolated_candidates" if len(isolated_candidates) > 1 else "isolated_below_threshold",
+                }
+
+        source = "peer_group" if grouped_arbitration["matched"] else "isolated_fallback" if isolated_arbitration["matched"] else "none"
+        candidate_index = grouped_arbitration["candidate_index"] if grouped_arbitration["matched"] else isolated_arbitration["candidate_index"]
+        score = grouped_arbitration["support"] if grouped_arbitration["matched"] else isolated_arbitration["score"]
+        channels = grouped_arbitration["channels"] if grouped_arbitration["matched"] else [isolated_arbitration["channel"]] if isolated_arbitration["matched"] else []
+        reason = grouped_arbitration["reason"] if grouped_arbitration["matched"] else isolated_arbitration["reason"]
+        for item in evidence:
+            item["recovered_group_arbitration_groups"] = group_results
+            item["recovered_group_focus_arbitration"] = grouped_arbitration
+            item["recovered_isolated_focus_arbitration"] = isolated_arbitration
+            item["recovered_focus_arbitration_source"] = source
+            item["recovered_focus_arbitration_candidate_index"] = candidate_index
+            item["recovered_focus_arbitration_score"] = score
+            item["recovered_focus_arbitration_channels"] = channels
+            item["recovered_focus_arbitration_reason"] = reason
+            item["recovered_group_focus_candidate_index"] = grouped_arbitration["candidate_index"]
+            item["recovered_group_focus_support"] = grouped_arbitration["support"]
+            item["recovered_group_focus_channels"] = grouped_arbitration["channels"]
 
     @staticmethod
     def _scale_signature_geometry(source: Any) -> tuple[float, float, float, float] | None:
@@ -5938,7 +6177,14 @@ class FocusResolver:
                 f" H:{float(item.get('recovered_highlight_score', 0.0)):.2f}"
                 f" E:{float(item.get('recovered_enlargement_score', 0.0)):.2f}"
             )
-            label = f"#{index} P{peer_id}/S{sibling_id if sibling_id >= 0 else '-'} {v7_state}{tri_label} EXT:{extent_state} {hit_sides} {device_sides}".rstrip()
+            arbitration_source = item.get("recovered_focus_arbitration_source")
+            if arbitration_source == "peer_group" and item.get("recovered_focus_arbitration_candidate_index") == index:
+                arbitration_marker = "GW"
+            elif item.get("recovered_focus_candidate_class") == "isolated":
+                arbitration_marker = "ISO-X" if arbitration_source == "peer_group" else "ISO"
+            else:
+                arbitration_marker = "G"
+            label = f"#{index} P{peer_id}/S{sibling_id if sibling_id >= 0 else '-'} {arbitration_marker} {v7_state}{tri_label} EXT:{extent_state} {hit_sides} {device_sides}".rstrip()
             try:
                 left = int(round(float(bbox[0])))
                 top = max(62, int(round(float(bbox[1]))) - 16)
@@ -6135,6 +6381,26 @@ class FocusResolver:
                         "recovered_focus_second_score",
                         "recovered_focus_channel_margin",
                         "recovered_focus_active_channels",
+                        "focus_tri_channel_arbitration_version",
+                        "recovered_focus_candidate_class",
+                        "recovered_focus_peer_group_id",
+                        "recovered_group_channel_votes",
+                        "recovered_group_focus_arbitration",
+                        "recovered_group_arbitration_groups",
+                        "recovered_isolated_focus_arbitration",
+                        "recovered_focus_arbitration_source",
+                        "recovered_focus_arbitration_candidate_index",
+                        "recovered_focus_arbitration_score",
+                        "recovered_focus_arbitration_channels",
+                        "recovered_focus_arbitration_reason",
+                        "recovered_group_focus_candidate_index",
+                        "recovered_group_focus_support",
+                        "recovered_group_focus_channels",
+                        *[
+                            f"recovered_group_{channel}_{metric}"
+                            for channel in ("outline", "highlight", "enlargement")
+                            for metric in ("peer_median", "delta", "margin", "winner")
+                        ],
                     )
                 },
                 "prepared_montage_tile_bbox": item.get("prepared_montage_tile_bbox"),
@@ -6485,6 +6751,7 @@ class FocusResolver:
             "prepared_size": [raw.width, raw.height],
             "focus_scale_signature_version": cls.SCALE_SIGNATURE_VERSION,
             "focus_tri_channel_version": cls.FOCUS_TRI_CHANNEL_VERSION,
+            "focus_tri_channel_arbitration_version": cls.FOCUS_TRI_CHANNEL_ARBITRATION_VERSION,
             "global_gradient_field_enabled": bool(
                 evidence_by_index
                 and any(
