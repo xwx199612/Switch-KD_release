@@ -9,6 +9,7 @@ import csv
 import json
 import statistics
 import subprocess
+import shutil
 import sys
 import time
 import uuid
@@ -18,8 +19,6 @@ from urllib.request import Request, urlopen
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-HOST_OUTPUT_MOUNT_ROOT = REPOSITORY_ROOT / "output"
 
 
 class RequestFailure(Exception):
@@ -180,34 +179,13 @@ def _effective_debug_dir(output_path: Path, debug_dir: Path | None) -> Path:
 def _effective_debug_dir_for_run(
     output_path: Path,
     debug_dir: Path | None,
-    docker_container: str | None,
 ) -> Path:
-    if docker_container and debug_dir is None:
-        return (HOST_OUTPUT_MOUNT_ROOT / output_path.stem / "debug").resolve()
     return _effective_debug_dir(output_path, debug_dir)
 
 
-def _container_debug_output_dir(
-    host_dir: Path,
-    host_output_root: Path,
-    docker_container: str | None,
-) -> Path:
-    """Map the host output mount to the path visible inside the runtime container."""
-    if not docker_container:
-        return host_dir
-    resolved = host_dir.resolve()
-    output_root = host_output_root.resolve()
-    try:
-        suffix = resolved.relative_to(output_root)
-    except ValueError:
-        raise ValueError(
-            f"Docker debug directory {resolved} is outside the mounted host output "
-            f"directory {output_root}"
-        )
-    mapped = Path("/output") / suffix
-    # The mapping is deliberately derived from the known bind pair only:
-    # <repository>/output -> /output.
-    return mapped
+def _container_gradient_staging_dir(run_id: str, frame_stem: str) -> Path:
+    """Return an internal per-frame path under the fixed /output bind mount."""
+    return Path("/output", ".focus_gradient_staging", run_id, frame_stem)
 
 
 GRADIENT_DEBUG_SUFFIXES = (
@@ -472,21 +450,30 @@ def _extract_result_base(response: dict, image_path: Path) -> dict:
 
 
 def save_peer_debug_image(response: dict[str, Any], image_path: str, output_dir: str, docker_container: str | None = None) -> str | None:
-    """Copy the prepared-space V5 peer visualization beside the focus image."""
+    """Collect all prepared-space debug artifacts into the host debug directory."""
     tracker_debug = response.get("tracker_debug") or {}
     focus_debug = tracker_debug.get("focus_resolver_debug") or {}
-    source = focus_debug.get("focus_peer_debug_image_path")
-    if not source:
-        return None
-    destination = os.path.join(output_dir, f"{Path(image_path).stem}_peers.jpg")
-    if docker_container:
-        command = ["docker", "exec", docker_container, "cat", source]
-        completed = subprocess.run(command, check=True, stdout=subprocess.PIPE)
-        with open(destination, "wb") as handle:
-            handle.write(completed.stdout)
-    else:
-        shutil.copyfile(source, destination)
-    response["_peer_debug_host_path"] = destination
+    stem = Path(image_path).stem
+
+    def copy_source(source: str, destination: str) -> None:
+        if source == destination and not docker_container:
+            return
+        if docker_container:
+            completed = subprocess.run(
+                ["docker", "exec", docker_container, "cat", source],
+                check=True,
+                stdout=subprocess.PIPE,
+            )
+            with open(destination, "wb") as handle:
+                handle.write(completed.stdout)
+        else:
+            shutil.copyfile(source, destination)
+
+    peer_source = focus_debug.get("focus_peer_debug_image_path")
+    destination = os.path.join(output_dir, f"{stem}_peers.jpg")
+    if peer_source:
+        copy_source(peer_source, destination)
+        response["_peer_debug_host_path"] = destination
     debug_sources = (
         ("focus_cv_prepared_image_path", "_cv_prepared.jpg"),
         ("focus_cv_prepared_debug_image_path", "_cv_prepared_debug.jpg"),
@@ -497,19 +484,47 @@ def save_peer_debug_image(response: dict[str, Any], image_path: str, output_dir:
         source = focus_debug.get(field)
         if not source:
             continue
-        artifact_destination = os.path.join(output_dir, f"{Path(image_path).stem}{suffix}")
-        if docker_container:
-            completed = subprocess.run(
-                ["docker", "exec", docker_container, "cat", source],
-                check=True,
-                stdout=subprocess.PIPE,
-            )
-            with open(artifact_destination, "wb") as handle:
-                handle.write(completed.stdout)
-        else:
-            shutil.copyfile(source, artifact_destination)
-        response[f"_{field}_host_path"] = artifact_destination
-    return destination
+        artifact_destination = os.path.join(output_dir, f"{stem}{suffix}")
+        copy_source(source, artifact_destination)
+        response[f"_{field}_host"] = artifact_destination
+
+    gradient_fields = (
+        ("focus_debug_gradient_luma_path", "_gradient_luma.jpg"),
+        ("focus_debug_gradient_color_path", "_gradient_color.jpg"),
+        ("focus_debug_gradient_vertical_path", "_gradient_vertical.jpg"),
+        ("focus_debug_gradient_horizontal_path", "_gradient_horizontal.jpg"),
+        ("focus_debug_gradient_fused_path", "_gradient_fused.jpg"),
+        ("focus_debug_gradient_vertical_recovery_path", "_gradient_vertical_recovery_debug.jpg"),
+        ("focus_debug_gradient_horizontal_recovery_path", "_gradient_horizontal_recovery_debug.jpg"),
+    )
+    path_translation: dict[str, str] = {}
+    for field, suffix in gradient_fields:
+        source = focus_debug.get(field)
+        if not source:
+            continue
+        artifact_destination = os.path.join(output_dir, f"{stem}{suffix}")
+        copy_source(source, artifact_destination)
+        path_translation[str(source)] = artifact_destination
+        focus_debug[field] = artifact_destination
+
+    metadata_path = response.get("_focus_cv_prepared_metadata_path_host")
+    if metadata_path and path_translation:
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as handle:
+                metadata = json.load(handle)
+
+            def translate(value: Any) -> Any:
+                if isinstance(value, dict):
+                    return {key: translate(item) for key, item in value.items()}
+                if isinstance(value, list):
+                    return [translate(item) for item in value]
+                return path_translation.get(value, value) if isinstance(value, str) else value
+
+            with open(metadata_path, "w", encoding="utf-8") as handle:
+                json.dump(translate(metadata), handle, ensure_ascii=False, indent=2)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+    return destination if peer_source else None
 
 
 def save_focus_image(
@@ -670,19 +685,16 @@ def main() -> int:
     effective_debug_dir = _effective_debug_dir_for_run(
         args.output,
         args.debug_dir,
-        args.docker_container,
     )
     effective_debug_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        service_debug_dir = _container_debug_output_dir(
-            effective_debug_dir,
-            HOST_OUTPUT_MOUNT_ROOT,
-            args.docker_container,
-        )
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
     print(f"Debug artifacts (host): {effective_debug_dir}")
-    print(f"Debug artifacts (container): {service_debug_dir}")
+    run_id = uuid.uuid4().hex
+    staging_root = (
+        Path("/output", ".focus_gradient_staging", run_id)
+        if args.docker_container else effective_debug_dir
+    )
+    if args.docker_container:
+        print(f"Debug staging (container): {staging_root}")
     review_handle = None
     review_writer = None
     if args.review_file:
@@ -711,15 +723,18 @@ def main() -> int:
                 )
 
                 try:
+                    frame_debug_dir = (
+                        staging_root / image_path.stem
+                        if args.docker_container else effective_debug_dir
+                    )
                     response = post(
                         args.base_url,
                         endpoint,
                         image_path,
                         docker_container=args.docker_container,
-                        debug_output_dir=service_debug_dir,
+                        debug_output_dir=frame_debug_dir,
                         debug_frame_stem=image_path.stem,
                     )
-                    _verify_gradient_artifacts(effective_debug_dir, image_path.stem)
 
                     if args.save_focus_images is not None:
                         try:
@@ -740,24 +755,24 @@ def main() -> int:
                                 file=sys.stderr,
                             )
 
-                    if effective_debug_dir is not None:
-                        try:
-                            save_peer_debug_image(
-                                response,
-                                str(image_path),
-                                str(effective_debug_dir),
-                                args.docker_container,
-                            )
-                        except (
-                            OSError,
-                            RequestFailure,
-                            subprocess.SubprocessError,
-                        ) as exc:
-                            print(
-                                f"[WARN] could not save CV debug artifacts for "
-                                f"{image_path.name}: {exc}",
-                                file=sys.stderr,
-                            )
+                    try:
+                        save_peer_debug_image(
+                            response,
+                            str(image_path),
+                            str(effective_debug_dir),
+                            args.docker_container,
+                        )
+                    except (
+                        OSError,
+                        RequestFailure,
+                        subprocess.SubprocessError,
+                    ) as exc:
+                        print(
+                            f"[WARN] could not save debug artifacts for "
+                            f"{image_path.name}: {exc}",
+                            file=sys.stderr,
+                        )
+                    _verify_gradient_artifacts(effective_debug_dir, image_path.stem)
 
                     result = extract_result(
                         response,
