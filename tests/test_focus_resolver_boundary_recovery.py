@@ -52,7 +52,7 @@ def test_v71_reports_core_and_enclosure_diagnostics():
     image = Image.new("RGB", (100, 100), (20, 20, 20))
     ImageDraw.Draw(image).rectangle((25, 25, 75, 75), fill=(220, 220, 220))
     result = recover(image, (30, 30, 70, 70))
-    assert result["focus_boundary_recovery_version"] == "v7.1-enclosing-boundary-diagnostic"
+    assert result["focus_boundary_recovery_version"] == "v7.2-side-candidate-spatial-diversity-diagnostic"
     assert result["recovered_visual_semantic_core_bbox"] is not None
     assert 0.0 <= result["recovered_visual_enclosure_support"] <= 1.0
 

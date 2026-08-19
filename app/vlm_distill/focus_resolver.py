@@ -191,7 +191,10 @@ class FocusResolver:
     SCALE_SIGNATURE_FULL_GROWTH = 0.25
     SCALE_SIGNATURE_LOG_TOLERANCE = 0.20
     SCALE_SIGNATURE_SINGLE_PEER_RELIABILITY = 0.50
-    FOCUS_BOUNDARY_RECOVERY_VERSION = "v7.1-enclosing-boundary-diagnostic"
+    FOCUS_BOUNDARY_RECOVERY_VERSION = "v7.2-side-candidate-spatial-diversity-diagnostic"
+    V7_SIDE_CLUSTER_RADIUS_FRACTION = 0.025
+    V7_SIDE_CLUSTER_RADIUS_MIN_PX = 3
+    V7_SIDE_CLUSTER_RADIUS_MAX_PX = 8
     V7_ENCLOSURE_CORE_FRACTION = 0.85
     V7_MIN_SEMANTIC_CORE_COVERAGE = 0.98
     V7_INWARD_COLLAPSE_DECAY = 4.0
@@ -887,7 +890,9 @@ class FocusResolver:
                             else:
                                 draw.line((int(round(cell[0])), int(round(coordinate)), int(round(cell[2])), int(round(coordinate))), fill=line_color, width=2 if selected_candidate else 1)
                                 label_position = (max(0, int(round(cell[0])) + 2), int(round(coordinate)) + 2)
-                            label = f"{side[0].upper()} {float(coordinate):.0f} e={float(candidate.get('score', 0.0)):.2f} a={float(candidate.get('adjusted_score', 0.0)):.2f}"
+                            cluster_label = f"C{candidate.get('cluster_id', '?')}"
+                            reservation_label = "*" if candidate.get("retained_by") == "outward_reservation" else ""
+                            label = f"{side[0].upper()} {float(coordinate):.0f} {cluster_label}{reservation_label} e={float(candidate.get('score', 0.0)):.2f} a={float(candidate.get('adjusted_score', 0.0)):.2f}"
                             draw.text(label_position, label, fill=line_color)
                 if detailed:
                     draw.text((int(round(float(semantic[0]))) + 2, max(0, int(round(float(semantic[1]))) - 12)), f"#{index} {kind}", fill=(255, 255, 255))
@@ -896,6 +901,85 @@ class FocusResolver:
         overlay("vertical", gradient_paths["focus_debug_gradient_vertical_recovery_path"], ("left", "right"))
         overlay("horizontal", gradient_paths["focus_debug_gradient_horizontal_recovery_path"], ("top", "bottom"))
         return paths
+
+    @classmethod
+    def _cluster_v7_side_candidates(
+        cls,
+        candidates: list[dict[str, Any]],
+        semantic_coordinate: float,
+        reference_dimension: float,
+        outward_sign: float,
+        top_k: int,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, bool]:
+        """Collapse adjacent V7 coordinates into distinct spatial ridge hypotheses."""
+        radius = int(round(reference_dimension * cls.V7_SIDE_CLUSTER_RADIUS_FRACTION))
+        radius = max(cls.V7_SIDE_CLUSTER_RADIUS_MIN_PX, min(cls.V7_SIDE_CLUSTER_RADIUS_MAX_PX, radius))
+        ordered = sorted(candidates, key=lambda value: (float(value.get("coordinate", 0.0)),))
+        clusters: list[list[dict[str, Any]]] = []
+        for candidate in ordered:
+            coordinate = float(candidate.get("coordinate", 0.0))
+            if not clusters or coordinate - float(clusters[-1][-1].get("coordinate", 0.0)) > radius:
+                clusters.append([candidate])
+            else:
+                clusters[-1].append(candidate)
+
+        def representative(cluster: list[dict[str, Any]], cluster_id: int) -> dict[str, Any]:
+            selected = max(
+                cluster,
+                key=lambda value: (
+                    float(value.get("adjusted_score", 0.0)),
+                    float(value.get("score", value.get("edge_score", 0.0))),
+                    float(value.get("enclosure_score", 0.0)),
+                    -abs(float(value.get("distance_from_semantic_side", 0.0))),
+                    -float(value.get("coordinate", 0.0)),
+                ),
+            )
+            result = dict(selected)
+            result["cluster_id"] = cluster_id
+            result["cluster_member_coordinates"] = [
+                float(value.get("coordinate", 0.0)) for value in cluster
+            ]
+            displacement = float(result.get("coordinate", 0.0)) - semantic_coordinate
+            result["is_outward"] = displacement * outward_sign > 0.0
+            result["retained_by"] = "rank"
+            return result
+
+        representatives = [
+            representative(cluster, cluster_id)
+            for cluster_id, cluster in enumerate(clusters)
+        ]
+        rank_key = lambda value: (
+            -float(value.get("adjusted_score", 0.0)),
+            -float(value.get("score", value.get("edge_score", 0.0))),
+            abs(float(value.get("distance_from_semantic_side", 0.0))),
+            float(value.get("coordinate", 0.0)),
+        )
+        ranked = sorted(representatives, key=rank_key)
+        selected = ranked[:top_k]
+        outward_representatives = [value for value in representatives if value.get("is_outward")]
+        outward_reserved = False
+        if outward_representatives:
+            best_outward = sorted(outward_representatives, key=rank_key)[0]
+            if not any(value.get("cluster_id") == best_outward.get("cluster_id") for value in selected):
+                best_outward["retained_by"] = "outward_reservation"
+                if selected:
+                    selected[-1] = best_outward
+                else:
+                    selected = [best_outward]
+                outward_reserved = True
+        selected = sorted(selected, key=rank_key)[:top_k]
+        cluster_debug = [
+            {
+                "cluster_id": int(value.get("cluster_id", 0)),
+                "representative_coordinate": float(value.get("coordinate", 0.0)),
+                "member_coordinates": list(value.get("cluster_member_coordinates", [])),
+                "representative_score": float(value.get("score", value.get("edge_score", 0.0))),
+                "representative_adjusted_score": float(value.get("adjusted_score", 0.0)),
+                "is_outward": bool(value.get("is_outward")),
+            }
+            for value in representatives
+        ]
+        return selected, cluster_debug, radius, outward_reserved
 
     @classmethod
     def _apply_v7_boundary_recovery(
@@ -1010,6 +1094,11 @@ class FocusResolver:
                 item[f"recovered_visual_{side}_selected_coordinate"] = None
                 item[f"recovered_visual_{side}_distance"] = None
                 item[f"recovered_visual_{side}_candidates"] = []
+                item[f"recovered_visual_{side}_candidate_clusters"] = []
+                item[f"recovered_visual_{side}_cluster_radius"] = None
+                item[f"recovered_visual_{side}_candidate_count_before_clustering"] = 0
+                item[f"recovered_visual_{side}_cluster_count"] = 0
+                item[f"recovered_visual_{side}_outward_reserved"] = False
 
         for item in evidence:
             side_defaults(item)
@@ -1138,15 +1227,19 @@ class FocusResolver:
                         "continuity": continuity,
                         "state": "boundary_limited" if limited else "measured_boundary",
                     })
-                candidates.sort(key=lambda value: (-value["adjusted_score"], -value["score"], abs(value["distance_from_semantic_side"]), value["coordinate"]))
-                selected_candidates = candidates[:cls.V7_BOUNDARY_TOP_CANDIDATES]
-                # Preserve one farther outward hypothesis when it qualified, so
-                # a strong internal ridge cannot evict every outer-edge option.
-                outward_candidates = [value for value in candidates if value["distance_from_semantic_side"] > 0]
-                if outward_candidates and not any(value is outward_candidates[-1] for value in selected_candidates):
-                    selected_candidates = (selected_candidates[:-1] + [outward_candidates[-1]]) if selected_candidates else [outward_candidates[-1]]
-                selected_candidates.sort(key=lambda value: (-value["adjusted_score"], -value["score"], abs(value["distance_from_semantic_side"]), value["coordinate"]))
-                side_candidates[side] = selected_candidates[:cls.V7_BOUNDARY_TOP_CANDIDATES]
+                selected_candidates, cluster_debug, cluster_radius, outward_reserved = cls._cluster_v7_side_candidates(
+                    candidates,
+                    semantic_coordinate,
+                    dimension,
+                    outward,
+                    cls.V7_BOUNDARY_TOP_CANDIDATES,
+                )
+                item[f"recovered_visual_{side}_candidate_clusters"] = cluster_debug
+                item[f"recovered_visual_{side}_cluster_radius"] = cluster_radius
+                item[f"recovered_visual_{side}_candidate_count_before_clustering"] = len(candidates)
+                item[f"recovered_visual_{side}_cluster_count"] = len(cluster_debug)
+                item[f"recovered_visual_{side}_outward_reserved"] = outward_reserved
+                side_candidates[side] = selected_candidates
                 item[f"recovered_visual_{side}_candidates"] = side_candidates[side]
 
             item["recovered_visual_search_bands"] = search_bands
@@ -6516,7 +6609,9 @@ class FocusResolver:
                                 "inward_fraction",
                                 "mean_oriented_strength", "inside_outside_contrast",
                                 "coordinate_mad", "continuity", "selected_coordinate",
-                                "distance", "candidates",
+                                "distance", "candidates", "candidate_clusters",
+                                "cluster_radius", "candidate_count_before_clustering",
+                                "cluster_count", "outward_reserved",
                             )
                         ],
                         "focus_tri_channel_version",
