@@ -46,6 +46,40 @@ def test_broad_highlight_beats_neutral_peers():
     assert result[1]["recovered_highlight_peer_count"] == 2
 
 
+def test_local_color_contrast_is_zero_when_inside_matches_outside():
+    image = Image.new("RGB", (180, 70), (30, 100, 220))
+    boxes = [(10, 10, 50, 50), (70, 10, 110, 50), (130, 10, 170, 50)]
+    result = run_channels(image, boxes)
+    assert result[1]["recovered_highlight_local_color_contrast"] < 0.05
+
+
+def test_small_colorful_logo_is_below_broad_fill():
+    boxes = [(10, 10, 50, 50), (70, 10, 110, 50), (130, 10, 170, 50)]
+    logo_image = Image.new("RGB", (180, 70), (20, 20, 20))
+    logo_draw = ImageDraw.Draw(logo_image)
+    for bbox in boxes:
+        logo_draw.rectangle(bbox, fill=(80, 80, 80))
+    logo_draw.rectangle((86, 26, 94, 34), fill=(20, 120, 240))
+    logo_result = run_channels(logo_image, boxes)[1]["recovered_highlight_score"]
+
+    fill_image = Image.new("RGB", (180, 70), (20, 20, 20))
+    fill_draw = ImageDraw.Draw(fill_image)
+    for index, bbox in enumerate(boxes):
+        fill_draw.rectangle(bbox, fill=(80, 80, 80) if index != 1 else (20, 120, 240))
+    fill_result = run_channels(fill_image, boxes)[1]["recovered_highlight_score"]
+    assert fill_result > logo_result
+
+
+def test_darker_broad_highlight_is_positive():
+    image = Image.new("RGB", (180, 70), (20, 20, 20))
+    draw = ImageDraw.Draw(image)
+    boxes = [(10, 10, 50, 50), (70, 10, 110, 50), (130, 10, 170, 50)]
+    for index, bbox in enumerate(boxes):
+        draw.rectangle(bbox, fill=(150, 150, 150) if index != 1 else (35, 35, 35))
+    result = run_channels(image, boxes)
+    assert result[1]["recovered_highlight_score"] > result[0]["recovered_highlight_score"]
+
+
 def test_uniform_recovered_scale_is_positive():
     image = Image.new("RGB", (180, 80), (20, 20, 20))
     boxes = [(10, 10, 50, 50), (70, 10, 110, 50), (125, 5, 175, 55)]

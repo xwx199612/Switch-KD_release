@@ -1164,6 +1164,7 @@ class FocusResolver:
                 "recovered_highlight_local_color_contrast": 0.0,
                 "recovered_highlight_background_support": 0.0,
                 "recovered_highlight_peer_reliability": 0.0,
+                "recovered_highlight_reliability_gate": 1.0,
                 "recovered_enlargement_score": 0.0,
                 "recovered_enlargement_available": False,
                 "recovered_enlargement_reason": "unavailable",
@@ -1217,7 +1218,7 @@ class FocusResolver:
                 "inner": inner,
             }
 
-        def local_outside(recovered: tuple[float, float, float, float], visual_cell: tuple[float, float, float, float]) -> tuple[float, float]:
+        def local_outside(recovered: tuple[float, float, float, float], visual_cell: tuple[float, float, float, float]) -> tuple[float, tuple[int, int, int]]:
             left, top, right, bottom = recovered
             samples: list[tuple[int, int, int]] = []
             points = ((left, (top + bottom) / 2.0, -1, 0), (right, (top + bottom) / 2.0, 1, 0), ((left + right) / 2.0, top, 0, -1), ((left + right) / 2.0, bottom, 0, 1))
@@ -1227,10 +1228,10 @@ class FocusResolver:
                 if visual_cell[0] <= outside_x <= visual_cell[2] and visual_cell[1] <= outside_y <= visual_cell[3]:
                     samples.append(color(outside_x, outside_y))
             if not samples:
-                return 0.0, 0.0
+                return 0.0, (0, 0, 0)
             outside_luma = median([luma(rgb) for rgb in samples])
             outside_color = tuple(int(round(median([rgb[channel] for rgb in samples]))) for channel in range(3))
-            return outside_luma, color_delta(outside_color, tuple(int(round(value * 255.0)) for value in (0.5, 0.5, 0.5)))
+            return outside_luma, outside_color
 
         for item in evidence:
             initialize(item)
@@ -1302,7 +1303,7 @@ class FocusResolver:
                 item[f"recovered_outline_{side}_score"] = clamp(0.45 * values["continuity"] + 0.35 * values["strength"] + 0.20 * values["contrast"])
 
             descriptor = interior_descriptor(recovered)
-            outside_luma, outside_color_contrast = local_outside(recovered, visual_cell)
+            outside_luma, outside_rgb = local_outside(recovered, visual_cell)
             peer_descriptors = []
             for peer in peer_items:
                 peer_box = box(peer.get("recovered_visual_bbox"))
@@ -1321,14 +1322,18 @@ class FocusResolver:
             peer_reliability = clamp(math.exp(-median([abs(value - peer_luma_reference) for value in peer_lumas]) / 0.20)) if peer_lumas else 0.0
             peer_contrast = clamp(0.5 * luma_delta / 0.20 + 0.5 * color_delta_peer / 0.30) if peer_descriptors else 0.0
             local_luma_contrast = clamp(abs(descriptor["luma"] - outside_luma) / 0.20)
-            local_color_contrast = outside_color_contrast
+            interior_rgb = tuple(int(round(value * 255.0)) for value in descriptor["color"])
+            local_color_contrast = color_delta(interior_rgb, outside_rgb)
             local_highlight_support = clamp(
                 0.50 * background_support
                 + 0.25 * descriptor["uniformity"]
                 + 0.25 * clamp(0.5 * local_luma_contrast + 0.5 * local_color_contrast)
             )
+            reliability_gate = 0.60 + 0.40 * peer_reliability if peer_descriptors else 1.0
             highlight_score = clamp(
-                peer_contrast * (0.65 + 0.35 * local_highlight_support)
+                peer_contrast
+                * (0.65 + 0.35 * local_highlight_support)
+                * reliability_gate
                 if peer_descriptors
                 else 0.55 * local_highlight_support
             )
@@ -1347,6 +1352,7 @@ class FocusResolver:
                 "recovered_highlight_local_color_contrast": local_color_contrast,
                 "recovered_highlight_background_support": background_support,
                 "recovered_highlight_peer_reliability": peer_reliability,
+                "recovered_highlight_reliability_gate": reliability_gate,
                 "recovered_highlight_score": highlight_score,
             })
 
@@ -6103,6 +6109,7 @@ class FocusResolver:
                         "recovered_highlight_local_color_contrast",
                         "recovered_highlight_background_support",
                         "recovered_highlight_peer_reliability",
+                        "recovered_highlight_reliability_gate",
                         "recovered_enlargement_score",
                         "recovered_enlargement_available",
                         "recovered_enlargement_reason",
