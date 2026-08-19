@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 import io
 import os
 import shutil
@@ -43,6 +44,13 @@ SUPPORTED_OUTPUT_MODES = ("parsing", "text", "transition")
 Mode = Literal["parsing", "text"]
 FORBIDDEN_FIELDS = {"prompt", "prompt_template", "system_prompt", "output_mode", "max_new_tokens",
                     "do_sample", "temperature", "top_p", "generation_config", "images", "image"}
+
+_gradient_debug_output_dir: ContextVar[str | None] = ContextVar(
+    "gradient_debug_output_dir", default=None
+)
+_gradient_debug_frame_stem: ContextVar[str | None] = ContextVar(
+    "gradient_debug_frame_stem", default=None
+)
 
 
 class InferenceFields(BaseModel):
@@ -481,6 +489,8 @@ def create_state_observer(context: RuntimeContext):
             context,
             _infer_tracker_observation_sync,
             image,
+            _gradient_debug_output_dir.get(),
+            _gradient_debug_frame_stem.get(),
         )
         observe.last_debug = result["debug"]
         return result["observation"]
@@ -493,6 +503,8 @@ def create_state_observer(context: RuntimeContext):
 def _infer_tracker_observation_sync(
     context: RuntimeContext,
     image_bytes: bytes,
+    gradient_debug_output_dir: str | None = None,
+    gradient_debug_frame_stem: str | None = None,
 ) -> dict[str, Any]:
     """Parse candidates, then resolve focus, while holding one inference slot."""
     with tempfile.NamedTemporaryFile(suffix=".image") as handle:
@@ -511,7 +523,12 @@ def _infer_tracker_observation_sync(
     elements = parsing_result.get("elements", [])
 
     focus_started = time.perf_counter()
-    focus_result = FocusResolver(context.engine).resolve(image, elements)
+    focus_result = FocusResolver(context.engine).resolve(
+        image,
+        elements,
+        gradient_debug_output_dir=gradient_debug_output_dir,
+        gradient_debug_frame_stem=gradient_debug_frame_stem,
+    )
     focus_elapsed = round(time.perf_counter() - focus_started, 3)
     focused_index = focus_result["focused_index"]
     focus_text = None if focused_index is None else elements[focused_index]["text"]
@@ -674,7 +691,13 @@ async def debug_tracker_start(request: Request) -> dict[str, Any]:
     _, _, image_bytes = await _parse_request(request)
     tracker = create_state_tracker()
     app.state.debug_tracker = tracker
-    resolution = await asyncio.to_thread(tracker.start, image_bytes)
+    output_token = _gradient_debug_output_dir.set(request.headers.get("x-focus-debug-output-dir"))
+    stem_token = _gradient_debug_frame_stem.set(request.headers.get("x-focus-debug-frame-stem"))
+    try:
+        resolution = await asyncio.to_thread(tracker.start, image_bytes)
+    finally:
+        _gradient_debug_output_dir.reset(output_token)
+        _gradient_debug_frame_stem.reset(stem_token)
     return _debug_tracker_response(tracker, resolution)
 
 
@@ -684,7 +707,13 @@ async def debug_tracker_step(request: Request) -> dict[str, Any]:
     if tracker is None:
         raise HTTPException(status_code=409, detail="Debug tracker does not exist; call start first")
     _, _, image_bytes = await _parse_request(request)
-    resolution = await asyncio.to_thread(tracker.step, image_bytes)
+    output_token = _gradient_debug_output_dir.set(request.headers.get("x-focus-debug-output-dir"))
+    stem_token = _gradient_debug_frame_stem.set(request.headers.get("x-focus-debug-frame-stem"))
+    try:
+        resolution = await asyncio.to_thread(tracker.step, image_bytes)
+    finally:
+        _gradient_debug_output_dir.reset(output_token)
+        _gradient_debug_frame_stem.reset(stem_token)
     return _debug_tracker_response(tracker, resolution)
 
 

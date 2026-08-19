@@ -58,6 +58,8 @@ def post(
     endpoint: str,
     image_path: Path | None = None,
     docker_container: str | None = None,
+    debug_output_dir: Path | None = None,
+    debug_frame_stem: str | None = None,
 ) -> dict:
     if docker_container:
         command = [
@@ -72,6 +74,10 @@ def post(
             input_bytes = image_path.read_bytes()
         else:
             input_bytes = None
+        if debug_output_dir is not None:
+            command.extend(["-H", f"X-Focus-Debug-Output-Dir: {debug_output_dir}"])
+        if debug_frame_stem:
+            command.extend(["-H", f"X-Focus-Debug-Frame-Stem: {debug_frame_stem}"])
         command.append(base_url.rstrip("/") + endpoint)
         try:
             completed = subprocess.run(
@@ -143,6 +149,10 @@ def post(
         request.data = body
         request.add_header("Content-Type", content_type)
         request.add_header("Content-Length", str(len(body)))
+    if debug_output_dir is not None:
+        request.add_header("X-Focus-Debug-Output-Dir", str(debug_output_dir))
+    if debug_frame_stem:
+        request.add_header("X-Focus-Debug-Frame-Stem", debug_frame_stem)
     try:
         with urlopen(request, timeout=600) as response:
             return json.loads(response.read().decode("utf-8", errors="replace"))
@@ -158,6 +168,21 @@ def discover_images(image_dir: Path) -> list[Path]:
         (path for path in image_dir.rglob("*") if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS),
         key=lambda path: str(path.relative_to(image_dir)).casefold(),
     )
+
+
+def _container_debug_output_dir(host_dir: Path, docker_container: str | None) -> Path:
+    """Map the host output mount to the path visible inside the runtime container."""
+    if not docker_container:
+        return host_dir
+    resolved = host_dir.resolve()
+    parts = resolved.parts
+    if "output" in parts:
+        output_position = len(parts) - 1 - tuple(reversed(parts)).index("output")
+        suffix = parts[output_position + 1:]
+        return Path("/output", *suffix)
+    # A caller-supplied non-mounted path cannot be made visible by the evaluator;
+    # preserve it so the service returns a clear file error rather than writing /tmp.
+    return resolved
 
 
 def _build_element_text_by_index(response: dict[str, Any], fallback_result: dict[str, Any] | None = None) -> dict[int, str]:
@@ -186,6 +211,7 @@ def _extract_v5_debug_fields(response: dict[str, Any], element_text_by_index: di
     v5_keys = {
         "focus_peer_groups", "focus_isolated_indices", "focus_peer_debug",
         "focus_peer_debug_image_path", "focus_cv_prepared_image_path", "focus_cv_prepared_debug_image_path", "focus_cv_prepared_metadata_path", "focus_cv_final_image_path", "focus_enlargement_sibling_groups", "focus_visual_v5_stage",
+        "focus_debug_gradient_luma_path", "focus_debug_gradient_color_path", "focus_debug_gradient_vertical_path", "focus_debug_gradient_horizontal_path", "focus_debug_gradient_fused_path", "focus_debug_gradient_vertical_recovery_path", "focus_debug_gradient_horizontal_recovery_path",
         "focus_visual_v5_matched", "focus_visual_v5_candidate_index",
         "focus_visual_v5_score", "focus_visual_v5_margin",
         "focus_visual_v5_peer_group_id", "outline_decision",
@@ -239,6 +265,13 @@ def _extract_v5_debug_fields(response: dict[str, Any], element_text_by_index: di
         "cv_prepared_debug_image_path": response.get("_focus_cv_prepared_debug_image_path_host") or get("focus_cv_prepared_debug_image_path"),
         "cv_prepared_metadata_path": response.get("_focus_cv_prepared_metadata_path_host") or get("focus_cv_prepared_metadata_path"),
         "cv_final_image_path": response.get("_focus_cv_final_image_path_host") or get("focus_cv_final_image_path"),
+        "focus_debug_gradient_luma_path": get("focus_debug_gradient_luma_path"),
+        "focus_debug_gradient_color_path": get("focus_debug_gradient_color_path"),
+        "focus_debug_gradient_vertical_path": get("focus_debug_gradient_vertical_path"),
+        "focus_debug_gradient_horizontal_path": get("focus_debug_gradient_horizontal_path"),
+        "focus_debug_gradient_fused_path": get("focus_debug_gradient_fused_path"),
+        "focus_debug_gradient_vertical_recovery_path": get("focus_debug_gradient_vertical_recovery_path"),
+        "focus_debug_gradient_horizontal_recovery_path": get("focus_debug_gradient_horizontal_recovery_path"),
         "v5_enlargement_sibling_groups": get("focus_enlargement_sibling_groups"),
         "v5_hierarchy": hierarchy,
         "v5_stages": stages,
@@ -587,6 +620,12 @@ def main() -> int:
         images = images[:max(0, args.limit)]
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    if args.debug_dir is not None:
+        args.debug_dir.mkdir(parents=True, exist_ok=True)
+    service_debug_dir = (
+        _container_debug_output_dir(args.debug_dir, args.docker_container)
+        if args.debug_dir is not None else None
+    )
     review_handle = None
     review_writer = None
     if args.review_file:
@@ -620,6 +659,8 @@ def main() -> int:
                         endpoint,
                         image_path,
                         docker_container=args.docker_container,
+                        debug_output_dir=service_debug_dir,
+                        debug_frame_stem=image_path.stem,
                     )
 
                     if args.save_focus_images is not None:

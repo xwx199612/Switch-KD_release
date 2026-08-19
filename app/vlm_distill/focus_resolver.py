@@ -7,6 +7,7 @@ import math
 import os
 import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageDraw
@@ -91,13 +92,6 @@ class FocusResolver:
     DEBUG_CV_PREPARED_DEBUG_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_cv_prepared_debug.jpg"
     DEBUG_CV_PREPARED_METADATA_PATH = f"{tempfile.gettempdir()}/focus_resolver_cv_prepared.json"
     DEBUG_CV_FINAL_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_cv_final.jpg"
-    DEBUG_GRADIENT_LUMA_PATH = f"{tempfile.gettempdir()}/focus_resolver_gradient_luma.jpg"
-    DEBUG_GRADIENT_COLOR_PATH = f"{tempfile.gettempdir()}/focus_resolver_gradient_color.jpg"
-    DEBUG_GRADIENT_VERTICAL_PATH = f"{tempfile.gettempdir()}/focus_resolver_gradient_vertical.jpg"
-    DEBUG_GRADIENT_HORIZONTAL_PATH = f"{tempfile.gettempdir()}/focus_resolver_gradient_horizontal.jpg"
-    DEBUG_GRADIENT_FUSED_PATH = f"{tempfile.gettempdir()}/focus_resolver_gradient_fused.jpg"
-    DEBUG_GRADIENT_VERTICAL_RECOVERY_PATH = f"{tempfile.gettempdir()}/focus_resolver_gradient_vertical_recovery_debug.jpg"
-    DEBUG_GRADIENT_HORIZONTAL_RECOVERY_PATH = f"{tempfile.gettempdir()}/focus_resolver_gradient_horizontal_recovery_debug.jpg"
     VISUAL_RING_CONTINUITY_WEIGHT = 0.55
     VISUAL_RING_CONTRAST_WEIGHT = 0.30
     VISUAL_BACKGROUND_WEIGHT = 0.15
@@ -227,7 +221,13 @@ class FocusResolver:
     def __init__(self, engine: Any) -> None:
         self.engine = engine
 
-    def resolve(self, image: Any, candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    def resolve(
+        self,
+        image: Any,
+        candidates: list[dict[str, Any]],
+        gradient_debug_output_dir: str | Path | None = None,
+        gradient_debug_frame_stem: str | None = None,
+    ) -> dict[str, Any]:
         if not isinstance(candidates, list):
             raise StateObservationError("focus resolver candidates must be a list")
 
@@ -348,6 +348,8 @@ class FocusResolver:
                 prepared_candidate_bboxes,
                 visual_evidence,
                 global_gradient_field,
+                output_dir=gradient_debug_output_dir,
+                frame_stem=gradient_debug_frame_stem,
             )
             for item in visual_evidence:
                 item.update(gradient_debug_paths)
@@ -748,8 +750,27 @@ class FocusResolver:
         prepared_candidate_bboxes: dict[int, list[float]],
         evidence: list[dict[str, Any]],
         global_gradient_field: dict[str, Any],
+        output_dir: str | Path | None = None,
+        frame_stem: str | None = None,
     ) -> dict[str, Any]:
         """Render the exact shared gradient maps and V7 search diagnostics."""
+        if output_dir is None or not frame_stem:
+            return {}
+        destination_dir = Path(output_dir)
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        safe_stem = Path(str(frame_stem)).name
+        if not safe_stem or safe_stem in {".", ".."}:
+            return {}
+
+        gradient_paths = {
+            "focus_debug_gradient_luma_path": destination_dir / f"{safe_stem}_gradient_luma.jpg",
+            "focus_debug_gradient_color_path": destination_dir / f"{safe_stem}_gradient_color.jpg",
+            "focus_debug_gradient_vertical_path": destination_dir / f"{safe_stem}_gradient_vertical.jpg",
+            "focus_debug_gradient_horizontal_path": destination_dir / f"{safe_stem}_gradient_horizontal.jpg",
+            "focus_debug_gradient_fused_path": destination_dir / f"{safe_stem}_gradient_fused.jpg",
+            "focus_debug_gradient_vertical_recovery_path": destination_dir / f"{safe_stem}_gradient_vertical_recovery_debug.jpg",
+            "focus_debug_gradient_horizontal_recovery_path": destination_dir / f"{safe_stem}_gradient_horizontal_recovery_debug.jpg",
+        }
         width, height = image.size
         maps = {
             "luma": global_gradient_field.get("luma_gradient_magnitude") or [],
@@ -800,21 +821,15 @@ class FocusResolver:
             display_maps[name] = display.convert("RGB")
 
         paths = {
-            "focus_debug_gradient_luma_path": cls.DEBUG_GRADIENT_LUMA_PATH,
-            "focus_debug_gradient_color_path": cls.DEBUG_GRADIENT_COLOR_PATH,
-            "focus_debug_gradient_vertical_path": cls.DEBUG_GRADIENT_VERTICAL_PATH,
-            "focus_debug_gradient_horizontal_path": cls.DEBUG_GRADIENT_HORIZONTAL_PATH,
-            "focus_debug_gradient_fused_path": cls.DEBUG_GRADIENT_FUSED_PATH,
-            "focus_debug_gradient_vertical_recovery_path": cls.DEBUG_GRADIENT_VERTICAL_RECOVERY_PATH,
-            "focus_debug_gradient_horizontal_recovery_path": cls.DEBUG_GRADIENT_HORIZONTAL_RECOVERY_PATH,
+            **{key: str(value) for key, value in gradient_paths.items()},
             "gradient_debug_normalization": normalization,
         }
         for name, path in (
-            ("luma", cls.DEBUG_GRADIENT_LUMA_PATH),
-            ("color", cls.DEBUG_GRADIENT_COLOR_PATH),
-            ("vertical", cls.DEBUG_GRADIENT_VERTICAL_PATH),
-            ("horizontal", cls.DEBUG_GRADIENT_HORIZONTAL_PATH),
-            ("fused", cls.DEBUG_GRADIENT_FUSED_PATH),
+            ("luma", gradient_paths["focus_debug_gradient_luma_path"]),
+            ("color", gradient_paths["focus_debug_gradient_color_path"]),
+            ("vertical", gradient_paths["focus_debug_gradient_vertical_path"]),
+            ("horizontal", gradient_paths["focus_debug_gradient_horizontal_path"]),
+            ("fused", gradient_paths["focus_debug_gradient_fused_path"]),
         ):
             display_maps[name].save(path, format="JPEG", quality=95)
 
@@ -878,8 +893,8 @@ class FocusResolver:
                     draw.text((int(round(float(semantic[0]))) + 2, max(0, int(round(float(semantic[1]))) - 12)), f"#{index} {kind}", fill=(255, 255, 255))
             canvas.save(path, format="JPEG", quality=95)
 
-        overlay("vertical", cls.DEBUG_GRADIENT_VERTICAL_RECOVERY_PATH, ("left", "right"))
-        overlay("horizontal", cls.DEBUG_GRADIENT_HORIZONTAL_RECOVERY_PATH, ("top", "bottom"))
+        overlay("vertical", gradient_paths["focus_debug_gradient_vertical_recovery_path"], ("left", "right"))
+        overlay("horizontal", gradient_paths["focus_debug_gradient_horizontal_recovery_path"], ("top", "bottom"))
         return paths
 
     @classmethod

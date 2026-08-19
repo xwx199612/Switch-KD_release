@@ -1,6 +1,7 @@
 """Lightweight checks for FocusResolver's shared gradient debug exporter."""
 
 import os
+import tempfile
 
 from PIL import Image
 
@@ -34,20 +35,22 @@ def test_gradient_debug_exports_shared_maps_and_exact_dimensions():
             pixels[x, y] = (220, 220, 220)
     field = FocusResolver._build_global_gradient_field(image)
     before = [row[:] for row in field["vertical_edge_map"]]
-    paths = FocusResolver._save_gradient_debug_artifacts(
-        image, {0: [8, 8, 24, 24]}, _evidence(), field
-    )
-    for key in (
-        "focus_debug_gradient_luma_path",
-        "focus_debug_gradient_color_path",
-        "focus_debug_gradient_vertical_path",
-        "focus_debug_gradient_horizontal_path",
-        "focus_debug_gradient_fused_path",
-        "focus_debug_gradient_vertical_recovery_path",
-        "focus_debug_gradient_horizontal_recovery_path",
-    ):
-        assert os.path.exists(paths[key])
-        assert Image.open(paths[key]).size == image.size
+    with tempfile.TemporaryDirectory() as output_dir:
+        paths = FocusResolver._save_gradient_debug_artifacts(
+            image, {0: [8, 8, 24, 24]}, _evidence(), field,
+            output_dir=output_dir, frame_stem="frame_a",
+        )
+        for key in (
+            "focus_debug_gradient_luma_path",
+            "focus_debug_gradient_color_path",
+            "focus_debug_gradient_vertical_path",
+            "focus_debug_gradient_horizontal_path",
+            "focus_debug_gradient_fused_path",
+            "focus_debug_gradient_vertical_recovery_path",
+            "focus_debug_gradient_horizontal_recovery_path",
+        ):
+            assert os.path.exists(paths[key])
+            assert Image.open(paths[key]).size == image.size
     assert field["vertical_edge_map"] == before
 
 
@@ -58,11 +61,13 @@ def test_directional_and_chromatic_evidence_are_visible():
         for x in range(16, 32):
             vp[x, y] = (0, 30, 0)
     vfield = FocusResolver._build_global_gradient_field(vertical)
-    vpaths = FocusResolver._save_gradient_debug_artifacts(
-        vertical, {0: [8, 8, 24, 24]}, _evidence(), vfield
-    )
-    vmap = _load_gray(vpaths["focus_debug_gradient_vertical_path"])
-    cmap = _load_gray(vpaths["focus_debug_gradient_color_path"])
+    with tempfile.TemporaryDirectory() as output_dir:
+        vpaths = FocusResolver._save_gradient_debug_artifacts(
+            vertical, {0: [8, 8, 24, 24]}, _evidence(), vfield,
+            output_dir=output_dir, frame_stem="vertical",
+        )
+        vmap = _load_gray(vpaths["focus_debug_gradient_vertical_path"])
+        cmap = _load_gray(vpaths["focus_debug_gradient_color_path"])
     assert vmap.getpixel((16, 16)) > vmap.getpixel((5, 16))
     assert cmap.getpixel((16, 16)) > cmap.getpixel((5, 16))
 
@@ -72,19 +77,41 @@ def test_directional_and_chromatic_evidence_are_visible():
         for x in range(32):
             hp[x, y] = (220, 220, 220)
     hfield = FocusResolver._build_global_gradient_field(horizontal)
-    hpaths = FocusResolver._save_gradient_debug_artifacts(
-        horizontal, {0: [8, 8, 24, 24]}, _evidence(), hfield
-    )
-    hmap = _load_gray(hpaths["focus_debug_gradient_horizontal_path"])
+    with tempfile.TemporaryDirectory() as output_dir:
+        hpaths = FocusResolver._save_gradient_debug_artifacts(
+            horizontal, {0: [8, 8, 24, 24]}, _evidence(), hfield,
+            output_dir=output_dir, frame_stem="horizontal",
+        )
+        hmap = _load_gray(hpaths["focus_debug_gradient_horizontal_path"])
     assert hmap.getpixel((16, 16)) > hmap.getpixel((16, 5))
 
 
 def test_invalid_recovery_overlay_is_safe():
     image = Image.new("RGB", (24, 18), (40, 40, 40))
     field = FocusResolver._build_global_gradient_field(image)
-    paths = FocusResolver._save_gradient_debug_artifacts(
-        image, {0: [4, 3, 20, 15]}, _evidence(), field
-    )
-    assert Image.open(paths["focus_debug_gradient_vertical_recovery_path"]).size == image.size
-    assert Image.open(paths["focus_debug_gradient_horizontal_recovery_path"]).size == image.size
+    with tempfile.TemporaryDirectory() as output_dir:
+        paths = FocusResolver._save_gradient_debug_artifacts(
+            image, {0: [4, 3, 20, 15]}, _evidence(), field,
+            output_dir=output_dir, frame_stem="invalid",
+        )
+        assert Image.open(paths["focus_debug_gradient_vertical_recovery_path"]).size == image.size
+        assert Image.open(paths["focus_debug_gradient_horizontal_recovery_path"]).size == image.size
 
+
+def test_gradient_debug_uses_frame_specific_names_without_overwrite():
+    image = Image.new("RGB", (12, 12), (20, 20, 20))
+    field = FocusResolver._build_global_gradient_field(image)
+    with tempfile.TemporaryDirectory() as output_dir:
+        first = FocusResolver._save_gradient_debug_artifacts(
+            image, {0: [2, 2, 10, 10]}, _evidence(), field,
+            output_dir=output_dir, frame_stem="frame_a",
+        )
+        second = FocusResolver._save_gradient_debug_artifacts(
+            image, {0: [2, 2, 10, 10]}, _evidence(), field,
+            output_dir=output_dir, frame_stem="frame_b",
+        )
+        assert first["focus_debug_gradient_luma_path"].endswith("frame_a_gradient_luma.jpg")
+        assert second["focus_debug_gradient_luma_path"].endswith("frame_b_gradient_luma.jpg")
+        assert first["focus_debug_gradient_luma_path"] != second["focus_debug_gradient_luma_path"]
+        assert os.path.exists(first["focus_debug_gradient_luma_path"])
+        assert os.path.exists(second["focus_debug_gradient_luma_path"])
