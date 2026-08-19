@@ -193,6 +193,11 @@ class FocusResolver:
     V7_ENCLOSURE_CORE_FRACTION = 0.85
     V7_MIN_SEMANTIC_CORE_COVERAGE = 0.98
     V7_INWARD_COLLAPSE_DECAY = 4.0
+    FOCUS_TRI_CHANNEL_VERSION = "v8.0-recovered-geometry-tri-channel-diagnostic"
+    V8_HIGHLIGHT_INTERIOR_MARGIN_FRACTION = 0.12
+    V8_HIGHLIGHT_GRID_SIZE = 4
+    V8_HIGHLIGHT_SUPPORT_DISTANCE = 0.16
+    V8_DIAGNOSTIC_ACTIVE_THRESHOLD = 0.35
     V7_BOUNDARY_MIN_RESPONSE = 0.18
     V7_BOUNDARY_MIN_SPAN_SUPPORT = 0.45
     V7_BOUNDARY_MIN_SCORE = 0.42
@@ -306,6 +311,14 @@ class FocusResolver:
         # without feeding any recovered geometry into the focus cascade.
         self._apply_v7_boundary_recovery(
             visual_evidence,
+            unannotated_image,
+            global_gradient_field,
+        )
+        # V8 is multi-label diagnostic evidence only; it never feeds the
+        # existing V5 cascade or any focus decision.
+        self._apply_v8_recovered_tri_channel(
+            visual_evidence,
+            peer_analysis["peer_sets"],
             unannotated_image,
             global_gradient_field,
         )
@@ -426,6 +439,7 @@ class FocusResolver:
             "focus_debug_unannotated_image_path": focus_debug_unannotated_image_path,
             "focus_visual_evidence_space": "prepared",
             "focus_boundary_recovery_version": self.FOCUS_BOUNDARY_RECOVERY_VERSION,
+            "focus_tri_channel_version": self.FOCUS_TRI_CHANNEL_VERSION,
             "focus_peer_debug_image_path": focus_peer_debug_image_path,
             **cv_debug_paths,
             "focus_peer_groups": peer_analysis["peer_sets"],
@@ -1062,6 +1076,363 @@ class FocusResolver:
             item["recovered_visual_height_ratio"] = recovered_height / max(height, 1e-6)
             item["recovered_visual_area_ratio"] = (recovered_width * recovered_height) / max(width * height, 1e-6)
 
+    @classmethod
+    def _apply_v8_recovered_tri_channel(
+        cls,
+        evidence: list[dict[str, Any]],
+        peer_sets: list[list[int]],
+        image: Image.Image,
+        global_gradient_field: dict[str, Any],
+    ) -> None:
+        """Compute V8 recovered-geometry channels without affecting focus logic."""
+        pixels = image.convert("RGB")
+        pixel_data = pixels.load()
+        image_width, image_height = pixels.size
+        vertical_map = global_gradient_field.get("vertical_edge_map") or []
+        horizontal_map = global_gradient_field.get("horizontal_edge_map") or []
+        by_index = {int(item["index"]): item for item in evidence}
+        peer_by_index = {
+            int(index): peer_set
+            for peer_set in peer_sets
+            for index in peer_set
+        }
+
+        def clamp(value: float) -> float:
+            return cls._clamp01(value) if math.isfinite(value) else 0.0
+
+        def box(value: Any) -> tuple[float, float, float, float] | None:
+            if not isinstance(value, (list, tuple)) or len(value) < 4:
+                return None
+            try:
+                result = tuple(float(value[index]) for index in range(4))
+            except (TypeError, ValueError):
+                return None
+            if not all(math.isfinite(v) for v in result) or result[2] <= result[0] or result[3] <= result[1]:
+                return None
+            return result
+
+        def color(x: float, y: float) -> tuple[int, int, int]:
+            return pixel_data[
+                max(0, min(image_width - 1, int(round(x)))),
+                max(0, min(image_height - 1, int(round(y)))),
+            ]
+
+        def luma(rgb: tuple[int, int, int]) -> float:
+            return (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255.0
+
+        def color_delta(first: tuple[int, int, int], second: tuple[int, int, int]) -> float:
+            return clamp(math.sqrt(sum(
+                ((first[channel] - second[channel]) / 255.0) ** 2
+                for channel in range(3)
+            ) / 3.0) / 0.30)
+
+        def median(values: list[float]) -> float:
+            ordered = sorted(values)
+            if not ordered:
+                return 0.0
+            middle = len(ordered) // 2
+            return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2.0
+
+        def initialize(item: dict[str, Any]) -> None:
+            item["focus_tri_channel_version"] = cls.FOCUS_TRI_CHANNEL_VERSION
+            item.update({
+                "recovered_geometry_available": False,
+                "recovered_geometry_source": "unavailable",
+                "recovered_outline_score": 0.0,
+                "recovered_outline_available": False,
+                "recovered_outline_reason": "unavailable",
+                "recovered_outline_ring_continuity": 0.0,
+                "recovered_outline_ring_strength": 0.0,
+                "recovered_outline_inner_outer_contrast": 0.0,
+                "recovered_outline_four_side_balance": 0.0,
+                "recovered_outline_peer_count": 0,
+                "recovered_outline_peer_median": 0.0,
+                "recovered_outline_peer_delta": 0.0,
+                "recovered_outline_uniqueness": 0.0,
+                "recovered_highlight_score": 0.0,
+                "recovered_highlight_available": False,
+                "recovered_highlight_reason": "unavailable",
+                "recovered_highlight_interior_luma": 0.0,
+                "recovered_highlight_interior_color": [0.0, 0.0, 0.0],
+                "recovered_highlight_interior_uniformity": 0.0,
+                "recovered_highlight_peer_count": 0,
+                "recovered_highlight_luma_delta": 0.0,
+                "recovered_highlight_color_delta": 0.0,
+                "recovered_highlight_peer_luma_median": 0.0,
+                "recovered_highlight_peer_color_reference": [0.0, 0.0, 0.0],
+                "recovered_highlight_local_luma_contrast": 0.0,
+                "recovered_highlight_local_color_contrast": 0.0,
+                "recovered_highlight_background_support": 0.0,
+                "recovered_highlight_peer_reliability": 0.0,
+                "recovered_enlargement_score": 0.0,
+                "recovered_enlargement_available": False,
+                "recovered_enlargement_reason": "unavailable",
+                "recovered_enlargement_peer_count": 0,
+                "recovered_peer_median_width": 0.0,
+                "recovered_peer_median_height": 0.0,
+                "recovered_peer_median_area": 0.0,
+                "recovered_peer_median_aspect_ratio": 0.0,
+                "recovered_scale_width_ratio": 0.0,
+                "recovered_scale_height_ratio": 0.0,
+                "recovered_scale_area_ratio": 0.0,
+                "recovered_scale_area_linear_ratio": 0.0,
+                "recovered_scale_linear_ratio": 0.0,
+                "recovered_scale_positive_magnitude": 0.0,
+                "recovered_scale_isotropy_score": 0.0,
+                "recovered_scale_axis_log_delta": 0.0,
+                "recovered_scale_aspect_preservation_score": 0.0,
+                "recovered_scale_aspect_log_delta": 0.0,
+                "recovered_scale_measure_agreement_score": 0.0,
+                "recovered_scale_peer_reliability": 0.0,
+                "recovered_focus_signature_scores": {"outline": 0.0, "highlight": 0.0, "enlargement": 0.0},
+                "recovered_focus_max_score": 0.0,
+                "recovered_focus_second_score": 0.0,
+                "recovered_focus_channel_margin": 0.0,
+                "recovered_focus_active_channels": [],
+            })
+
+        def interior_descriptor(recovered: tuple[float, float, float, float]) -> dict[str, Any]:
+            left, top, right, bottom = recovered
+            width = right - left
+            height = bottom - top
+            margin_x = max(1.0, width * cls.V8_HIGHLIGHT_INTERIOR_MARGIN_FRACTION)
+            margin_y = max(1.0, height * cls.V8_HIGHLIGHT_INTERIOR_MARGIN_FRACTION)
+            inner = (left + margin_x, top + margin_y, right - margin_x, bottom - margin_y)
+            colors: list[tuple[int, int, int]] = []
+            grid = cls.V8_HIGHLIGHT_GRID_SIZE
+            for row in range(grid):
+                for column in range(grid):
+                    x = inner[0] + (column + 0.5) * (inner[2] - inner[0]) / grid
+                    y = inner[1] + (row + 0.5) * (inner[3] - inner[1]) / grid
+                    colors.append(color(x, y))
+            channel_medians = [median([rgb[channel] / 255.0 for rgb in colors]) for channel in range(3)]
+            luma_values = [luma(rgb) for rgb in colors]
+            center = tuple(int(round(value * 255.0)) for value in channel_medians)
+            uniformity = clamp(1.0 - sum(color_delta(rgb, center) for rgb in colors) / max(len(colors), 1))
+            return {
+                "luma": median(luma_values),
+                "color": channel_medians,
+                "uniformity": uniformity,
+                "colors": colors,
+                "inner": inner,
+            }
+
+        def local_outside(recovered: tuple[float, float, float, float], visual_cell: tuple[float, float, float, float]) -> tuple[float, float]:
+            left, top, right, bottom = recovered
+            samples: list[tuple[int, int, int]] = []
+            points = ((left, (top + bottom) / 2.0, -1, 0), (right, (top + bottom) / 2.0, 1, 0), ((left + right) / 2.0, top, 0, -1), ((left + right) / 2.0, bottom, 0, 1))
+            for x, y, dx, dy in points:
+                outside_x = x + dx * 4.0
+                outside_y = y + dy * 4.0
+                if visual_cell[0] <= outside_x <= visual_cell[2] and visual_cell[1] <= outside_y <= visual_cell[3]:
+                    samples.append(color(outside_x, outside_y))
+            if not samples:
+                return 0.0, 0.0
+            outside_luma = median([luma(rgb) for rgb in samples])
+            outside_color = tuple(int(round(median([rgb[channel] for rgb in samples]))) for channel in range(3))
+            return outside_luma, color_delta(outside_color, tuple(int(round(value * 255.0)) for value in (0.5, 0.5, 0.5)))
+
+        for item in evidence:
+            initialize(item)
+            recovered = box(item.get("recovered_visual_bbox"))
+            if not item.get("recovered_visual_bbox_valid") or recovered is None:
+                continue
+            item["recovered_geometry_available"] = True
+            item["recovered_geometry_source"] = "v7.1_recovered_visual_bbox"
+            visual_cell = box(item.get("visual_cell_bbox")) or (0.0, 0.0, float(image_width), float(image_height))
+            left, top, right, bottom = recovered
+            width = right - left
+            height = bottom - top
+            side_values: dict[str, dict[str, float]] = {}
+            side_specs = {
+                "left": (vertical_map, left, top, bottom, True),
+                "right": (vertical_map, right, top, bottom, True),
+                "top": (horizontal_map, top, left, right, False),
+                "bottom": (horizontal_map, bottom, left, right, False),
+            }
+            for side, (edge_map, coordinate, parallel_start, parallel_end, vertical) in side_specs.items():
+                responses: list[float] = []
+                contrasts: list[float] = []
+                samples = max(7, min(24, int(round((parallel_end - parallel_start) / 8.0))))
+                for sample_index in range(samples):
+                    parallel = parallel_start + (sample_index + 0.5) * (parallel_end - parallel_start) / samples
+                    x = coordinate if vertical else parallel
+                    y = parallel if vertical else coordinate
+                    try:
+                        response = float(edge_map[int(round(y))][int(round(x))])
+                    except (IndexError, TypeError, ValueError):
+                        continue
+                    responses.append(clamp(response))
+                    if side in ("left", "top"):
+                        inside = color(x + 2 if vertical else x, y + 2 if not vertical else y)
+                        outside = color(x - 2 if vertical else x, y - 2 if not vertical else y)
+                    else:
+                        inside = color(x - 2 if vertical else x, y - 2 if not vertical else y)
+                        outside = color(x + 2 if vertical else x, y + 2 if not vertical else y)
+                    contrasts.append(0.5 * clamp(abs(luma(inside) - luma(outside)) / 0.20) + 0.5 * color_delta(inside, outside))
+                strength = sum(responses) / max(len(responses), 1)
+                continuity = sum(value >= cls.V7_BOUNDARY_MIN_RESPONSE for value in responses) / max(len(responses), 1)
+                contrast = sum(contrasts) / max(len(contrasts), 1)
+                side_values[side] = {"strength": strength, "continuity": continuity, "contrast": contrast}
+            side_scores = [0.45 * value["continuity"] + 0.35 * value["strength"] + 0.20 * value["contrast"] for value in side_values.values()]
+            outline_continuity = sum(value["continuity"] for value in side_values.values()) / 4.0
+            outline_strength = sum(value["strength"] for value in side_values.values()) / 4.0
+            outline_contrast = sum(value["contrast"] for value in side_values.values()) / 4.0
+            outline_balance = clamp(min(side_scores) / max(sum(side_scores) / 4.0, 1e-6))
+            ring_local = clamp(0.30 * outline_continuity + 0.30 * outline_strength + 0.20 * outline_contrast + 0.20 * outline_balance)
+            peer_items = [by_index[index] for index in peer_by_index.get(int(item["index"]), []) if index != int(item["index"]) and index in by_index]
+            peer_outline_values = [float(peer.get("recovered_outline_ring_strength", 0.0)) for peer in peer_items if peer.get("recovered_outline_available")]
+            peer_outline_median = median(peer_outline_values)
+            peer_delta = outline_strength - peer_outline_median if peer_outline_values else 0.0
+            uniqueness = clamp(peer_delta / 0.25) if peer_outline_values else 0.5
+            item.update({
+                "recovered_outline_available": True,
+                "recovered_outline_reason": "recovered_geometry",
+                "recovered_outline_ring_continuity": outline_continuity,
+                "recovered_outline_ring_strength": outline_strength,
+                "recovered_outline_inner_outer_contrast": outline_contrast,
+                "recovered_outline_four_side_balance": outline_balance,
+                "recovered_outline_peer_count": len(peer_outline_values),
+                "recovered_outline_peer_median": peer_outline_median,
+                "recovered_outline_peer_delta": peer_delta,
+                "recovered_outline_uniqueness": uniqueness,
+                "recovered_outline_score": clamp(ring_local * uniqueness if peer_outline_values else ring_local),
+            })
+            for side, values in side_values.items():
+                item[f"recovered_outline_{side}_score"] = clamp(0.45 * values["continuity"] + 0.35 * values["strength"] + 0.20 * values["contrast"])
+
+            descriptor = interior_descriptor(recovered)
+            outside_luma, outside_color_contrast = local_outside(recovered, visual_cell)
+            peer_descriptors = []
+            for peer in peer_items:
+                peer_box = box(peer.get("recovered_visual_bbox"))
+                if peer_box is not None and peer.get("recovered_visual_bbox_valid"):
+                    peer_descriptors.append(interior_descriptor(peer_box))
+            peer_lumas = [value["luma"] for value in peer_descriptors]
+            peer_colors = [value["color"] for value in peer_descriptors]
+            peer_luma_reference = median(peer_lumas)
+            peer_color_reference = [median([value[channel] for value in peer_colors]) for channel in range(3)] if peer_colors else [0.0, 0.0, 0.0]
+            luma_delta = abs(descriptor["luma"] - peer_luma_reference) if peer_lumas else 0.0
+            color_delta_peer = math.sqrt(sum((descriptor["color"][channel] - peer_color_reference[channel]) ** 2 for channel in range(3)) / 3.0) if peer_colors else 0.0
+            background_support = clamp(sum(
+                1.0 for value in descriptor["colors"]
+                if color_delta(value, tuple(int(round(channel * 255.0)) for channel in descriptor["color"])) <= cls.V8_HIGHLIGHT_SUPPORT_DISTANCE
+            ) / max(len(descriptor["colors"]), 1))
+            peer_reliability = clamp(math.exp(-median([abs(value - peer_luma_reference) for value in peer_lumas]) / 0.20)) if peer_lumas else 0.0
+            peer_contrast = clamp(0.5 * luma_delta / 0.20 + 0.5 * color_delta_peer / 0.30) if peer_descriptors else 0.0
+            local_luma_contrast = clamp(abs(descriptor["luma"] - outside_luma) / 0.20)
+            local_color_contrast = outside_color_contrast
+            local_highlight_support = clamp(
+                0.50 * background_support
+                + 0.25 * descriptor["uniformity"]
+                + 0.25 * clamp(0.5 * local_luma_contrast + 0.5 * local_color_contrast)
+            )
+            highlight_score = clamp(
+                peer_contrast * (0.65 + 0.35 * local_highlight_support)
+                if peer_descriptors
+                else 0.55 * local_highlight_support
+            )
+            item.update({
+                "recovered_highlight_available": True,
+                "recovered_highlight_reason": "recovered_geometry",
+                "recovered_highlight_interior_luma": descriptor["luma"],
+                "recovered_highlight_interior_color": descriptor["color"],
+                "recovered_highlight_interior_uniformity": descriptor["uniformity"],
+                "recovered_highlight_peer_count": len(peer_descriptors),
+                "recovered_highlight_luma_delta": luma_delta,
+                "recovered_highlight_color_delta": color_delta_peer,
+                "recovered_highlight_peer_luma_median": peer_luma_reference,
+                "recovered_highlight_peer_color_reference": peer_color_reference,
+                "recovered_highlight_local_luma_contrast": local_luma_contrast,
+                "recovered_highlight_local_color_contrast": local_color_contrast,
+                "recovered_highlight_background_support": background_support,
+                "recovered_highlight_peer_reliability": peer_reliability,
+                "recovered_highlight_score": highlight_score,
+            })
+
+            recovered_peers = [peer for peer in peer_items if peer.get("recovered_visual_bbox_valid") and box(peer.get("recovered_visual_bbox")) is not None]
+            recovered_geometry = cls._scale_signature_geometry(item.get("recovered_visual_bbox"))
+            recovered_peer_geometry = [cls._scale_signature_geometry(peer.get("recovered_visual_bbox")) for peer in recovered_peers]
+            recovered_peer_geometry = [value for value in recovered_peer_geometry if value is not None]
+            scale_values = cls._scale_signature_from_geometries(recovered_geometry, recovered_peer_geometry)
+            item.update({f"recovered_{key}": value for key, value in scale_values.items()})
+            item["recovered_peer_median_width"] = scale_values["scale_peer_median_width"]
+            item["recovered_peer_median_height"] = scale_values["scale_peer_median_height"]
+            item["recovered_peer_median_area"] = scale_values["scale_peer_median_area"]
+            item["recovered_peer_median_aspect_ratio"] = scale_values["scale_peer_median_aspect_ratio"]
+            if recovered_geometry is not None and recovered_peer_geometry:
+                item["recovered_enlargement_available"] = True
+                item["recovered_enlargement_reason"] = "recovered_geometry_peers"
+                item["recovered_enlargement_peer_count"] = len(recovered_peer_geometry)
+                item["recovered_enlargement_score"] = clamp(
+                    scale_values["scale_positive_magnitude"]
+                    * scale_values["scale_isotropy_score"]
+                    * scale_values["scale_aspect_preservation_score"]
+                    * scale_values["scale_measure_agreement_score"]
+                    * scale_values["scale_peer_reliability"]
+                )
+            else:
+                item["recovered_enlargement_reason"] = "insufficient_recovered_peers"
+
+            channel_scores = {
+                "outline": item["recovered_outline_score"],
+                "highlight": item["recovered_highlight_score"],
+                "enlargement": item["recovered_enlargement_score"],
+            }
+            ranked_scores = sorted(channel_scores.values(), reverse=True)
+            item["recovered_focus_signature_scores"] = channel_scores
+            item["recovered_focus_max_score"] = ranked_scores[0]
+            item["recovered_focus_second_score"] = ranked_scores[1]
+            item["recovered_focus_channel_margin"] = ranked_scores[0] - ranked_scores[1]
+            item["recovered_focus_active_channels"] = [
+                channel for channel, score in channel_scores.items()
+                if score >= cls.V8_DIAGNOSTIC_ACTIVE_THRESHOLD
+            ]
+
+        # Outline uniqueness is intentionally finalized in a second pass so
+        # peer ring values do not depend on evidence list iteration order.
+        for item in evidence:
+            if not item.get("recovered_outline_available"):
+                continue
+            peer_items = [
+                by_index[index]
+                for index in peer_by_index.get(int(item["index"]), [])
+                if index != int(item["index"]) and index in by_index
+            ]
+            peer_values = [
+                float(peer.get("recovered_outline_ring_strength", 0.0))
+                for peer in peer_items
+                if peer.get("recovered_outline_available")
+            ]
+            peer_median = median(peer_values)
+            delta = float(item.get("recovered_outline_ring_strength", 0.0)) - peer_median if peer_values else 0.0
+            uniqueness = clamp(delta / 0.25) if peer_values else 0.5
+            local = clamp(
+                0.30 * float(item.get("recovered_outline_ring_continuity", 0.0))
+                + 0.30 * float(item.get("recovered_outline_ring_strength", 0.0))
+                + 0.20 * float(item.get("recovered_outline_inner_outer_contrast", 0.0))
+                + 0.20 * float(item.get("recovered_outline_four_side_balance", 0.0))
+            )
+            item["recovered_outline_peer_count"] = len(peer_values)
+            item["recovered_outline_peer_median"] = peer_median
+            item["recovered_outline_peer_delta"] = delta
+            item["recovered_outline_uniqueness"] = uniqueness
+            item["recovered_outline_score"] = clamp(local * uniqueness if peer_values else local)
+            scores = {
+                "outline": item["recovered_outline_score"],
+                "highlight": float(item.get("recovered_highlight_score", 0.0)),
+                "enlargement": float(item.get("recovered_enlargement_score", 0.0)),
+            }
+            ranked = sorted(scores.values(), reverse=True)
+            item["recovered_focus_signature_scores"] = scores
+            item["recovered_focus_max_score"] = ranked[0]
+            item["recovered_focus_second_score"] = ranked[1]
+            item["recovered_focus_channel_margin"] = ranked[0] - ranked[1]
+            item["recovered_focus_active_channels"] = [
+                channel for channel, score in scores.items()
+                if score >= cls.V8_DIAGNOSTIC_ACTIVE_THRESHOLD
+            ]
+
     @staticmethod
     def _scale_signature_geometry(source: Any) -> tuple[float, float, float, float] | None:
         if not isinstance(source, (list, tuple)) or len(source) < 4:
@@ -1237,7 +1608,6 @@ class FocusResolver:
         ]
         fields = {
             "focus_scale_signature_version": cls.SCALE_SIGNATURE_VERSION,
-            "focus_boundary_recovery_version": cls.FOCUS_BOUNDARY_RECOVERY_VERSION,
             "semantic_scale_bbox": list(candidate_bbox[:4])
             if isinstance(candidate_bbox, (list, tuple)) and len(candidate_bbox) >= 4
             else None,
@@ -5557,7 +5927,12 @@ class FocusResolver:
                 ) if item.get(field)
             )
             v7_state = "V7" if item.get("recovered_visual_bbox_valid") else "V7-"
-            label = f"#{index} P{peer_id}/S{sibling_id if sibling_id >= 0 else '-'} {v7_state} EXT:{extent_state} {hit_sides} {device_sides}".rstrip()
+            tri_label = (
+                f" O:{float(item.get('recovered_outline_score', 0.0)):.2f}"
+                f" H:{float(item.get('recovered_highlight_score', 0.0)):.2f}"
+                f" E:{float(item.get('recovered_enlargement_score', 0.0)):.2f}"
+            )
+            label = f"#{index} P{peer_id}/S{sibling_id if sibling_id >= 0 else '-'} {v7_state}{tri_label} EXT:{extent_state} {hit_sides} {device_sides}".rstrip()
             try:
                 left = int(round(float(bbox[0])))
                 top = max(62, int(round(float(bbox[1]))) - 16)
@@ -5695,6 +6070,64 @@ class FocusResolver:
                                 "distance", "candidates",
                             )
                         ],
+                        "focus_tri_channel_version",
+                        "recovered_geometry_available",
+                        "recovered_geometry_source",
+                        "recovered_outline_score",
+                        "recovered_outline_available",
+                        "recovered_outline_reason",
+                        "recovered_outline_ring_continuity",
+                        "recovered_outline_ring_strength",
+                        "recovered_outline_inner_outer_contrast",
+                        "recovered_outline_four_side_balance",
+                        "recovered_outline_peer_count",
+                        "recovered_outline_peer_median",
+                        "recovered_outline_peer_delta",
+                        "recovered_outline_uniqueness",
+                        *[
+                            f"recovered_outline_{side}_score"
+                            for side in ("left", "right", "top", "bottom")
+                        ],
+                        "recovered_highlight_score",
+                        "recovered_highlight_available",
+                        "recovered_highlight_reason",
+                        "recovered_highlight_interior_luma",
+                        "recovered_highlight_interior_color",
+                        "recovered_highlight_interior_uniformity",
+                        "recovered_highlight_peer_count",
+                        "recovered_highlight_luma_delta",
+                        "recovered_highlight_color_delta",
+                        "recovered_highlight_peer_luma_median",
+                        "recovered_highlight_peer_color_reference",
+                        "recovered_highlight_local_luma_contrast",
+                        "recovered_highlight_local_color_contrast",
+                        "recovered_highlight_background_support",
+                        "recovered_highlight_peer_reliability",
+                        "recovered_enlargement_score",
+                        "recovered_enlargement_available",
+                        "recovered_enlargement_reason",
+                        "recovered_enlargement_peer_count",
+                        "recovered_peer_median_width",
+                        "recovered_peer_median_height",
+                        "recovered_peer_median_area",
+                        "recovered_peer_median_aspect_ratio",
+                        "recovered_scale_width_ratio",
+                        "recovered_scale_height_ratio",
+                        "recovered_scale_area_ratio",
+                        "recovered_scale_area_linear_ratio",
+                        "recovered_scale_linear_ratio",
+                        "recovered_scale_positive_magnitude",
+                        "recovered_scale_isotropy_score",
+                        "recovered_scale_axis_log_delta",
+                        "recovered_scale_aspect_preservation_score",
+                        "recovered_scale_aspect_log_delta",
+                        "recovered_scale_measure_agreement_score",
+                        "recovered_scale_peer_reliability",
+                        "recovered_focus_signature_scores",
+                        "recovered_focus_max_score",
+                        "recovered_focus_second_score",
+                        "recovered_focus_channel_margin",
+                        "recovered_focus_active_channels",
                     )
                 },
                 "prepared_montage_tile_bbox": item.get("prepared_montage_tile_bbox"),
@@ -6044,6 +6477,7 @@ class FocusResolver:
             "focus_image_mode": focus_image_mode,
             "prepared_size": [raw.width, raw.height],
             "focus_scale_signature_version": cls.SCALE_SIGNATURE_VERSION,
+            "focus_tri_channel_version": cls.FOCUS_TRI_CHANNEL_VERSION,
             "global_gradient_field_enabled": bool(
                 evidence_by_index
                 and any(

@@ -337,6 +337,18 @@ def _extract_result_base(response: dict, image_path: Path) -> dict:
             "recovered_visual_semantic_core_coverage_h": item.get("recovered_visual_semantic_core_coverage_h"),
             "recovered_visual_enclosure_support": item.get("recovered_visual_enclosure_support"),
             "recovered_visual_joint_rejection_reason": item.get("recovered_visual_joint_rejection_reason"),
+            "focus_tri_channel_version": item.get("focus_tri_channel_version"),
+            "recovered_geometry_available": item.get("recovered_geometry_available"),
+            "recovered_outline_score": item.get("recovered_outline_score"),
+            "recovered_highlight_score": item.get("recovered_highlight_score"),
+            "recovered_enlargement_score": item.get("recovered_enlargement_score"),
+            "recovered_outline_ring_continuity": item.get("recovered_outline_ring_continuity"),
+            "recovered_outline_uniqueness": item.get("recovered_outline_uniqueness"),
+            "recovered_highlight_luma_delta": item.get("recovered_highlight_luma_delta"),
+            "recovered_highlight_background_support": item.get("recovered_highlight_background_support"),
+            "recovered_scale_linear_ratio": item.get("recovered_scale_linear_ratio"),
+            "recovered_scale_isotropy_score": item.get("recovered_scale_isotropy_score"),
+            "recovered_scale_peer_reliability": item.get("recovered_scale_peer_reliability"),
         })
     return {
         "image": image_path.name,
@@ -480,6 +492,9 @@ def print_result(position: int, total: int, result: dict) -> None:
             f"{_format_float(item.get('recovered_visual_semantic_core_coverage_h'))}"
             f" enc={_format_float(item.get('recovered_visual_enclosure_support'))}"
             f" reason={item.get('recovered_visual_joint_rejection_reason') or '-'}"
+            f" O={_format_float(item.get('recovered_outline_score'))}"
+            f" H={_format_float(item.get('recovered_highlight_score'))}"
+            f" E={_format_float(item.get('recovered_enlargement_score'))}"
         )
     print(f"\nEvidence space:\n  {result.get('focus_visual_evidence_space')}")
     print("\nElements:")
