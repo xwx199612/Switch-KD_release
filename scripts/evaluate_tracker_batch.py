@@ -304,6 +304,14 @@ def _extract_result_base(response: dict, image_path: Path) -> dict:
             "scale_balance": item.get("scale_balance"),
             "size_ratio": item.get("size_ratio"),
             "container_expansion_ratio": item.get("container_expansion_ratio"),
+            "focus_scale_signature_version": item.get("focus_scale_signature_version"),
+            "scale_signature_score": item.get("scale_signature_score"),
+            "scale_width_ratio": item.get("scale_width_ratio"),
+            "scale_height_ratio": item.get("scale_height_ratio"),
+            "scale_area_ratio": item.get("scale_area_ratio"),
+            "scale_isotropy_score": item.get("scale_isotropy_score"),
+            "scale_measure_agreement_score": item.get("scale_measure_agreement_score"),
+            "scale_peer_reliability": item.get("scale_peer_reliability"),
         })
     return {
         "image": image_path.name,
@@ -417,7 +425,14 @@ def print_result(position: int, total: int, result: dict) -> None:
             f"rel_h={item['relative_height']:.2f} "
             f"ug={item['uniform_growth']:.2f} "
             f"balance={item['scale_balance']:.2f} "
-            f"protrude={item['peer_protrusion_score']:.2f}{marker}"
+            f"protrude={item['peer_protrusion_score']:.2f} "
+            f"scale_sig={_format_float(item.get('scale_signature_score'))} "
+            f"sw={_format_float(item.get('scale_width_ratio'))} "
+            f"sh={_format_float(item.get('scale_height_ratio'))} "
+            f"sa={_format_float(item.get('scale_area_ratio'))} "
+            f"iso={_format_float(item.get('scale_isotropy_score'))} "
+            f"agree={_format_float(item.get('scale_measure_agreement_score'))} "
+            f"peer_rel={_format_float(item.get('scale_peer_reliability'))}{marker}"
         )
     print(f"\nEvidence space:\n  {result.get('focus_visual_evidence_space')}")
     print("\nElements:")

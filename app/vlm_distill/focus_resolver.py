@@ -185,6 +185,10 @@ class FocusResolver:
     HIGHLIGHT_V5_MIN_SCORE = 0.60
     HIGHLIGHT_V5_MIN_MARGIN = 0.18
     CONTAINER_PROPOSAL_EXPANSIONS = (0.0, 0.05, 0.10, 0.20)
+    SCALE_SIGNATURE_VERSION = "v6.0-diagnostic"
+    SCALE_SIGNATURE_FULL_GROWTH = 0.25
+    SCALE_SIGNATURE_LOG_TOLERANCE = 0.20
+    SCALE_SIGNATURE_SINGLE_PEER_RELIABILITY = 0.50
 
     def __init__(self, engine: Any) -> None:
         self.engine = engine
@@ -655,6 +659,154 @@ class FocusResolver:
             "height": image_height,
             "method": "central_difference_rgb_luma_v1",
         }
+
+    @classmethod
+    def _scale_signature_diagnostic(
+        cls,
+        item: dict[str, Any],
+        peer_items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Compute the experimental V6.0 geometry-only scale signature.
+
+        This helper only returns diagnostic fields.  Its result is deliberately
+        not consumed by any V5 score, gate, cascade, or focus decision.
+        """
+        fields = {
+            "focus_scale_signature_version": cls.SCALE_SIGNATURE_VERSION,
+            "scale_signature_score": 0.0,
+            "scale_width_ratio": 0.0,
+            "scale_height_ratio": 0.0,
+            "scale_area_ratio": 0.0,
+            "scale_area_linear_ratio": 0.0,
+            "scale_linear_ratio": 0.0,
+            "scale_positive_magnitude": 0.0,
+            "scale_isotropy_score": 0.0,
+            "scale_axis_log_delta": 0.0,
+            "scale_aspect_preservation_score": 0.0,
+            "scale_aspect_log_delta": 0.0,
+            "scale_measure_agreement_score": 0.0,
+            "scale_peer_reliability": 0.0,
+            "scale_peer_count": 0,
+            "scale_peer_median_width": 0.0,
+            "scale_peer_median_height": 0.0,
+            "scale_peer_median_area": 0.0,
+            "scale_peer_median_aspect_ratio": 0.0,
+        }
+
+        def geometry(source: dict[str, Any]) -> tuple[float, float, float, float] | None:
+            box = source.get("prepared_bbox")
+            if not isinstance(box, (list, tuple)) or len(box) < 4:
+                return None
+            try:
+                left, top, right, bottom = [float(value) for value in box[:4]]
+            except (TypeError, ValueError):
+                return None
+            width = right - left
+            height = bottom - top
+            if not (
+                math.isfinite(width)
+                and math.isfinite(height)
+                and width > 0.0
+                and height > 0.0
+            ):
+                return None
+            return width, height, width * height, width / height
+
+        candidate_geometry = geometry(item)
+        candidate_index = item.get("index")
+        other_geometries = [
+            value
+            for peer in peer_items
+            if peer is not item
+            and not (
+                isinstance(candidate_index, int)
+                and peer.get("index") == candidate_index
+            )
+            for value in [geometry(peer)]
+            if value is not None
+        ]
+        fields["scale_peer_count"] = len(other_geometries)
+        if candidate_geometry is None or not other_geometries:
+            return fields
+
+        def median(values: list[float]) -> float:
+            ordered = sorted(values)
+            middle = len(ordered) // 2
+            if len(ordered) % 2:
+                return ordered[middle]
+            return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+        peer_width = median([value[0] for value in other_geometries])
+        peer_height = median([value[1] for value in other_geometries])
+        peer_area = median([value[2] for value in other_geometries])
+        peer_aspect = median([value[3] for value in other_geometries])
+        fields.update({
+            "scale_peer_median_width": peer_width,
+            "scale_peer_median_height": peer_height,
+            "scale_peer_median_area": peer_area,
+            "scale_peer_median_aspect_ratio": peer_aspect,
+        })
+        candidate_width, candidate_height, candidate_area, candidate_aspect = candidate_geometry
+        width_ratio = candidate_width / peer_width
+        height_ratio = candidate_height / peer_height
+        area_ratio = candidate_area / peer_area
+        area_linear_ratio = math.sqrt(max(area_ratio, 0.0))
+        linear_ratio = math.sqrt(max(width_ratio * height_ratio, 0.0))
+        axis_log_delta = abs(math.log(width_ratio) - math.log(height_ratio))
+        aspect_log_delta = abs(math.log(candidate_aspect) - math.log(peer_aspect))
+        scale_logs = [
+            math.log(width_ratio),
+            math.log(height_ratio),
+            math.log(area_linear_ratio),
+        ]
+        mean_scale_log = sum(scale_logs) / len(scale_logs)
+        scale_log_dispersion = sum(
+            abs(value - mean_scale_log) for value in scale_logs
+        ) / len(scale_logs)
+        tolerance = max(cls.SCALE_SIGNATURE_LOG_TOLERANCE, 1e-6)
+        isotropy = math.exp(-axis_log_delta / tolerance)
+        aspect_preservation = math.exp(-aspect_log_delta / tolerance)
+        agreement = math.exp(-scale_log_dispersion / tolerance)
+        positive_magnitude = cls._clamp01(
+            max(0.0, linear_ratio - 1.0)
+            / max(cls.SCALE_SIGNATURE_FULL_GROWTH, 1e-6)
+        )
+
+        def peer_dispersion(values: list[float]) -> float:
+            base = median(values)
+            return median(abs(math.log(value / base)) for value in values)
+
+        peer_log_dispersion = sum(
+            peer_dispersion([value[index] for value in other_geometries])
+            for index in (0, 1, 3)
+        ) / 3.0
+        peer_reliability = math.exp(-peer_log_dispersion / tolerance)
+        if len(other_geometries) == 1:
+            peer_reliability *= cls.SCALE_SIGNATURE_SINGLE_PEER_RELIABILITY
+        peer_reliability = cls._clamp01(peer_reliability)
+        signature = cls._clamp01(
+            positive_magnitude
+            * isotropy
+            * aspect_preservation
+            * agreement
+            * peer_reliability
+        )
+        fields.update({
+            "scale_signature_score": signature,
+            "scale_width_ratio": width_ratio,
+            "scale_height_ratio": height_ratio,
+            "scale_area_ratio": area_ratio,
+            "scale_area_linear_ratio": area_linear_ratio,
+            "scale_linear_ratio": linear_ratio,
+            "scale_positive_magnitude": positive_magnitude,
+            "scale_isotropy_score": cls._clamp01(isotropy),
+            "scale_axis_log_delta": axis_log_delta,
+            "scale_aspect_preservation_score": cls._clamp01(aspect_preservation),
+            "scale_aspect_log_delta": aspect_log_delta,
+            "scale_measure_agreement_score": cls._clamp01(agreement),
+            "scale_peer_reliability": peer_reliability,
+        })
+        return fields
 
     @classmethod
     def _apply_v5_peer_evidence(
@@ -4689,6 +4841,22 @@ class FocusResolver:
                     "scale_evidence": cls._clamp01(base_score * balance_gate * two_axis_support),
                 })
 
+        # V6.0 is diagnostic-only: compute after V5 evidence, without feeding
+        # these fields into any existing score, gate, cascade, or focus choice.
+        v6_peer_indices = {
+            int(item["index"]): peer_set
+            for peer_set in peer_sets
+            for item in [
+                by_index[index]
+                for index in peer_set
+                if index in by_index
+            ]
+        }
+        for item in evidence:
+            peer_set = v6_peer_indices.get(int(item["index"]), [])
+            peer_items = [by_index[index] for index in peer_set if index in by_index]
+            item.update(cls._scale_signature_diagnostic(item, peer_items))
+
         return {"sibling_sets": sibling_sets, "sibling_group_by_index": sibling_group_by_index}
 
     @classmethod
@@ -4914,6 +5082,30 @@ class FocusResolver:
                 "global_gradient_field_width": item.get("global_gradient_field_width"),
                 "global_gradient_field_height": item.get("global_gradient_field_height"),
                 "global_gradient_field_method": item.get("global_gradient_field_method"),
+                **{
+                    key: item.get(key)
+                    for key in (
+                        "focus_scale_signature_version",
+                        "scale_signature_score",
+                        "scale_width_ratio",
+                        "scale_height_ratio",
+                        "scale_area_ratio",
+                        "scale_area_linear_ratio",
+                        "scale_linear_ratio",
+                        "scale_positive_magnitude",
+                        "scale_isotropy_score",
+                        "scale_axis_log_delta",
+                        "scale_aspect_preservation_score",
+                        "scale_aspect_log_delta",
+                        "scale_measure_agreement_score",
+                        "scale_peer_reliability",
+                        "scale_peer_count",
+                        "scale_peer_median_width",
+                        "scale_peer_median_height",
+                        "scale_peer_median_area",
+                        "scale_peer_median_aspect_ratio",
+                    )
+                },
                 "prepared_montage_tile_bbox": item.get("prepared_montage_tile_bbox"),
                 "source_device_viewport_bbox": item.get("source_device_viewport_bbox"),
                 "source_device_viewport_valid": item.get("source_device_viewport_valid"),
@@ -5260,6 +5452,7 @@ class FocusResolver:
             "image_name": None,
             "focus_image_mode": focus_image_mode,
             "prepared_size": [raw.width, raw.height],
+            "focus_scale_signature_version": cls.SCALE_SIGNATURE_VERSION,
             "global_gradient_field_enabled": bool(
                 evidence_by_index
                 and any(
