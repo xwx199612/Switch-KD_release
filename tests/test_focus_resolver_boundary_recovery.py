@@ -28,11 +28,33 @@ def test_semantic_bbox_can_recover_inward_to_true_rectangle():
     image = Image.new("RGB", (100, 100), (20, 20, 20))
     ImageDraw.Draw(image).rectangle((25, 25, 75, 75), fill=(220, 220, 220))
     result = recover(image, (20, 20, 80, 80))
+    assert result["recovered_visual_bbox_valid"]
+    assert result["recovered_visual_bbox"][0] >= 22
+    assert result["recovered_visual_bbox"][2] <= 78
+
+
+def test_internal_rectangle_is_rejected_when_it_cuts_through_semantic_core():
+    image = Image.new("RGB", (160, 120), (30, 30, 30))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((15, 15, 145, 105), fill=(100, 100, 100))
+    draw.rectangle((50, 35, 110, 85), fill=(230, 230, 230))
+    result = recover(image, (35, 25, 125, 95), (0, 0, 160, 120))
+    assert result["recovered_visual_bbox_reason"] in {
+        "semantic_core_not_enclosed",
+        "no_valid_joint_boundary",
+        "insufficient_side_candidates",
+    }
     if result["recovered_visual_bbox_valid"]:
-        assert result["recovered_visual_bbox"][0] >= 22
-        assert result["recovered_visual_bbox"][2] <= 78
-    else:
-        assert result["recovered_visual_bbox"] is None
+        assert result["recovered_visual_semantic_core_contained"]
+
+
+def test_v71_reports_core_and_enclosure_diagnostics():
+    image = Image.new("RGB", (100, 100), (20, 20, 20))
+    ImageDraw.Draw(image).rectangle((25, 25, 75, 75), fill=(220, 220, 220))
+    result = recover(image, (30, 30, 70, 70))
+    assert result["focus_boundary_recovery_version"] == "v7.1-enclosing-boundary-diagnostic"
+    assert result["recovered_visual_semantic_core_bbox"] is not None
+    assert 0.0 <= result["recovered_visual_enclosure_support"] <= 1.0
 
 
 def test_color_only_boundary_uses_color_gradient():

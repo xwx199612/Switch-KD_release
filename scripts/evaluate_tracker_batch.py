@@ -332,6 +332,11 @@ def _extract_result_base(response: dict, image_path: Path) -> dict:
             "recovered_visual_bottom_delta": item.get("recovered_visual_bottom_delta"),
             "recovered_boundary_side_count": item.get("recovered_boundary_side_count"),
             "recovered_boundary_limited_side_count": item.get("recovered_boundary_limited_side_count"),
+            "recovered_visual_semantic_core_contained": item.get("recovered_visual_semantic_core_contained"),
+            "recovered_visual_semantic_core_coverage_w": item.get("recovered_visual_semantic_core_coverage_w"),
+            "recovered_visual_semantic_core_coverage_h": item.get("recovered_visual_semantic_core_coverage_h"),
+            "recovered_visual_enclosure_support": item.get("recovered_visual_enclosure_support"),
+            "recovered_visual_joint_rejection_reason": item.get("recovered_visual_joint_rejection_reason"),
         })
     return {
         "image": image_path.name,
@@ -470,6 +475,11 @@ def print_result(position: int, total: int, result: dict) -> None:
             f" B={_format_signed_float(item.get('recovered_visual_bottom_delta'))}"
             f" sides={item.get('recovered_boundary_side_count', 0)}"
             f" lim={item.get('recovered_boundary_limited_side_count', 0)}"
+            f" core={'1' if item.get('recovered_visual_semantic_core_contained') else '0'}"
+            f" cov={_format_float(item.get('recovered_visual_semantic_core_coverage_w'))}/"
+            f"{_format_float(item.get('recovered_visual_semantic_core_coverage_h'))}"
+            f" enc={_format_float(item.get('recovered_visual_enclosure_support'))}"
+            f" reason={item.get('recovered_visual_joint_rejection_reason') or '-'}"
         )
     print(f"\nEvidence space:\n  {result.get('focus_visual_evidence_space')}")
     print("\nElements:")

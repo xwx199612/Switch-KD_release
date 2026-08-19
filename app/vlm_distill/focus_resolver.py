@@ -189,7 +189,10 @@ class FocusResolver:
     SCALE_SIGNATURE_FULL_GROWTH = 0.25
     SCALE_SIGNATURE_LOG_TOLERANCE = 0.20
     SCALE_SIGNATURE_SINGLE_PEER_RELIABILITY = 0.50
-    FOCUS_BOUNDARY_RECOVERY_VERSION = "v7.0-global-gradient-boundary-diagnostic"
+    FOCUS_BOUNDARY_RECOVERY_VERSION = "v7.1-enclosing-boundary-diagnostic"
+    V7_ENCLOSURE_CORE_FRACTION = 0.85
+    V7_MIN_SEMANTIC_CORE_COVERAGE = 0.98
+    V7_INWARD_COLLAPSE_DECAY = 4.0
     V7_BOUNDARY_MIN_RESPONSE = 0.18
     V7_BOUNDARY_MIN_SPAN_SUPPORT = 0.45
     V7_BOUNDARY_MIN_SCORE = 0.42
@@ -744,6 +747,15 @@ class FocusResolver:
                 "recovered_visual_bbox_valid": False,
                 "recovered_visual_bbox_confidence": 0.0,
                 "recovered_visual_bbox_reason": "unavailable",
+                "recovered_visual_semantic_core_bbox": None,
+                "recovered_visual_semantic_core_fraction": cls.V7_ENCLOSURE_CORE_FRACTION,
+                "recovered_visual_semantic_core_coverage_w": 0.0,
+                "recovered_visual_semantic_core_coverage_h": 0.0,
+                "recovered_visual_semantic_core_area_coverage": 0.0,
+                "recovered_visual_semantic_core_contained": False,
+                "recovered_visual_semantic_width_ratio": None,
+                "recovered_visual_semantic_height_ratio": None,
+                "recovered_visual_enclosure_support": 0.0,
                 "recovered_visual_left_delta": None,
                 "recovered_visual_right_delta": None,
                 "recovered_visual_top_delta": None,
@@ -762,12 +774,19 @@ class FocusResolver:
                 "recovered_visual_joint_hypothesis_count": 0,
                 "recovered_visual_joint_valid_hypothesis_count": 0,
                 "recovered_visual_joint_score": 0.0,
+                "recovered_visual_joint_boundary_quality": 0.0,
+                "recovered_visual_joint_enclosure_support": 0.0,
                 "recovered_visual_joint_rejection_reason": None,
+                "recovered_visual_joint_rejection_counts": {},
             })
             for side in ("left", "right", "top", "bottom"):
                 item[f"recovered_visual_{side}_state"] = "unresolved"
                 item[f"recovered_visual_{side}_reason"] = "unavailable"
                 item[f"recovered_visual_{side}_score"] = 0.0
+                item[f"recovered_visual_{side}_edge_score"] = 0.0
+                item[f"recovered_visual_{side}_enclosure_score"] = 0.0
+                item[f"recovered_visual_{side}_adjusted_score"] = 0.0
+                item[f"recovered_visual_{side}_inward_fraction"] = 0.0
                 item[f"recovered_visual_{side}_span_support"] = 0.0
                 item[f"recovered_visual_{side}_mean_oriented_strength"] = 0.0
                 item[f"recovered_visual_{side}_inside_outside_contrast"] = 0.0
@@ -796,6 +815,15 @@ class FocusResolver:
             left, top, right, bottom = semantic
             width = right - left
             height = bottom - top
+            core_width = width * cls.V7_ENCLOSURE_CORE_FRACTION
+            core_height = height * cls.V7_ENCLOSURE_CORE_FRACTION
+            semantic_core = (
+                (left + right - core_width) / 2.0,
+                (top + bottom - core_height) / 2.0,
+                (left + right + core_width) / 2.0,
+                (top + bottom + core_height) / 2.0,
+            )
+            item["recovered_visual_semantic_core_bbox"] = [round(value, 2) for value in semantic_core]
             if not (cell[0] <= left <= right <= cell[2] and cell[1] <= top <= bottom <= cell[3]):
                 item["recovered_visual_bbox_reason"] = "semantic_outside_visual_cell"
                 continue
@@ -861,21 +889,33 @@ class FocusResolver:
                     continuity = cls._clamp01(1.0 - (sum(abs(value - mean_strength) for value in responses) / max(len(responses), 1)))
                     distance = (coordinate - semantic_coordinate) * outward
                     perimeter_preference = cls._clamp01(1.0 - max(0.0, -distance) / max(inward, 1.0))
-                    score = cls._clamp01(
+                    edge_score = cls._clamp01(
                         0.40 * support
                         + 0.25 * mean_strength
                         + 0.20 * contrast
                         + 0.10 * continuity
                         + 0.05 * perimeter_preference
                     )
-                    if support < cls.V7_BOUNDARY_MIN_SPAN_SUPPORT or mean_strength < cls.V7_BOUNDARY_MIN_RESPONSE or score < cls.V7_BOUNDARY_MIN_SCORE:
+                    inward_fraction = cls._clamp01(max(0.0, -distance) / max(dimension, 1e-6))
+                    inward_penalty = math.exp(-cls.V7_INWARD_COLLAPSE_DECAY * inward_fraction)
+                    enclosure_score = cls._clamp01(
+                        0.70 * inward_penalty + 0.30 * perimeter_preference
+                    )
+                    adjusted_score = cls._clamp01(
+                        edge_score * (0.50 + 0.50 * enclosure_score)
+                    )
+                    if support < cls.V7_BOUNDARY_MIN_SPAN_SUPPORT or mean_strength < cls.V7_BOUNDARY_MIN_RESPONSE or edge_score < cls.V7_BOUNDARY_MIN_SCORE:
                         continue
                     limited = abs(coordinate - low) <= 1.0 or abs(coordinate - high) <= 1.0
                     candidates.append({
                         "coordinate": float(coordinate),
                         "distance_from_semantic_side": float(distance),
                         "direction": "outward" if distance >= 0 else "inward",
-                        "score": score,
+                        "score": edge_score,
+                        "edge_score": edge_score,
+                        "enclosure_score": enclosure_score,
+                        "adjusted_score": adjusted_score,
+                        "inward_fraction": inward_fraction,
                         "span_support": support,
                         "mean_oriented_strength": mean_strength,
                         "inside_outside_contrast": contrast,
@@ -883,8 +923,15 @@ class FocusResolver:
                         "continuity": continuity,
                         "state": "boundary_limited" if limited else "measured_boundary",
                     })
-                candidates.sort(key=lambda value: (-value["score"], abs(value["distance_from_semantic_side"]), value["coordinate"]))
-                side_candidates[side] = candidates[:cls.V7_BOUNDARY_TOP_CANDIDATES]
+                candidates.sort(key=lambda value: (-value["adjusted_score"], -value["score"], abs(value["distance_from_semantic_side"]), value["coordinate"]))
+                selected_candidates = candidates[:cls.V7_BOUNDARY_TOP_CANDIDATES]
+                # Preserve one farther outward hypothesis when it qualified, so
+                # a strong internal ridge cannot evict every outer-edge option.
+                outward_candidates = [value for value in candidates if value["distance_from_semantic_side"] > 0]
+                if outward_candidates and not any(value is outward_candidates[-1] for value in selected_candidates):
+                    selected_candidates = (selected_candidates[:-1] + [outward_candidates[-1]]) if selected_candidates else [outward_candidates[-1]]
+                selected_candidates.sort(key=lambda value: (-value["adjusted_score"], -value["score"], abs(value["distance_from_semantic_side"]), value["coordinate"]))
+                side_candidates[side] = selected_candidates[:cls.V7_BOUNDARY_TOP_CANDIDATES]
                 item[f"recovered_visual_{side}_candidates"] = side_candidates[side]
 
             item["recovered_visual_search_bands"] = search_bands
@@ -893,6 +940,11 @@ class FocusResolver:
                 continue
 
             hypotheses: list[dict[str, Any]] = []
+            rejection_counts: dict[str, int] = {}
+
+            def reject(reason: str) -> None:
+                rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+
             for left_candidate in side_candidates["left"]:
                 for right_candidate in side_candidates["right"]:
                     for top_candidate in side_candidates["top"]:
@@ -904,27 +956,53 @@ class FocusResolver:
                                 bottom_candidate["coordinate"],
                             )
                             if not (recovered[0] < recovered[2] and recovered[1] < recovered[3]):
+                                reject("invalid_rectangle")
                                 continue
                             if not (cell[0] <= recovered[0] <= recovered[2] <= cell[2] and cell[1] <= recovered[1] <= recovered[3] <= cell[3]):
+                                reject("visual_cell_violation")
                                 continue
-                            if not (recovered[0] <= (left + right) / 2.0 <= recovered[2] and recovered[1] <= (top + bottom) / 2.0 <= recovered[3]):
+                            core_left, core_top, core_right, core_bottom = semantic_core
+                            core_intersection_width = max(0.0, min(recovered[2], core_right) - max(recovered[0], core_left))
+                            core_intersection_height = max(0.0, min(recovered[3], core_bottom) - max(recovered[1], core_top))
+                            core_coverage_w = core_intersection_width / max(core_width, 1e-6)
+                            core_coverage_h = core_intersection_height / max(core_height, 1e-6)
+                            core_area_coverage = core_coverage_w * core_coverage_h
+                            core_contained = (
+                                core_coverage_w >= cls.V7_MIN_SEMANTIC_CORE_COVERAGE
+                                and core_coverage_h >= cls.V7_MIN_SEMANTIC_CORE_COVERAGE
+                            )
+                            if not core_contained:
+                                reject("semantic_core_not_enclosed")
                                 continue
-                            side_score = min(value["score"] for value in (left_candidate, right_candidate, top_candidate, bottom_candidate))
-                            mean_score = sum(value["score"] for value in (left_candidate, right_candidate, top_candidate, bottom_candidate)) / 4.0
+                            side_values = (left_candidate, right_candidate, top_candidate, bottom_candidate)
+                            side_score = min(value["adjusted_score"] for value in side_values)
+                            mean_score = sum(value["adjusted_score"] for value in side_values) / 4.0
                             width_ratio = (recovered[2] - recovered[0]) / max(width, 1e-6)
                             height_ratio = (recovered[3] - recovered[1]) / max(height, 1e-6)
                             plausibility = cls._clamp01(1.0 - 0.15 * max(0.0, width_ratio - 3.0) - 0.15 * max(0.0, height_ratio - 3.0))
-                            joint_score = cls._clamp01(0.65 * side_score + 0.25 * mean_score + 0.10 * plausibility)
+                            boundary_quality = cls._clamp01(0.60 * side_score + 0.25 * mean_score + 0.15 * plausibility)
+                            enclosure_support = cls._clamp01(min(core_coverage_w, core_coverage_h, core_area_coverage))
+                            joint_score = cls._clamp01(boundary_quality * enclosure_support)
                             if joint_score >= cls.V7_BOUNDARY_MIN_JOINT_SCORE:
                                 hypotheses.append({
                                     "bbox": recovered,
                                     "joint_score": joint_score,
-                                    "sides": (left_candidate, right_candidate, top_candidate, bottom_candidate),
+                                    "boundary_quality": boundary_quality,
+                                    "enclosure_support": enclosure_support,
+                                    "core_coverage_w": core_coverage_w,
+                                    "core_coverage_h": core_coverage_h,
+                                    "core_area_coverage": core_area_coverage,
+                                    "core_contained": core_contained,
+                                    "sides": side_values,
                                 })
+                            else:
+                                reject("insufficient_joint_boundary_quality")
             hypotheses.sort(key=lambda value: (-value["joint_score"], sum(abs(side["distance_from_semantic_side"]) for side in value["sides"])))
             item["recovered_visual_joint_hypothesis_count"] = len(hypotheses)
+            item["recovered_visual_joint_rejection_counts"] = rejection_counts
             if not hypotheses:
-                item["recovered_visual_bbox_reason"] = "no_valid_joint_boundary"
+                item["recovered_visual_joint_rejection_reason"] = max(rejection_counts, key=rejection_counts.get) if rejection_counts else "no_valid_joint_boundary"
+                item["recovered_visual_bbox_reason"] = item["recovered_visual_joint_rejection_reason"]
                 continue
             selected = hypotheses[0]
             recovered = selected["bbox"]
@@ -944,6 +1022,13 @@ class FocusResolver:
                 "recovered_visual_bbox_valid": True,
                 "recovered_visual_bbox_confidence": selected["joint_score"] * (0.85 if limited_count else 1.0),
                 "recovered_visual_bbox_reason": "joint_boundary_recovered",
+                "recovered_visual_semantic_core_coverage_w": selected["core_coverage_w"],
+                "recovered_visual_semantic_core_coverage_h": selected["core_coverage_h"],
+                "recovered_visual_semantic_core_area_coverage": selected["core_area_coverage"],
+                "recovered_visual_semantic_core_contained": selected["core_contained"],
+                "recovered_visual_semantic_width_ratio": (recovered[2] - recovered[0]) / max(width, 1e-6),
+                "recovered_visual_semantic_height_ratio": (recovered[3] - recovered[1]) / max(height, 1e-6),
+                "recovered_visual_enclosure_support": selected["enclosure_support"],
                 "recovered_boundary_side_count": 4,
                 "recovered_boundary_measured_side_count": 4 - limited_count,
                 "recovered_boundary_limited_side_count": limited_count,
@@ -953,12 +1038,18 @@ class FocusResolver:
                 "recovered_boundary_corner_support": corner_support,
                 "recovered_visual_joint_valid_hypothesis_count": len(hypotheses),
                 "recovered_visual_joint_score": selected["joint_score"],
+                "recovered_visual_joint_boundary_quality": selected["boundary_quality"],
+                "recovered_visual_joint_enclosure_support": selected["enclosure_support"],
             })
             for side_name, side_value in zip(("left", "right", "top", "bottom"), sides):
                 item[f"recovered_visual_{side_name}_state"] = side_value["state"]
                 item[f"recovered_visual_{side_name}_reason"] = "boundary_limited" if side_value["state"] == "boundary_limited" else "selected"
                 for metric in ("score", "span_support", "mean_oriented_strength", "inside_outside_contrast", "coordinate_mad", "continuity"):
                     item[f"recovered_visual_{side_name}_{metric}"] = side_value[metric]
+                item[f"recovered_visual_{side_name}_edge_score"] = side_value["edge_score"]
+                item[f"recovered_visual_{side_name}_enclosure_score"] = side_value["enclosure_score"]
+                item[f"recovered_visual_{side_name}_adjusted_score"] = side_value["adjusted_score"]
+                item[f"recovered_visual_{side_name}_inward_fraction"] = side_value["inward_fraction"]
                 item[f"recovered_visual_{side_name}_selected_coordinate"] = side_value["coordinate"]
                 item[f"recovered_visual_{side_name}_distance"] = side_value["distance_from_semantic_side"]
             item["recovered_visual_left_delta"] = left - recovered[0]
@@ -5419,6 +5510,7 @@ class FocusResolver:
             draw_box(bbox, (255, 255, 0), 2)
             draw_box(item.get("recovered_current_container_bbox"), (0, 220, 210), 2)
             draw_box(item.get("recovered_visual_bbox"), (255, 80, 220), 3)
+            draw_box(item.get("recovered_visual_semantic_core_bbox"), (255, 180, 40), 1)
             draw_box(item.get("natural_container_bbox"), (190, 120, 255), 2)
             draw_box(item.get("visual_cell_bbox"), (0, 180, 255), 2)
             draw_box(item.get("enlargement_card_cell_bbox"), (255, 0, 255), 2)
@@ -5560,6 +5652,15 @@ class FocusResolver:
                         "recovered_visual_bbox_valid",
                         "recovered_visual_bbox_confidence",
                         "recovered_visual_bbox_reason",
+                        "recovered_visual_semantic_core_bbox",
+                        "recovered_visual_semantic_core_fraction",
+                        "recovered_visual_semantic_core_coverage_w",
+                        "recovered_visual_semantic_core_coverage_h",
+                        "recovered_visual_semantic_core_area_coverage",
+                        "recovered_visual_semantic_core_contained",
+                        "recovered_visual_semantic_width_ratio",
+                        "recovered_visual_semantic_height_ratio",
+                        "recovered_visual_enclosure_support",
                         "recovered_visual_left_delta",
                         "recovered_visual_right_delta",
                         "recovered_visual_top_delta",
@@ -5578,12 +5679,17 @@ class FocusResolver:
                         "recovered_visual_joint_hypothesis_count",
                         "recovered_visual_joint_valid_hypothesis_count",
                         "recovered_visual_joint_score",
+                        "recovered_visual_joint_boundary_quality",
+                        "recovered_visual_joint_enclosure_support",
                         "recovered_visual_joint_rejection_reason",
+                        "recovered_visual_joint_rejection_counts",
                         *[
                             f"recovered_visual_{side}_{metric}"
                             for side in ("left", "right", "top", "bottom")
                             for metric in (
                                 "state", "reason", "score", "span_support",
+                                "edge_score", "enclosure_score", "adjusted_score",
+                                "inward_fraction",
                                 "mean_oriented_strength", "inside_outside_contrast",
                                 "coordinate_mad", "continuity", "selected_coordinate",
                                 "distance", "candidates",
