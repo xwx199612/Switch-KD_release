@@ -5,7 +5,7 @@
 #1 DONE 0.0s
 
 #2 [internal] load metadata for docker.io/nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
-#2 DONE 1.2s
+#2 DONE 1.1s
 
 #3 [internal] load .dockerignore
 #3 transferring context: 151B done
@@ -15,13 +15,13 @@
 #4 DONE 0.0s
 
 #5 [internal] load build context
-#5 transferring context: 328.58kB done
+#5 transferring context: 354.02kB done
 #5 DONE 0.0s
 
-#6 [ 2/10] RUN apt-get update     && apt-get install -y --no-install-recommends        software-properties-common ca-certificates curl build-essential     && add-apt-repository ppa:deadsnakes/ppa     && apt-get update     && apt-get install -y --no-install-recommends        python3.11 python3.11-dev python3.11-venv libgl1 libglib2.0-0     && rm -rf /var/lib/apt/lists/*
+#6 [ 4/10] COPY requirements-runtime.lock /app/requirements-runtime.lock
 #6 CACHED
 
-#7 [ 4/10] COPY requirements-runtime.lock /app/requirements-runtime.lock
+#7 [ 2/10] RUN apt-get update     && apt-get install -y --no-install-recommends        software-properties-common ca-certificates curl build-essential     && add-apt-repository ppa:deadsnakes/ppa     && apt-get update     && apt-get install -y --no-install-recommends        python3.11 python3.11-dev python3.11-venv libgl1 libglib2.0-0     && rm -rf /var/lib/apt/lists/*
 #7 CACHED
 
 #8 [ 3/10] WORKDIR /app
@@ -40,14 +40,14 @@
 #12 DONE 0.0s
 
 #13 [ 9/10] COPY scripts/validate_assets.py /app/scripts/validate_assets.py
-#13 DONE 0.1s
+#13 DONE 0.0s
 
 #14 [10/10] RUN useradd --create-home --uid 10001 runtime     && mkdir -p /output/cache/huggingface /output/cache/triton /output/cache/torch     && chown -R runtime:runtime /output /app /config /usr/local/bin/entrypoint.sh     && python3.11 -m compileall -q /app/vlm_distill
 #14 DONE 0.4s
 
 #15 exporting to image
 #15 exporting layers 0.1s done
-#15 writing image sha256:f178359d20f541a06966be0a3e00f0a0ad4349b8e47806b053e50c99451af509 done
+#15 writing image sha256:0bf3fd6c169275b68297fd506836f16ed68daba44fe1c8ca53cb6e792c0a1caa done
 #15 naming to docker.io/library/vlm-online-dbild-runtime:1.2.0 done
 #15 DONE 0.1s
 image=vlm-online-dbild-runtime:1.2.0
