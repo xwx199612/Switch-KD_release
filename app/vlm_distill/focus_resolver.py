@@ -3296,6 +3296,7 @@ class FocusResolver:
                             ordered_coordinates[middle - 1]
                             + ordered_coordinates[middle]
                         ) / 2.0
+                    )
                     coordinate_mad = sorted(
                         abs(coordinate - median_coordinate)
                         for coordinate in peak_coordinates
