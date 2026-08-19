@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import tempfile
 import time
 from typing import Any
@@ -90,6 +91,13 @@ class FocusResolver:
     DEBUG_CV_PREPARED_DEBUG_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_cv_prepared_debug.jpg"
     DEBUG_CV_PREPARED_METADATA_PATH = f"{tempfile.gettempdir()}/focus_resolver_cv_prepared.json"
     DEBUG_CV_FINAL_IMAGE_PATH = f"{tempfile.gettempdir()}/focus_resolver_cv_final.jpg"
+    DEBUG_GRADIENT_LUMA_PATH = f"{tempfile.gettempdir()}/focus_resolver_gradient_luma.jpg"
+    DEBUG_GRADIENT_COLOR_PATH = f"{tempfile.gettempdir()}/focus_resolver_gradient_color.jpg"
+    DEBUG_GRADIENT_VERTICAL_PATH = f"{tempfile.gettempdir()}/focus_resolver_gradient_vertical.jpg"
+    DEBUG_GRADIENT_HORIZONTAL_PATH = f"{tempfile.gettempdir()}/focus_resolver_gradient_horizontal.jpg"
+    DEBUG_GRADIENT_FUSED_PATH = f"{tempfile.gettempdir()}/focus_resolver_gradient_fused.jpg"
+    DEBUG_GRADIENT_VERTICAL_RECOVERY_PATH = f"{tempfile.gettempdir()}/focus_resolver_gradient_vertical_recovery_debug.jpg"
+    DEBUG_GRADIENT_HORIZONTAL_RECOVERY_PATH = f"{tempfile.gettempdir()}/focus_resolver_gradient_horizontal_recovery_debug.jpg"
     VISUAL_RING_CONTINUITY_WEIGHT = 0.55
     VISUAL_RING_CONTRAST_WEIGHT = 0.30
     VISUAL_BACKGROUND_WEIGHT = 0.15
@@ -333,12 +341,29 @@ class FocusResolver:
             visual_evidence,
             peer_analysis["peer_sets"],
         )
+        gradient_debug_paths: dict[str, Any] = {}
+        try:
+            gradient_debug_paths = self._save_gradient_debug_artifacts(
+                unannotated_image,
+                prepared_candidate_bboxes,
+                visual_evidence,
+                global_gradient_field,
+            )
+            for item in visual_evidence:
+                item.update(gradient_debug_paths)
+        except (OSError, ValueError, TypeError):
+            # Gradient diagnostics must never affect the resolver path.
+            gradient_debug_paths = {}
         cv_debug_paths: dict[str, str | None] = {
             "focus_cv_prepared_image_path": self.DEBUG_CV_PREPARED_IMAGE_PATH,
             "focus_cv_prepared_debug_image_path": None,
             "focus_cv_prepared_metadata_path": None,
             "focus_cv_final_image_path": None,
         }
+        cv_debug_paths.update({
+            key: value
+            for key, value in gradient_debug_paths.items()
+        })
         try:
             self._save_cv_prepared_debug_artifacts(
                 unannotated_image,
@@ -699,6 +724,14 @@ class FocusResolver:
             for y in range(image_height)
         ]
         return {
+            "luma_gradient_magnitude": [
+                [math.sqrt(luma_gx[y][x] ** 2 + luma_gy[y][x] ** 2) for x in range(image_width)]
+                for y in range(image_height)
+            ],
+            "color_gradient_magnitude": [
+                [math.sqrt(rgb_gx[y][x] ** 2 + rgb_gy[y][x] ** 2) for x in range(image_width)]
+                for y in range(image_height)
+            ],
             "global_gx": global_gx,
             "global_gy": global_gy,
             "vertical_edge_map": vertical_edge_map,
@@ -707,6 +740,147 @@ class FocusResolver:
             "height": image_height,
             "method": "central_difference_rgb_luma_v1",
         }
+
+    @classmethod
+    def _save_gradient_debug_artifacts(
+        cls,
+        image: Image.Image,
+        prepared_candidate_bboxes: dict[int, list[float]],
+        evidence: list[dict[str, Any]],
+        global_gradient_field: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Render the exact shared gradient maps and V7 search diagnostics."""
+        width, height = image.size
+        maps = {
+            "luma": global_gradient_field.get("luma_gradient_magnitude") or [],
+            "color": global_gradient_field.get("color_gradient_magnitude") or [],
+            "vertical": global_gradient_field.get("vertical_edge_map") or [],
+            "horizontal": global_gradient_field.get("horizontal_edge_map") or [],
+        }
+        fused = [
+            [max(float(maps["vertical"][y][x]), float(maps["horizontal"][y][x])) for x in range(width)]
+            for y in range(height)
+        ]
+        maps["fused"] = fused
+
+        def flat_values(values: list[list[float]]) -> list[float]:
+            return [float(value) for row in values for value in row if math.isfinite(float(value))]
+
+        def percentile(values: list[float], fraction: float) -> float:
+            if not values:
+                return 0.0
+            ordered = sorted(values)
+            position = (len(ordered) - 1) * fraction
+            low = int(math.floor(position))
+            high = int(math.ceil(position))
+            if low == high:
+                return ordered[low]
+            return ordered[low] + (ordered[high] - ordered[low]) * (position - low)
+
+        normalization: dict[str, dict[str, float]] = {}
+        display_maps: dict[str, Image.Image] = {}
+        for name, values in maps.items():
+            flat = flat_values(values)
+            display_min = percentile(flat, 0.01)
+            display_max = percentile(flat, 0.99)
+            normalization[name] = {
+                "percentile_low": 0.01,
+                "percentile_high": 0.99,
+                "display_min": display_min,
+                "display_max": display_max,
+            }
+            scale = max(display_max - display_min, 1e-12)
+            pixels = [
+                int(round(cls._clamp01((float(value) - display_min) / scale) * 255.0))
+                for row in values
+                for value in row
+            ]
+            display = Image.new("L", (width, height))
+            display.putdata(pixels)
+            display_maps[name] = display.convert("RGB")
+
+        paths = {
+            "focus_debug_gradient_luma_path": cls.DEBUG_GRADIENT_LUMA_PATH,
+            "focus_debug_gradient_color_path": cls.DEBUG_GRADIENT_COLOR_PATH,
+            "focus_debug_gradient_vertical_path": cls.DEBUG_GRADIENT_VERTICAL_PATH,
+            "focus_debug_gradient_horizontal_path": cls.DEBUG_GRADIENT_HORIZONTAL_PATH,
+            "focus_debug_gradient_fused_path": cls.DEBUG_GRADIENT_FUSED_PATH,
+            "focus_debug_gradient_vertical_recovery_path": cls.DEBUG_GRADIENT_VERTICAL_RECOVERY_PATH,
+            "focus_debug_gradient_horizontal_recovery_path": cls.DEBUG_GRADIENT_HORIZONTAL_RECOVERY_PATH,
+            "gradient_debug_normalization": normalization,
+        }
+        for name, path in (
+            ("luma", cls.DEBUG_GRADIENT_LUMA_PATH),
+            ("color", cls.DEBUG_GRADIENT_COLOR_PATH),
+            ("vertical", cls.DEBUG_GRADIENT_VERTICAL_PATH),
+            ("horizontal", cls.DEBUG_GRADIENT_HORIZONTAL_PATH),
+            ("fused", cls.DEBUG_GRADIENT_FUSED_PATH),
+        ):
+            display_maps[name].save(path, format="JPEG", quality=95)
+
+        target_value = os.environ.get("VLM_FOCUS_GRADIENT_DEBUG_INDEX")
+        try:
+            target_index = int(target_value) if target_value is not None else None
+        except ValueError:
+            target_index = None
+        evidence_by_index = {int(item["index"]): item for item in evidence}
+
+        def draw_box(draw: ImageDraw.ImageDraw, value: Any, color: tuple[int, int, int], width_value: int = 2) -> None:
+            if isinstance(value, (list, tuple)) and len(value) >= 4:
+                try:
+                    draw.rectangle(tuple(int(round(float(v))) for v in value[:4]), outline=color, width=width_value)
+                except (TypeError, ValueError):
+                    pass
+
+        def overlay(kind: str, path: str, relevant_sides: tuple[str, ...]) -> None:
+            canvas = display_maps[kind].copy()
+            draw = ImageDraw.Draw(canvas)
+            for index, semantic in sorted(prepared_candidate_bboxes.items()):
+                item = evidence_by_index.get(int(index), {})
+                detailed = target_index is None or target_index == int(index)
+                draw_box(draw, semantic, (255, 230, 0), 1)
+                draw_box(draw, item.get("visual_cell_bbox"), (0, 150, 255), 1)
+                draw_box(draw, item.get("recovered_visual_bbox") if item.get("recovered_visual_bbox_valid") else None, (255, 40, 220), 2)
+                draw_box(draw, item.get("recovered_visual_semantic_core_bbox"), (255, 160, 20), 1)
+                bands = item.get("recovered_visual_search_bands") or {}
+                cell = item.get("visual_cell_bbox") or [0, 0, width, height]
+                if detailed:
+                    for side in relevant_sides:
+                        band = bands.get(side)
+                        if not isinstance(band, (list, tuple)) or len(band) < 2:
+                            continue
+                        try:
+                            low, high = float(band[0]), float(band[1])
+                            if side in ("left", "right"):
+                                draw.rectangle((int(round(low)), int(round(cell[1])), int(round(high)), int(round(cell[3]))), outline=(0, 255, 255), width=1)
+                            else:
+                                draw.rectangle((int(round(cell[0])), int(round(low)), int(round(cell[2])), int(round(high))), outline=(0, 255, 255), width=1)
+                        except (TypeError, ValueError):
+                            continue
+                    for side in relevant_sides:
+                        candidates = item.get(f"recovered_visual_{side}_candidates") or []
+                        selected = item.get(f"recovered_visual_{side}_selected_coordinate")
+                        for candidate in candidates:
+                            coordinate = candidate.get("coordinate")
+                            if not isinstance(coordinate, (int, float)):
+                                continue
+                            selected_candidate = selected is not None and abs(float(coordinate) - float(selected)) <= 0.5
+                            line_color = (40, 255, 80) if selected_candidate else (255, 180, 40)
+                            if side in ("left", "right"):
+                                draw.line((int(round(coordinate)), int(round(cell[1])), int(round(coordinate)), int(round(cell[3]))), fill=line_color, width=2 if selected_candidate else 1)
+                                label_position = (int(round(coordinate)) + 2, max(0, int(round(cell[1])) + 2))
+                            else:
+                                draw.line((int(round(cell[0])), int(round(coordinate)), int(round(cell[2])), int(round(coordinate))), fill=line_color, width=2 if selected_candidate else 1)
+                                label_position = (max(0, int(round(cell[0])) + 2), int(round(coordinate)) + 2)
+                            label = f"{side[0].upper()} {float(coordinate):.0f} e={float(candidate.get('score', 0.0)):.2f} a={float(candidate.get('adjusted_score', 0.0)):.2f}"
+                            draw.text(label_position, label, fill=line_color)
+                if detailed:
+                    draw.text((int(round(float(semantic[0]))) + 2, max(0, int(round(float(semantic[1]))) - 12)), f"#{index} {kind}", fill=(255, 255, 255))
+            canvas.save(path, format="JPEG", quality=95)
+
+        overlay("vertical", cls.DEBUG_GRADIENT_VERTICAL_RECOVERY_PATH, ("left", "right"))
+        overlay("horizontal", cls.DEBUG_GRADIENT_HORIZONTAL_RECOVERY_PATH, ("top", "bottom"))
+        return paths
 
     @classmethod
     def _apply_v7_boundary_recovery(
@@ -6210,6 +6384,14 @@ class FocusResolver:
                 "global_gradient_field_width": item.get("global_gradient_field_width"),
                 "global_gradient_field_height": item.get("global_gradient_field_height"),
                 "global_gradient_field_method": item.get("global_gradient_field_method"),
+                "focus_debug_gradient_luma_path": item.get("focus_debug_gradient_luma_path"),
+                "focus_debug_gradient_color_path": item.get("focus_debug_gradient_color_path"),
+                "focus_debug_gradient_vertical_path": item.get("focus_debug_gradient_vertical_path"),
+                "focus_debug_gradient_horizontal_path": item.get("focus_debug_gradient_horizontal_path"),
+                "focus_debug_gradient_fused_path": item.get("focus_debug_gradient_fused_path"),
+                "focus_debug_gradient_vertical_recovery_path": item.get("focus_debug_gradient_vertical_recovery_path"),
+                "focus_debug_gradient_horizontal_recovery_path": item.get("focus_debug_gradient_horizontal_recovery_path"),
+                "gradient_debug_normalization": item.get("gradient_debug_normalization"),
                 **{
                     key: item.get(key)
                     for key in (
@@ -6782,6 +6964,38 @@ class FocusResolver:
                     if item.get("global_gradient_field_method")
                 ),
                 None,
+            ),
+            "focus_debug_gradient_luma_path": next(
+                (item.get("focus_debug_gradient_luma_path") for item in evidence_by_index.values() if item.get("focus_debug_gradient_luma_path")),
+                None,
+            ),
+            "focus_debug_gradient_color_path": next(
+                (item.get("focus_debug_gradient_color_path") for item in evidence_by_index.values() if item.get("focus_debug_gradient_color_path")),
+                None,
+            ),
+            "focus_debug_gradient_vertical_path": next(
+                (item.get("focus_debug_gradient_vertical_path") for item in evidence_by_index.values() if item.get("focus_debug_gradient_vertical_path")),
+                None,
+            ),
+            "focus_debug_gradient_horizontal_path": next(
+                (item.get("focus_debug_gradient_horizontal_path") for item in evidence_by_index.values() if item.get("focus_debug_gradient_horizontal_path")),
+                None,
+            ),
+            "focus_debug_gradient_fused_path": next(
+                (item.get("focus_debug_gradient_fused_path") for item in evidence_by_index.values() if item.get("focus_debug_gradient_fused_path")),
+                None,
+            ),
+            "focus_debug_gradient_vertical_recovery_path": next(
+                (item.get("focus_debug_gradient_vertical_recovery_path") for item in evidence_by_index.values() if item.get("focus_debug_gradient_vertical_recovery_path")),
+                None,
+            ),
+            "focus_debug_gradient_horizontal_recovery_path": next(
+                (item.get("focus_debug_gradient_horizontal_recovery_path") for item in evidence_by_index.values() if item.get("focus_debug_gradient_horizontal_recovery_path")),
+                None,
+            ),
+            "gradient_debug_normalization": next(
+                (item.get("gradient_debug_normalization") for item in evidence_by_index.values() if item.get("gradient_debug_normalization")),
+                {},
             ),
             "roi_bbox_pixels": roi_bbox,
             "source_device_viewport": source_device_geometry or {},

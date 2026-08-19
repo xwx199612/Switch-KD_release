@@ -1,7 +1,7 @@
 [
     {
-        "Id": "33dd9da136debc61793f5cab2acec523839f1a343aabb09e51a1f406cba9637a",
-        "Created": "2026-08-19T05:48:13.077162447Z",
+        "Id": "cfeadebde732e8335b47e7e464b05628f2b2281505fd91ec41ae9d7e8efc5c37",
+        "Created": "2026-08-19T06:13:43.461828469Z",
         "Path": "/usr/local/bin/entrypoint.sh",
         "Args": [
             "python3.11",
@@ -22,17 +22,17 @@
             "Restarting": false,
             "OOMKilled": false,
             "Dead": false,
-            "Pid": 2428245,
+            "Pid": 2439560,
             "ExitCode": 0,
             "Error": "",
-            "StartedAt": "2026-08-19T05:48:13.141754585Z",
+            "StartedAt": "2026-08-19T06:13:43.520480837Z",
             "FinishedAt": "0001-01-01T00:00:00Z"
         },
-        "Image": "sha256:a9da4eed61d56752f4e8969787eeb8b18f61f557c8445c808d5d3cf2dd76053d",
-        "ResolvConfPath": "/var/lib/docker/containers/33dd9da136debc61793f5cab2acec523839f1a343aabb09e51a1f406cba9637a/resolv.conf",
-        "HostnamePath": "/var/lib/docker/containers/33dd9da136debc61793f5cab2acec523839f1a343aabb09e51a1f406cba9637a/hostname",
-        "HostsPath": "/var/lib/docker/containers/33dd9da136debc61793f5cab2acec523839f1a343aabb09e51a1f406cba9637a/hosts",
-        "LogPath": "/var/lib/docker/containers/33dd9da136debc61793f5cab2acec523839f1a343aabb09e51a1f406cba9637a/33dd9da136debc61793f5cab2acec523839f1a343aabb09e51a1f406cba9637a-json.log",
+        "Image": "sha256:4ba6071328375735ec3e327505490ee6f899d6adf8143a4a81470871b8768a43",
+        "ResolvConfPath": "/var/lib/docker/containers/cfeadebde732e8335b47e7e464b05628f2b2281505fd91ec41ae9d7e8efc5c37/resolv.conf",
+        "HostnamePath": "/var/lib/docker/containers/cfeadebde732e8335b47e7e464b05628f2b2281505fd91ec41ae9d7e8efc5c37/hostname",
+        "HostsPath": "/var/lib/docker/containers/cfeadebde732e8335b47e7e464b05628f2b2281505fd91ec41ae9d7e8efc5c37/hosts",
+        "LogPath": "/var/lib/docker/containers/cfeadebde732e8335b47e7e464b05628f2b2281505fd91ec41ae9d7e8efc5c37/cfeadebde732e8335b47e7e464b05628f2b2281505fd91ec41ae9d7e8efc5c37-json.log",
         "Name": "/vlm-online-dbild-runtime-120",
         "RestartCount": 0,
         "Driver": "overlay2",
@@ -185,31 +185,15 @@
         },
         "GraphDriver": {
             "Data": {
-                "ID": "33dd9da136debc61793f5cab2acec523839f1a343aabb09e51a1f406cba9637a",
-                "LowerDir": "/var/lib/docker/overlay2/d8ed6bee3c7724fe81234aee5b39bb2ade9797154082792ecf16adfe44b90ec2-init/diff:/var/lib/docker/overlay2/jtjkgxtqz9d1muwnohmjznvfc/diff:/var/lib/docker/overlay2/p9r6glttslfqu4vbk6p129d2y/diff:/var/lib/docker/overlay2/yaebipo4jqxmamz66mgjegt7h/diff:/var/lib/docker/overlay2/vfo465ke0hb5vir1m08wgwf87/diff:/var/lib/docker/overlay2/oejvqjp3y1e3hlh0ogjntoj7x/diff:/var/lib/docker/overlay2/jmhtgur8vvi3qwfutjpzmz936/diff:/var/lib/docker/overlay2/ubg5zm2tl7iuo9kr09mjfqufu/diff:/var/lib/docker/overlay2/mq7ea4ao2iw5whbpz9my9d1mx/diff:/var/lib/docker/overlay2/wxyww72zzw0tcajxrkjthlro1/diff:/var/lib/docker/overlay2/0c23932dbf833e72df04091f7eaaf8112c0a49cbb8d0a83e2485b4bf60cc6142/diff:/var/lib/docker/overlay2/aeaad13b7fb4fcbea24e9628831213bde67c26d9cf283393d126633f8f435b04/diff:/var/lib/docker/overlay2/83e10723a1d3235af5c085e7d3df9d8671db48bbfbeb4bc58f5c8a27a972ed2d/diff:/var/lib/docker/overlay2/67d81bc383dbbe85741860781b83699dbf3b7fcbee1af19527d321eae614f54d/diff:/var/lib/docker/overlay2/86d788fc7226c0741236a446db9264ff8bb75e8eaa3ec65fc355a14b1062bcdf/diff:/var/lib/docker/overlay2/2fb499de4becad230697d2f7446774790927af1ead0089c9c48c5e472d0c9b93/diff:/var/lib/docker/overlay2/32961b2b6563aeb8f8127fdc5f7696c3a44a4a761a4e1f91c6ec97436cc5e75e/diff:/var/lib/docker/overlay2/da798a9da7904874cc3ce05fd280c564dc5238e2c6eb8b88634f2e17b0da519a/diff:/var/lib/docker/overlay2/eb712a8ab7048ae557384d54aaafcf48e032cfc499619debb1ffe05743d447bf/diff:/var/lib/docker/overlay2/15cc6ff4cad297824460eed5480b07c18de48dd37a4e5310ee534664df4abb00/diff:/var/lib/docker/overlay2/ce4de63a8cc98717570ff8d7f0b6f976f5fc83552f1b5ff0bdbc2cce35308a5b/diff:/var/lib/docker/overlay2/534661d128c301858b9f4def3e30f506035f1427a7a9daba50601a617e41d374/diff",
-                "MergedDir": "/var/lib/docker/overlay2/d8ed6bee3c7724fe81234aee5b39bb2ade9797154082792ecf16adfe44b90ec2/merged",
-                "UpperDir": "/var/lib/docker/overlay2/d8ed6bee3c7724fe81234aee5b39bb2ade9797154082792ecf16adfe44b90ec2/diff",
-                "WorkDir": "/var/lib/docker/overlay2/d8ed6bee3c7724fe81234aee5b39bb2ade9797154082792ecf16adfe44b90ec2/work"
+                "ID": "cfeadebde732e8335b47e7e464b05628f2b2281505fd91ec41ae9d7e8efc5c37",
+                "LowerDir": "/var/lib/docker/overlay2/bc9e39ac0a7f3cf8281a2adde66572c7beb666403b99ba2ae8af25e047774f85-init/diff:/var/lib/docker/overlay2/ne7ynt60d97mibap76rq6qr7k/diff:/var/lib/docker/overlay2/fz4vbbfywfk2i3lz0qzx9hoot/diff:/var/lib/docker/overlay2/r5w0vc9z8v22tj6wvnshhty69/diff:/var/lib/docker/overlay2/omwpwabax3qen37l1x35wjzow/diff:/var/lib/docker/overlay2/en9a8odm9czz7eobwqdgs57vr/diff:/var/lib/docker/overlay2/jmhtgur8vvi3qwfutjpzmz936/diff:/var/lib/docker/overlay2/ubg5zm2tl7iuo9kr09mjfqufu/diff:/var/lib/docker/overlay2/mq7ea4ao2iw5whbpz9my9d1mx/diff:/var/lib/docker/overlay2/wxyww72zzw0tcajxrkjthlro1/diff:/var/lib/docker/overlay2/0c23932dbf833e72df04091f7eaaf8112c0a49cbb8d0a83e2485b4bf60cc6142/diff:/var/lib/docker/overlay2/aeaad13b7fb4fcbea24e9628831213bde67c26d9cf283393d126633f8f435b04/diff:/var/lib/docker/overlay2/83e10723a1d3235af5c085e7d3df9d8671db48bbfbeb4bc58f5c8a27a972ed2d/diff:/var/lib/docker/overlay2/67d81bc383dbbe85741860781b83699dbf3b7fcbee1af19527d321eae614f54d/diff:/var/lib/docker/overlay2/86d788fc7226c0741236a446db9264ff8bb75e8eaa3ec65fc355a14b1062bcdf/diff:/var/lib/docker/overlay2/2fb499de4becad230697d2f7446774790927af1ead0089c9c48c5e472d0c9b93/diff:/var/lib/docker/overlay2/32961b2b6563aeb8f8127fdc5f7696c3a44a4a761a4e1f91c6ec97436cc5e75e/diff:/var/lib/docker/overlay2/da798a9da7904874cc3ce05fd280c564dc5238e2c6eb8b88634f2e17b0da519a/diff:/var/lib/docker/overlay2/eb712a8ab7048ae557384d54aaafcf48e032cfc499619debb1ffe05743d447bf/diff:/var/lib/docker/overlay2/15cc6ff4cad297824460eed5480b07c18de48dd37a4e5310ee534664df4abb00/diff:/var/lib/docker/overlay2/ce4de63a8cc98717570ff8d7f0b6f976f5fc83552f1b5ff0bdbc2cce35308a5b/diff:/var/lib/docker/overlay2/534661d128c301858b9f4def3e30f506035f1427a7a9daba50601a617e41d374/diff",
+                "MergedDir": "/var/lib/docker/overlay2/bc9e39ac0a7f3cf8281a2adde66572c7beb666403b99ba2ae8af25e047774f85/merged",
+                "UpperDir": "/var/lib/docker/overlay2/bc9e39ac0a7f3cf8281a2adde66572c7beb666403b99ba2ae8af25e047774f85/diff",
+                "WorkDir": "/var/lib/docker/overlay2/bc9e39ac0a7f3cf8281a2adde66572c7beb666403b99ba2ae8af25e047774f85/work"
             },
             "Name": "overlay2"
         },
         "Mounts": [
-            {
-                "Type": "bind",
-                "Source": "/mnt/nvme0/releases/VLM_Online_DBiLD_runtime_1.2.0_b7e9189_20260806T081746Z/config/runtime.yaml",
-                "Destination": "/config/runtime.yaml",
-                "Mode": "ro",
-                "RW": false,
-                "Propagation": "rprivate"
-            },
-            {
-                "Type": "bind",
-                "Source": "/mnt/nvme0/releases/VLM_Online_DBiLD_runtime_1.2.0_b7e9189_20260806T081746Z/samples",
-                "Destination": "/data",
-                "Mode": "ro",
-                "RW": false,
-                "Propagation": "rprivate"
-            },
             {
                 "Type": "bind",
                 "Source": "/mnt/nvme0/releases/VLM_Online_DBiLD_runtime_1.2.0_b7e9189_20260806T081746Z/output",
@@ -233,10 +217,26 @@
                 "Mode": "ro",
                 "RW": false,
                 "Propagation": "rprivate"
+            },
+            {
+                "Type": "bind",
+                "Source": "/mnt/nvme0/releases/VLM_Online_DBiLD_runtime_1.2.0_b7e9189_20260806T081746Z/config/runtime.yaml",
+                "Destination": "/config/runtime.yaml",
+                "Mode": "ro",
+                "RW": false,
+                "Propagation": "rprivate"
+            },
+            {
+                "Type": "bind",
+                "Source": "/mnt/nvme0/releases/VLM_Online_DBiLD_runtime_1.2.0_b7e9189_20260806T081746Z/samples",
+                "Destination": "/data",
+                "Mode": "ro",
+                "RW": false,
+                "Propagation": "rprivate"
             }
         ],
         "Config": {
-            "Hostname": "33dd9da136de",
+            "Hostname": "cfeadebde732",
             "Domainname": "",
             "User": "runtime",
             "AttachStdin": false,
@@ -333,8 +333,8 @@
         },
         "NetworkSettings": {
             "Bridge": "",
-            "SandboxID": "10bd431bbb3a1de9f8384d16742b270a684922928c6929c7c8e34fc00f4082f8",
-            "SandboxKey": "/var/run/docker/netns/10bd431bbb3a",
+            "SandboxID": "05300c2d1a84d1fca3884436282b13156648735d1c7c45a396de045e143d6480",
+            "SandboxKey": "/var/run/docker/netns/05300c2d1a84",
             "Ports": {},
             "HairpinMode": false,
             "LinkLocalIPv6Address": "",
@@ -358,7 +358,7 @@
                     "DriverOpts": null,
                     "GwPriority": 0,
                     "NetworkID": "30711178416e66ebeb4e0ac0b60a09d81b1d184231a9581832d6d885c8d3d946",
-                    "EndpointID": "463df981427dc93aa74b860322f6f51d8d59d9b4414ea7b918f43eeda6c8e319",
+                    "EndpointID": "39e20d1b92a290f185cc839271ba0a25d1013b2f88f992c410c3357a4b7a6abb",
                     "Gateway": "",
                     "IPAddress": "",
                     "IPPrefixLen": 0,
