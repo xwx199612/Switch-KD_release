@@ -191,7 +191,7 @@ class FocusResolver:
     SCALE_SIGNATURE_FULL_GROWTH = 0.25
     SCALE_SIGNATURE_LOG_TOLERANCE = 0.20
     SCALE_SIGNATURE_SINGLE_PEER_RELIABILITY = 0.50
-    FOCUS_BOUNDARY_RECOVERY_VERSION = "v7.2-side-candidate-spatial-diversity-diagnostic"
+    FOCUS_BOUNDARY_RECOVERY_VERSION = "v7.3-side-candidate-generation-recall-diagnostic"
     V7_SIDE_CLUSTER_RADIUS_FRACTION = 0.025
     V7_SIDE_CLUSTER_RADIUS_MIN_PX = 3
     V7_SIDE_CLUSTER_RADIUS_MAX_PX = 8
@@ -389,6 +389,11 @@ class FocusResolver:
             cv_debug_paths["focus_cv_prepared_metadata_path"] = self.DEBUG_CV_PREPARED_METADATA_PATH
         except (OSError, ValueError, TypeError):
             pass
+        # Full per-coordinate probes are retained in prepared metadata only;
+        # keep the main resolver result compact while preserving summaries.
+        for item in visual_evidence:
+            for side in ("left", "right", "top", "bottom"):
+                item.pop(f"recovered_visual_{side}_candidate_generation_probe", None)
         v5_cascade = self._run_visual_focus_cascade(
             visual_evidence,
             peer_analysis["peer_sets"],
@@ -894,6 +899,50 @@ class FocusResolver:
                             reservation_label = "*" if candidate.get("retained_by") == "outward_reservation" else ""
                             label = f"{side[0].upper()} {float(coordinate):.0f} {cluster_label}{reservation_label} e={float(candidate.get('score', 0.0)):.2f} a={float(candidate.get('adjusted_score', 0.0)):.2f}"
                             draw.text(label_position, label, fill=line_color)
+                    probes = item.get(f"recovered_visual_{side}_candidate_generation_probe") or []
+                    rejected_probes = [
+                        probe for probe in probes
+                        if not probe.get("candidate_eligible")
+                        and isinstance(probe.get("adjusted_score"), (int, float))
+                    ]
+                    best_outward_coordinate = item.get(
+                        f"recovered_visual_{side}_best_outward_probe_coordinate"
+                    )
+                    if isinstance(best_outward_coordinate, (int, float)):
+                        best_outward = next(
+                            (
+                                probe for probe in probes
+                                if abs(float(probe.get("coordinate", 0.0)) - float(best_outward_coordinate)) <= 0.01
+                            ),
+                            None,
+                        )
+                        if best_outward is not None and best_outward not in rejected_probes:
+                            rejected_probes.append(best_outward)
+                    rejected_probes = sorted(
+                        rejected_probes,
+                        key=lambda probe: (
+                            0 if abs(float(probe.get("coordinate", 0.0)) - float(best_outward_coordinate or -1e9)) <= 0.01 else 1,
+                            -float(probe.get("adjusted_score", 0.0)),
+                        ),
+                    )[:4]
+                    for probe in rejected_probes:
+                        coordinate = probe.get("coordinate")
+                        if not isinstance(coordinate, (int, float)):
+                            continue
+                        is_best_outward = (
+                            isinstance(best_outward_coordinate, (int, float))
+                            and abs(float(coordinate) - float(best_outward_coordinate)) <= 0.01
+                        )
+                        line_color = (255, 70, 70) if is_best_outward else (170, 170, 170)
+                        if side in ("left", "right"):
+                            draw.line((int(round(coordinate)), int(round(cell[1])), int(round(coordinate)), int(round(cell[3]))), fill=line_color, width=2 if is_best_outward else 1)
+                            label_position = (int(round(coordinate)) + 2, max(0, int(round(cell[1])) + 18))
+                        else:
+                            draw.line((int(round(cell[0])), int(round(coordinate)), int(round(cell[2])), int(round(coordinate))), fill=line_color, width=2 if is_best_outward else 1)
+                            label_position = (max(0, int(round(cell[0])) + 2), int(round(coordinate)) + 2)
+                        reasons = ",".join(probe.get("rejection_reasons") or [])[:28] or "rejected"
+                        label = f"{side[0].upper()}! {float(coordinate):.0f} a={float(probe.get('adjusted_score', 0.0)):.2f} {reasons}"
+                        draw.text(label_position, label, fill=line_color)
                 if detailed:
                     draw.text((int(round(float(semantic[0]))) + 2, max(0, int(round(float(semantic[1]))) - 12)), f"#{index} {kind}", fill=(255, 255, 255))
             canvas.save(path, format="JPEG", quality=95)
@@ -1099,6 +1148,18 @@ class FocusResolver:
                 item[f"recovered_visual_{side}_candidate_count_before_clustering"] = 0
                 item[f"recovered_visual_{side}_cluster_count"] = 0
                 item[f"recovered_visual_{side}_outward_reserved"] = False
+                item[f"recovered_visual_{side}_candidate_generation_probe"] = []
+                item[f"recovered_visual_{side}_probe_count"] = 0
+                item[f"recovered_visual_{side}_eligible_probe_count"] = 0
+                item[f"recovered_visual_{side}_best_rejected_coordinate"] = None
+                item[f"recovered_visual_{side}_best_rejected_adjusted_score"] = None
+                item[f"recovered_visual_{side}_best_rejected_reasons"] = []
+                item[f"recovered_visual_{side}_best_outward_probe_coordinate"] = None
+                item[f"recovered_visual_{side}_best_outward_probe_adjusted_score"] = None
+                item[f"recovered_visual_{side}_best_outward_probe_raw_score"] = None
+                item[f"recovered_visual_{side}_best_outward_probe_eligible"] = False
+                item[f"recovered_visual_{side}_best_outward_probe_reasons"] = []
+                item[f"recovered_visual_{side}_probe_buckets"] = {}
 
         for item in evidence:
             side_defaults(item)
@@ -1157,6 +1218,7 @@ class FocusResolver:
                 search_bands[side] = [float(low), float(high)]
                 edge_map = vertical_map if orientation == "vertical" else horizontal_map
                 candidates: list[dict[str, Any]] = []
+                generation_probes: list[dict[str, Any]] = []
                 span_start, span_end = span
                 span_samples = max(7, min(25, int(round((span_end - span_start) / 8.0))))
                 for coordinate in coordinates:
@@ -1185,7 +1247,27 @@ class FocusResolver:
                         contrasts.append(0.5 * cls._clamp01(abs(luma(inside) - luma(outside)) / 0.20) + 0.5 * color_distance(inside, outside))
                         responses.append(cls._clamp01(response))
                         valid_samples += 1
+                    limited = abs(coordinate - low) <= 1.0 or abs(coordinate - high) <= 1.0
                     if not responses:
+                        generation_probes.append({
+                            "coordinate": float(coordinate),
+                            "distance_from_semantic_side": float((coordinate - semantic_coordinate) * outward),
+                            "is_inward": bool((coordinate - semantic_coordinate) * outward < 0),
+                            "is_outward": bool((coordinate - semantic_coordinate) * outward > 0),
+                            "boundary_limited": limited,
+                            "span_support": None,
+                            "mean_oriented_strength": None,
+                            "inside_outside_contrast": None,
+                            "continuity": None,
+                            "perimeter_preference": None,
+                            "edge_score": None,
+                            "inward_fraction": None,
+                            "inward_penalty": None,
+                            "enclosure_score": None,
+                            "adjusted_score": None,
+                            "candidate_eligible": False,
+                            "rejection_reasons": ["no_valid_span_samples"],
+                        })
                         continue
                     support = sum(value >= cls.V7_BOUNDARY_MIN_RESPONSE for value in responses) / len(responses)
                     mean_strength = sum(responses) / len(responses)
@@ -1208,9 +1290,35 @@ class FocusResolver:
                     adjusted_score = cls._clamp01(
                         edge_score * (0.50 + 0.50 * enclosure_score)
                     )
-                    if support < cls.V7_BOUNDARY_MIN_SPAN_SUPPORT or mean_strength < cls.V7_BOUNDARY_MIN_RESPONSE or edge_score < cls.V7_BOUNDARY_MIN_SCORE:
+                    rejection_reasons: list[str] = []
+                    if support < cls.V7_BOUNDARY_MIN_SPAN_SUPPORT:
+                        rejection_reasons.append("span_support_below_threshold")
+                    if mean_strength < cls.V7_BOUNDARY_MIN_RESPONSE:
+                        rejection_reasons.append("strength_below_threshold")
+                    if edge_score < cls.V7_BOUNDARY_MIN_SCORE:
+                        rejection_reasons.append("edge_score_below_threshold")
+                    candidate_eligible = not rejection_reasons
+                    generation_probes.append({
+                        "coordinate": float(coordinate),
+                        "distance_from_semantic_side": float(distance),
+                        "is_inward": bool(distance < 0),
+                        "is_outward": bool(distance > 0),
+                        "boundary_limited": limited,
+                        "span_support": support,
+                        "mean_oriented_strength": mean_strength,
+                        "inside_outside_contrast": contrast,
+                        "continuity": continuity,
+                        "perimeter_preference": perimeter_preference,
+                        "edge_score": edge_score,
+                        "inward_fraction": inward_fraction,
+                        "inward_penalty": inward_penalty,
+                        "enclosure_score": enclosure_score,
+                        "adjusted_score": adjusted_score,
+                        "candidate_eligible": candidate_eligible,
+                        "rejection_reasons": rejection_reasons,
+                    })
+                    if not candidate_eligible:
                         continue
-                    limited = abs(coordinate - low) <= 1.0 or abs(coordinate - high) <= 1.0
                     candidates.append({
                         "coordinate": float(coordinate),
                         "distance_from_semantic_side": float(distance),
@@ -1239,6 +1347,56 @@ class FocusResolver:
                 item[f"recovered_visual_{side}_candidate_count_before_clustering"] = len(candidates)
                 item[f"recovered_visual_{side}_cluster_count"] = len(cluster_debug)
                 item[f"recovered_visual_{side}_outward_reserved"] = outward_reserved
+                item[f"recovered_visual_{side}_candidate_generation_probe"] = generation_probes
+                item[f"recovered_visual_{side}_probe_count"] = len(generation_probes)
+                item[f"recovered_visual_{side}_eligible_probe_count"] = sum(
+                    1 for probe in generation_probes if probe.get("candidate_eligible")
+                )
+                rejected = [probe for probe in generation_probes if not probe.get("candidate_eligible")]
+                rejected_with_score = [
+                    probe for probe in rejected
+                    if isinstance(probe.get("adjusted_score"), (int, float))
+                ]
+                if rejected_with_score:
+                    best_rejected = max(
+                        rejected_with_score,
+                        key=lambda probe: (float(probe["adjusted_score"]), -float(probe["coordinate"])),
+                    )
+                    item[f"recovered_visual_{side}_best_rejected_coordinate"] = best_rejected["coordinate"]
+                    item[f"recovered_visual_{side}_best_rejected_adjusted_score"] = best_rejected["adjusted_score"]
+                    item[f"recovered_visual_{side}_best_rejected_reasons"] = list(best_rejected.get("rejection_reasons", []))
+                outward_probes = [probe for probe in generation_probes if probe.get("is_outward")]
+                outward_with_score = [
+                    probe for probe in outward_probes
+                    if isinstance(probe.get("adjusted_score"), (int, float))
+                ]
+                if outward_with_score:
+                    best_outward = max(
+                        outward_with_score,
+                        key=lambda probe: (float(probe["adjusted_score"]), -float(probe["coordinate"])),
+                    )
+                    item[f"recovered_visual_{side}_best_outward_probe_coordinate"] = best_outward["coordinate"]
+                    item[f"recovered_visual_{side}_best_outward_probe_adjusted_score"] = best_outward["adjusted_score"]
+                    item[f"recovered_visual_{side}_best_outward_probe_raw_score"] = best_outward["edge_score"]
+                    item[f"recovered_visual_{side}_best_outward_probe_eligible"] = bool(best_outward.get("candidate_eligible"))
+                    item[f"recovered_visual_{side}_best_outward_probe_reasons"] = list(best_outward.get("rejection_reasons", []))
+                bucket_summary: dict[str, dict[str, Any]] = {}
+                for bucket in ("inward", "near_semantic", "outward"):
+                    if bucket == "inward":
+                        bucket_probes = [probe for probe in generation_probes if probe.get("is_inward") and abs(float(probe["distance_from_semantic_side"])) > cluster_radius]
+                    elif bucket == "outward":
+                        bucket_probes = [probe for probe in generation_probes if probe.get("is_outward")]
+                    else:
+                        bucket_probes = [probe for probe in generation_probes if abs(float(probe["distance_from_semantic_side"])) <= cluster_radius]
+                    scored_bucket = [probe for probe in bucket_probes if isinstance(probe.get("adjusted_score"), (int, float))]
+                    best_bucket = max(scored_bucket, key=lambda probe: (float(probe["adjusted_score"]), -float(probe["coordinate"])), default=None)
+                    bucket_summary[bucket] = {
+                        "probe_count": len(bucket_probes),
+                        "eligible_count": sum(1 for probe in bucket_probes if probe.get("candidate_eligible")),
+                        "best_coordinate": best_bucket.get("coordinate") if best_bucket else None,
+                        "best_adjusted_score": best_bucket.get("adjusted_score") if best_bucket else None,
+                    }
+                item[f"recovered_visual_{side}_probe_buckets"] = bucket_summary
                 side_candidates[side] = selected_candidates
                 item[f"recovered_visual_{side}_candidates"] = side_candidates[side]
 
@@ -6612,6 +6770,14 @@ class FocusResolver:
                                 "distance", "candidates", "candidate_clusters",
                                 "cluster_radius", "candidate_count_before_clustering",
                                 "cluster_count", "outward_reserved",
+                                "candidate_generation_probe", "probe_count",
+                                "eligible_probe_count", "best_rejected_coordinate",
+                                "best_rejected_adjusted_score", "best_rejected_reasons",
+                                "best_outward_probe_coordinate",
+                                "best_outward_probe_adjusted_score",
+                                "best_outward_probe_raw_score",
+                                "best_outward_probe_eligible",
+                                "best_outward_probe_reasons", "probe_buckets",
                             )
                         ],
                         "focus_tri_channel_version",
@@ -7042,6 +7208,7 @@ class FocusResolver:
             "focus_image_mode": focus_image_mode,
             "prepared_size": [raw.width, raw.height],
             "focus_scale_signature_version": cls.SCALE_SIGNATURE_VERSION,
+            "focus_boundary_recovery_version": cls.FOCUS_BOUNDARY_RECOVERY_VERSION,
             "focus_tri_channel_version": cls.FOCUS_TRI_CHANNEL_VERSION,
             "focus_tri_channel_arbitration_version": cls.FOCUS_TRI_CHANNEL_ARBITRATION_VERSION,
             "global_gradient_field_enabled": bool(

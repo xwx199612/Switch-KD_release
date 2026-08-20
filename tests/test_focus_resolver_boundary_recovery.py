@@ -52,7 +52,7 @@ def test_v71_reports_core_and_enclosure_diagnostics():
     image = Image.new("RGB", (100, 100), (20, 20, 20))
     ImageDraw.Draw(image).rectangle((25, 25, 75, 75), fill=(220, 220, 220))
     result = recover(image, (30, 30, 70, 70))
-    assert result["focus_boundary_recovery_version"] == "v7.2-side-candidate-spatial-diversity-diagnostic"
+    assert result["focus_boundary_recovery_version"] == "v7.3-side-candidate-generation-recall-diagnostic"
     assert result["recovered_visual_semantic_core_bbox"] is not None
     assert 0.0 <= result["recovered_visual_enclosure_support"] <= 1.0
 
@@ -107,3 +107,28 @@ def test_image_edge_is_boundary_limited_or_conservative():
         "insufficient_side_candidates",
         "no_valid_joint_boundary",
     }
+
+
+def test_v72_probe_records_accepted_coordinates_and_empty_reasons():
+    image = Image.new("RGB", (100, 100), (20, 20, 20))
+    ImageDraw.Draw(image).rectangle((25, 25, 75, 75), fill=(220, 220, 220))
+    result = recover(image, (30, 30, 70, 70))
+    probes = result["recovered_visual_bottom_candidate_generation_probe"]
+    assert probes
+    accepted = [probe for probe in probes if probe["candidate_eligible"]]
+    assert accepted
+    assert all(probe["rejection_reasons"] == [] for probe in accepted)
+    assert result["recovered_visual_bottom_probe_count"] == len(probes)
+    assert result["recovered_visual_bottom_eligible_probe_count"] == len(accepted)
+
+
+def test_v72_probe_reports_multiple_actual_failures_and_best_outward_probe():
+    image = Image.new("RGB", (100, 100), (100, 100, 100))
+    result = recover(image, (30, 30, 70, 70))
+    probes = result["recovered_visual_bottom_candidate_generation_probe"]
+    rejected = [probe for probe in probes if not probe["candidate_eligible"]]
+    assert rejected
+    assert any(set(("span_support_below_threshold", "strength_below_threshold", "edge_score_below_threshold")).issubset(set(probe["rejection_reasons"])) for probe in rejected)
+    assert result["recovered_visual_bottom_best_outward_probe_coordinate"] is not None
+    assert not result["recovered_visual_bottom_best_outward_probe_eligible"]
+    assert result["recovered_visual_bottom_best_outward_probe_reasons"]

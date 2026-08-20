@@ -426,6 +426,17 @@ def _extract_result_base(response: dict, image_path: Path) -> dict:
             "recovered_scale_linear_ratio": item.get("recovered_scale_linear_ratio"),
             "recovered_scale_isotropy_score": item.get("recovered_scale_isotropy_score"),
             "recovered_scale_peer_reliability": item.get("recovered_scale_peer_reliability"),
+            **{
+                f"recovered_visual_{side}_{metric}": item.get(f"recovered_visual_{side}_{metric}")
+                for side in ("left", "right", "top", "bottom")
+                for metric in (
+                    "probe_count", "eligible_probe_count",
+                    "best_rejected_coordinate", "best_rejected_adjusted_score",
+                    "best_rejected_reasons", "best_outward_probe_coordinate",
+                    "best_outward_probe_adjusted_score", "best_outward_probe_raw_score",
+                    "best_outward_probe_eligible", "best_outward_probe_reasons",
+                )
+            },
         })
     arbitration_item = next(iter(evidence_by_index.values()), {})
     return {
@@ -614,6 +625,10 @@ def print_result(position: int, total: int, result: dict) -> None:
             f" O={_format_float(item.get('recovered_outline_score'))}"
             f" H={_format_float(item.get('recovered_highlight_score'))}"
             f" E={_format_float(item.get('recovered_enlargement_score'))}"
+            f" bout={_format_float(item.get('recovered_visual_bottom_best_outward_probe_coordinate'))}"
+            f" bout_ok={'1' if item.get('recovered_visual_bottom_best_outward_probe_eligible') else '0'}"
+            f" bout_score={_format_float(item.get('recovered_visual_bottom_best_outward_probe_adjusted_score'))}"
+            f" bout_reason={','.join(item.get('recovered_visual_bottom_best_outward_probe_reasons') or []) or '-'}"
             f" class={item.get('recovered_focus_candidate_class') or '-'}"
             f" grp={item.get('recovered_focus_peer_group_id') if item.get('recovered_focus_peer_group_id') is not None else '-'}"
             f" arb={item.get('recovered_focus_arbitration_source') or '-'}"
