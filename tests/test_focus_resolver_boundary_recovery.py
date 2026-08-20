@@ -52,7 +52,7 @@ def test_v71_reports_core_and_enclosure_diagnostics():
     image = Image.new("RGB", (100, 100), (20, 20, 20))
     ImageDraw.Draw(image).rectangle((25, 25, 75, 75), fill=(220, 220, 220))
     result = recover(image, (30, 30, 70, 70))
-    assert result["focus_boundary_recovery_version"] == "v7.3-side-candidate-generation-recall-diagnostic"
+    assert result["focus_boundary_recovery_version"] == "v7.4-boundary-limited-outward-peak-resolution-diagnostic"
     assert result["recovered_visual_semantic_core_bbox"] is not None
     assert 0.0 <= result["recovered_visual_enclosure_support"] <= 1.0
 
@@ -132,3 +132,78 @@ def test_v72_probe_reports_multiple_actual_failures_and_best_outward_probe():
     assert result["recovered_visual_bottom_best_outward_probe_coordinate"] is not None
     assert not result["recovered_visual_bottom_best_outward_probe_eligible"]
     assert result["recovered_visual_bottom_best_outward_probe_reasons"]
+
+
+def test_v74_probe_exposes_normal_and_soft_eligibility_fields():
+    image = Image.new("RGB", (100, 100), (20, 20, 20))
+    ImageDraw.Draw(image).rectangle((25, 25, 75, 75), fill=(220, 220, 220))
+    result = recover(image, (30, 30, 70, 70))
+    probes = result["recovered_visual_bottom_candidate_generation_probe"]
+    assert probes
+    assert all("normal_candidate_eligible" in probe for probe in probes)
+    assert all("soft_outward_candidate_eligible" in probe for probe in probes)
+    assert all(probe["candidate_eligibility_mode"] in {"normal", "outward_soft", "rejected"} for probe in probes)
+    assert result["recovered_visual_bottom_boundary_response_trend"] in {
+        "falling_after_boundary", "rising_at_boundary", "flat", "no_valid_continuation"
+    }
+
+
+def test_v74_soft_admission_is_outward_only_and_preserves_normal_threshold():
+    assert FocusResolver.V7_BOUNDARY_MIN_SPAN_SUPPORT == 0.45
+    assert FocusResolver.V7_BOUNDARY_SOFT_MIN_SPAN_SUPPORT == 0.40
+
+
+def test_v74_boundary_limited_outward_soft_admission_uses_continuation_guard():
+    image = Image.new("RGB", (100, 100), (0, 0, 0))
+    pixels = image.load()
+    # Give the side primitive strong inside/outside contrast at the synthetic
+    # boundary while the fake directional response supplies only 3/7 supported
+    # parallel samples (just above the V7.4 soft floor).
+    for x in range(36, 65):
+        pixels[x, 75] = (255, 255, 255)
+    horizontal = [[0.0 for _ in range(100)] for _ in range(100)]
+    for x in (42, 50, 58):
+        horizontal[78][x] = 1.0
+    item = {
+        "index": 0,
+        "prepared_bbox": [30, 30, 70, 70],
+        "visual_cell_bbox": [0, 0, 100, 78],
+    }
+    field = {"vertical_edge_map": [[0.0] * 100 for _ in range(100)], "horizontal_edge_map": horizontal}
+    FocusResolver._apply_v7_boundary_recovery([item], image, field)
+    probe = next(
+        p for p in item["recovered_visual_bottom_candidate_generation_probe"]
+        if p["coordinate"] == 78.0
+    )
+    assert probe["normal_candidate_eligible"] is False
+    assert probe["soft_outward_candidate_eligible"] is True
+    assert probe["candidate_eligibility_mode"] == "outward_soft"
+    assert probe["continuation_response_trend"] == "falling_after_boundary"
+    assert probe["boundary_censored"] is False
+
+
+def test_v74_boundary_limited_rising_continuation_is_censored():
+    image = Image.new("RGB", (100, 100), (0, 0, 0))
+    pixels = image.load()
+    for x in range(36, 65):
+        pixels[x, 75] = (255, 255, 255)
+    horizontal = [[0.0 for _ in range(100)] for _ in range(100)]
+    for x in (42, 50, 58):
+        horizontal[78][x] = 1.0
+    for x in range(36, 65):
+        horizontal[79][x] = 1.0
+    item = {
+        "index": 0,
+        "prepared_bbox": [30, 30, 70, 70],
+        "visual_cell_bbox": [0, 0, 100, 78],
+    }
+    field = {"vertical_edge_map": [[0.0] * 100 for _ in range(100)], "horizontal_edge_map": horizontal}
+    FocusResolver._apply_v7_boundary_recovery([item], image, field)
+    probe = next(
+        p for p in item["recovered_visual_bottom_candidate_generation_probe"]
+        if p["coordinate"] == 78.0
+    )
+    assert probe["soft_outward_candidate_eligible"] is False
+    assert probe["boundary_censored"] is True
+    assert probe["candidate_eligibility_mode"] == "rejected"
+    assert probe["continuation_response_trend"] == "rising_at_boundary"

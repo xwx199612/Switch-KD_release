@@ -435,6 +435,8 @@ def _extract_result_base(response: dict, image_path: Path) -> dict:
                     "best_rejected_reasons", "best_outward_probe_coordinate",
                     "best_outward_probe_adjusted_score", "best_outward_probe_raw_score",
                     "best_outward_probe_eligible", "best_outward_probe_reasons",
+                    "boundary_response_trend", "continuation_peak_coordinate",
+                    "continuation_peak_score", "boundary_censored",
                 )
             },
         })
@@ -629,6 +631,8 @@ def print_result(position: int, total: int, result: dict) -> None:
             f" bout_ok={'1' if item.get('recovered_visual_bottom_best_outward_probe_eligible') else '0'}"
             f" bout_score={_format_float(item.get('recovered_visual_bottom_best_outward_probe_adjusted_score'))}"
             f" bout_reason={','.join(item.get('recovered_visual_bottom_best_outward_probe_reasons') or []) or '-'}"
+            f" btrend={item.get('recovered_visual_bottom_boundary_response_trend') or '-'}"
+            f" bpeak={_format_float(item.get('recovered_visual_bottom_continuation_peak_coordinate'))}"
             f" class={item.get('recovered_focus_candidate_class') or '-'}"
             f" grp={item.get('recovered_focus_peer_group_id') if item.get('recovered_focus_peer_group_id') is not None else '-'}"
             f" arb={item.get('recovered_focus_arbitration_source') or '-'}"

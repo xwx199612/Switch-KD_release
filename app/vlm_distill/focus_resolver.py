@@ -191,7 +191,12 @@ class FocusResolver:
     SCALE_SIGNATURE_FULL_GROWTH = 0.25
     SCALE_SIGNATURE_LOG_TOLERANCE = 0.20
     SCALE_SIGNATURE_SINGLE_PEER_RELIABILITY = 0.50
-    FOCUS_BOUNDARY_RECOVERY_VERSION = "v7.3-side-candidate-generation-recall-diagnostic"
+    FOCUS_BOUNDARY_RECOVERY_VERSION = "v7.4-boundary-limited-outward-peak-resolution-diagnostic"
+    V7_BOUNDARY_CONTINUATION_FRACTION = 0.05
+    V7_BOUNDARY_CONTINUATION_MIN_PX = 4
+    V7_BOUNDARY_CONTINUATION_MAX_PX = 12
+    V7_BOUNDARY_CONTINUATION_TREND_TOLERANCE = 0.02
+    V7_BOUNDARY_SOFT_MIN_SPAN_SUPPORT = 0.40
     V7_SIDE_CLUSTER_RADIUS_FRACTION = 0.025
     V7_SIDE_CLUSTER_RADIUS_MIN_PX = 3
     V7_SIDE_CLUSTER_RADIUS_MAX_PX = 8
@@ -394,6 +399,7 @@ class FocusResolver:
         for item in visual_evidence:
             for side in ("left", "right", "top", "bottom"):
                 item.pop(f"recovered_visual_{side}_candidate_generation_probe", None)
+                item.pop(f"recovered_visual_{side}_boundary_continuation_probe", None)
         v5_cascade = self._run_visual_focus_cascade(
             visual_evidence,
             peer_analysis["peer_sets"],
@@ -1160,6 +1166,11 @@ class FocusResolver:
                 item[f"recovered_visual_{side}_best_outward_probe_eligible"] = False
                 item[f"recovered_visual_{side}_best_outward_probe_reasons"] = []
                 item[f"recovered_visual_{side}_probe_buckets"] = {}
+                item[f"recovered_visual_{side}_boundary_continuation_probe"] = []
+                item[f"recovered_visual_{side}_boundary_response_trend"] = "no_valid_continuation"
+                item[f"recovered_visual_{side}_continuation_peak_coordinate"] = None
+                item[f"recovered_visual_{side}_continuation_peak_score"] = None
+                item[f"recovered_visual_{side}_boundary_censored"] = False
 
         for item in evidence:
             side_defaults(item)
@@ -1221,7 +1232,9 @@ class FocusResolver:
                 generation_probes: list[dict[str, Any]] = []
                 span_start, span_end = span
                 span_samples = max(7, min(25, int(round((span_end - span_start) / 8.0))))
-                for coordinate in coordinates:
+
+                def measure_coordinate(coordinate: float) -> dict[str, Any]:
+                    """Measure one coordinate using the unchanged V7 side primitive."""
                     responses: list[float] = []
                     contrasts: list[float] = []
                     valid_samples = 0
@@ -1247,28 +1260,8 @@ class FocusResolver:
                         contrasts.append(0.5 * cls._clamp01(abs(luma(inside) - luma(outside)) / 0.20) + 0.5 * color_distance(inside, outside))
                         responses.append(cls._clamp01(response))
                         valid_samples += 1
-                    limited = abs(coordinate - low) <= 1.0 or abs(coordinate - high) <= 1.0
                     if not responses:
-                        generation_probes.append({
-                            "coordinate": float(coordinate),
-                            "distance_from_semantic_side": float((coordinate - semantic_coordinate) * outward),
-                            "is_inward": bool((coordinate - semantic_coordinate) * outward < 0),
-                            "is_outward": bool((coordinate - semantic_coordinate) * outward > 0),
-                            "boundary_limited": limited,
-                            "span_support": None,
-                            "mean_oriented_strength": None,
-                            "inside_outside_contrast": None,
-                            "continuity": None,
-                            "perimeter_preference": None,
-                            "edge_score": None,
-                            "inward_fraction": None,
-                            "inward_penalty": None,
-                            "enclosure_score": None,
-                            "adjusted_score": None,
-                            "candidate_eligible": False,
-                            "rejection_reasons": ["no_valid_span_samples"],
-                        })
-                        continue
+                        return {"valid_samples": 0}
                     support = sum(value >= cls.V7_BOUNDARY_MIN_RESPONSE for value in responses) / len(responses)
                     mean_strength = sum(responses) / len(responses)
                     contrast = sum(contrasts) / max(len(contrasts), 1)
@@ -1287,9 +1280,63 @@ class FocusResolver:
                     enclosure_score = cls._clamp01(
                         0.70 * inward_penalty + 0.30 * perimeter_preference
                     )
-                    adjusted_score = cls._clamp01(
-                        edge_score * (0.50 + 0.50 * enclosure_score)
-                    )
+                    adjusted_score = cls._clamp01(edge_score * (0.50 + 0.50 * enclosure_score))
+                    return {
+                        "valid_samples": valid_samples,
+                        "span_support": support,
+                        "mean_oriented_strength": mean_strength,
+                        "inside_outside_contrast": contrast,
+                        "continuity": continuity,
+                        "perimeter_preference": perimeter_preference,
+                        "edge_score": edge_score,
+                        "inward_fraction": inward_fraction,
+                        "inward_penalty": inward_penalty,
+                        "enclosure_score": enclosure_score,
+                        "adjusted_score": adjusted_score,
+                    }
+
+                for coordinate in coordinates:
+                    limited = abs(coordinate - low) <= 1.0 or abs(coordinate - high) <= 1.0
+                    measured = measure_coordinate(float(coordinate))
+                    if not measured.get("valid_samples"):
+                        generation_probes.append({
+                            "coordinate": float(coordinate),
+                            "distance_from_semantic_side": float((coordinate - semantic_coordinate) * outward),
+                            "is_inward": bool((coordinate - semantic_coordinate) * outward < 0),
+                            "is_outward": bool((coordinate - semantic_coordinate) * outward > 0),
+                            "boundary_limited": limited,
+                            "span_support": None,
+                            "mean_oriented_strength": None,
+                            "inside_outside_contrast": None,
+                            "continuity": None,
+                            "perimeter_preference": None,
+                            "edge_score": None,
+                            "inward_fraction": None,
+                            "inward_penalty": None,
+                            "enclosure_score": None,
+                            "adjusted_score": None,
+                            "candidate_eligible": False,
+                            "normal_candidate_eligible": False,
+                            "soft_outward_candidate_eligible": False,
+                            "candidate_eligibility_mode": "rejected",
+                            "boundary_censored": False,
+                            "continuation_peak_coordinate": None,
+                            "continuation_peak_score": None,
+                            "continuation_response_trend": "no_valid_continuation",
+                            "rejection_reasons": ["no_valid_span_samples"],
+                        })
+                        continue
+                    support = measured["span_support"]
+                    mean_strength = measured["mean_oriented_strength"]
+                    contrast = measured["inside_outside_contrast"]
+                    continuity = measured["continuity"]
+                    distance = (coordinate - semantic_coordinate) * outward
+                    perimeter_preference = measured["perimeter_preference"]
+                    edge_score = measured["edge_score"]
+                    inward_fraction = measured["inward_fraction"]
+                    inward_penalty = measured["inward_penalty"]
+                    enclosure_score = measured["enclosure_score"]
+                    adjusted_score = measured["adjusted_score"]
                     rejection_reasons: list[str] = []
                     if support < cls.V7_BOUNDARY_MIN_SPAN_SUPPORT:
                         rejection_reasons.append("span_support_below_threshold")
@@ -1297,7 +1344,71 @@ class FocusResolver:
                         rejection_reasons.append("strength_below_threshold")
                     if edge_score < cls.V7_BOUNDARY_MIN_SCORE:
                         rejection_reasons.append("edge_score_below_threshold")
-                    candidate_eligible = not rejection_reasons
+                    normal_candidate_eligible = not rejection_reasons
+                    is_outward = distance > 0
+                    continuation_profile: list[dict[str, Any]] = []
+                    continuation_trend = "no_valid_continuation"
+                    continuation_peak_coordinate = None
+                    continuation_peak_score = None
+                    boundary_censored = False
+                    if limited and is_outward:
+                        continuation_px = max(
+                            cls.V7_BOUNDARY_CONTINUATION_MIN_PX,
+                            min(
+                                cls.V7_BOUNDARY_CONTINUATION_MAX_PX,
+                                int(round(dimension * cls.V7_BOUNDARY_CONTINUATION_FRACTION)),
+                            ),
+                        )
+                        boundary_edge = high if outward > 0 else low
+                        seen_pixels: set[int] = set()
+                        for step in range(1, continuation_px + 1):
+                            continuation_coordinate = boundary_edge + outward * step
+                            axis_limit = image_width if orientation == "vertical" else image_height
+                            if not (0.0 <= continuation_coordinate < float(axis_limit)):
+                                continue
+                            pixel_coordinate = int(round(continuation_coordinate))
+                            if pixel_coordinate in seen_pixels:
+                                continue
+                            seen_pixels.add(pixel_coordinate)
+                            continuation_measurement = measure_coordinate(continuation_coordinate)
+                            row = {"coordinate": float(continuation_coordinate)}
+                            row.update({key: value for key, value in continuation_measurement.items() if key != "valid_samples"})
+                            row["valid_samples"] = continuation_measurement.get("valid_samples", 0)
+                            continuation_profile.append(row)
+                        valid_continuation = [
+                            row for row in continuation_profile
+                            if isinstance(row.get("edge_score"), (int, float))
+                        ]
+                        if valid_continuation:
+                            profile_points = [{"coordinate": float(coordinate), "edge_score": edge_score}] + valid_continuation
+                            peak = max(profile_points, key=lambda row: (float(row["edge_score"]), -float(row["coordinate"])))
+                            continuation_peak_coordinate = peak["coordinate"]
+                            continuation_peak_score = peak["edge_score"]
+                            tolerance = cls.V7_BOUNDARY_CONTINUATION_TREND_TOLERANCE
+                            if continuation_peak_score > edge_score + tolerance:
+                                continuation_trend = "rising_at_boundary"
+                            elif all(float(row["edge_score"]) < edge_score - tolerance for row in valid_continuation):
+                                continuation_trend = "falling_after_boundary"
+                            else:
+                                continuation_trend = "flat"
+                        boundary_censored = continuation_trend in {
+                            "rising_at_boundary",
+                            "no_valid_continuation",
+                        }
+                    soft_outward_candidate_eligible = (
+                        is_outward
+                        and support >= cls.V7_BOUNDARY_SOFT_MIN_SPAN_SUPPORT
+                        and mean_strength >= cls.V7_BOUNDARY_MIN_RESPONSE
+                        and edge_score >= cls.V7_BOUNDARY_MIN_SCORE
+                        and measured.get("valid_samples", 0) > 0
+                        and (not limited or continuation_trend in {"falling_after_boundary", "flat"})
+                    )
+                    candidate_eligible = normal_candidate_eligible or soft_outward_candidate_eligible
+                    eligibility_mode = (
+                        "normal" if normal_candidate_eligible
+                        else "outward_soft" if soft_outward_candidate_eligible
+                        else "rejected"
+                    )
                     generation_probes.append({
                         "coordinate": float(coordinate),
                         "distance_from_semantic_side": float(distance),
@@ -1315,6 +1426,14 @@ class FocusResolver:
                         "enclosure_score": enclosure_score,
                         "adjusted_score": adjusted_score,
                         "candidate_eligible": candidate_eligible,
+                        "normal_candidate_eligible": normal_candidate_eligible,
+                        "soft_outward_candidate_eligible": soft_outward_candidate_eligible,
+                        "candidate_eligibility_mode": eligibility_mode,
+                        "boundary_censored": boundary_censored,
+                        "continuation_peak_coordinate": continuation_peak_coordinate,
+                        "continuation_peak_score": continuation_peak_score,
+                        "continuation_response_trend": continuation_trend,
+                        "boundary_continuation_probe": continuation_profile,
                         "rejection_reasons": rejection_reasons,
                     })
                     if not candidate_eligible:
@@ -1334,7 +1453,45 @@ class FocusResolver:
                         "coordinate_mad": 0.0,
                         "continuity": continuity,
                         "state": "boundary_limited" if limited else "measured_boundary",
+                        "normal_candidate_eligible": normal_candidate_eligible,
+                        "soft_outward_candidate_eligible": soft_outward_candidate_eligible,
+                        "candidate_eligibility_mode": eligibility_mode,
+                        "boundary_censored": boundary_censored,
+                        "continuation_peak_coordinate": continuation_peak_coordinate,
+                        "continuation_peak_score": continuation_peak_score,
+                        "continuation_response_trend": continuation_trend,
                     })
+                continuation_probes = [
+                    probe for probe in generation_probes
+                    if probe.get("boundary_limited") and probe.get("is_outward")
+                    and probe.get("boundary_continuation_probe")
+                ]
+                best_continuation_probe = max(
+                    continuation_probes,
+                    key=lambda probe: (
+                        float(probe.get("adjusted_score") or 0.0),
+                        -float(probe.get("coordinate") or 0.0),
+                    ),
+                    default=None,
+                )
+                if best_continuation_probe is not None:
+                    current_profile = {
+                        "coordinate": best_continuation_probe.get("coordinate"),
+                        "span_support": best_continuation_probe.get("span_support"),
+                        "mean_oriented_strength": best_continuation_probe.get("mean_oriented_strength"),
+                        "edge_score": best_continuation_probe.get("edge_score"),
+                        "continuity": best_continuation_probe.get("continuity"),
+                        "adjusted_score": best_continuation_probe.get("adjusted_score"),
+                        "valid_samples": best_continuation_probe.get("valid_samples", 0),
+                    }
+                    item[f"recovered_visual_{side}_boundary_continuation_probe"] = [
+                        current_profile,
+                        *best_continuation_probe.get("boundary_continuation_probe", []),
+                    ]
+                    item[f"recovered_visual_{side}_boundary_response_trend"] = best_continuation_probe.get("continuation_response_trend")
+                    item[f"recovered_visual_{side}_continuation_peak_coordinate"] = best_continuation_probe.get("continuation_peak_coordinate")
+                    item[f"recovered_visual_{side}_continuation_peak_score"] = best_continuation_probe.get("continuation_peak_score")
+                    item[f"recovered_visual_{side}_boundary_censored"] = bool(best_continuation_probe.get("boundary_censored"))
                 selected_candidates, cluster_debug, cluster_radius, outward_reserved = cls._cluster_v7_side_candidates(
                     candidates,
                     semantic_coordinate,
@@ -6778,6 +6935,9 @@ class FocusResolver:
                                 "best_outward_probe_raw_score",
                                 "best_outward_probe_eligible",
                                 "best_outward_probe_reasons", "probe_buckets",
+                                "boundary_continuation_probe", "boundary_response_trend",
+                                "continuation_peak_coordinate", "continuation_peak_score",
+                                "boundary_censored",
                             )
                         ],
                         "focus_tri_channel_version",
